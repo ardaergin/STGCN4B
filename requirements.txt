@@ -1,0 +1,10 @@
+ipykernel
+setuptools
+wheel
+numpy==1.26.4
+torch
+torch-geometric
+rdflib
+pandas
+matplotlib
+seaborn
