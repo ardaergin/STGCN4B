@@ -40,7 +40,7 @@ def categorize_ttl_files(base_dir: Union[str, Path]) -> Dict[str, List[str]]:
         'enrichments': {
             'devices_in_rooms': [],
             'wikidata_days': [],
-            'graph_learning': []
+            # 'graph_learning': []
         }
     }
     
@@ -66,10 +66,10 @@ def categorize_ttl_files(base_dir: Union[str, Path]) -> Dict[str, List[str]]:
             result['enrichments']['wikidata_days'].append(str(wikidata_file))
             
         # Graph learning enrichments
-        gl_dir = enrichment_dir / 'floor7_graph_learning_enrichment'
-        if gl_dir.exists() and gl_dir.is_dir():
-            for file_path in gl_dir.glob('*.ttl'):
-                result['enrichments']['graph_learning'].append(str(file_path))
+        # gl_dir = enrichment_dir / 'floor7_graph_learning_enrichment'
+        # if gl_dir.exists() and gl_dir.is_dir():
+        #     for file_path in gl_dir.glob('*.ttl'):
+        #         result['enrichments']['graph_learning'].append(str(file_path))
     
     return result
 
