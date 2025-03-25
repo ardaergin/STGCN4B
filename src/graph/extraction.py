@@ -23,107 +23,52 @@ class OfficeGraphExtractor:
         """
         self.office_graph = office_graph
         
-    def extract_rooms_and_floors(self) -> None:
+    def extract_rooms(self) -> None:
         """
-        Extract all rooms and floors from the graph.
-        Also derive which buildings those floors belong to.
-        Updates the office_graph's rooms, floors, and buildings collections.
+        Extract rooms from the graph (without linking them to floors or buildings).
+        Updates the office_graph's rooms collection.
         """
         # Clear existing data
         self.office_graph.rooms.clear()
-        self.office_graph.floors.clear()
-        self.office_graph.buildings.clear()
-        
-        # 1) Extract rooms
+
+        # Query to extract all building spaces with optional comment (e.g., "room" or "support_zone")
         room_query = """
-        SELECT ?room ?comment ?floor
+        PREFIX s4bldg: <https://saref.etsi.org/saref4bldg/>
+        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
+
+        SELECT ?room ?comment
         WHERE {
-            ?room a <https://saref.etsi.org/saref4bldg/BuildingSpace> .
-            OPTIONAL { ?room <http://www.w3.org/2000/01/rdf-schema#comment> ?comment . }
-            OPTIONAL { ?room <https://saref.etsi.org/saref4bldg/isSpaceOf> ?floor . }
+            ?room a s4bldg:BuildingSpace .
+            OPTIONAL { ?room rdfs:comment ?comment . }
         }
         """
-        
+
         for row in self.office_graph.graph.query(room_query):
             room_uri = row.room
             comment = str(row.comment) if row.comment else None
-            floor_uri = row.floor if row.floor else None
-            
-            # Attempt to parse out "room_number" from the URI (if it has "roomname_")
+
+            # Extract room number from URI, if present
             room_number = None
-            room_type = None
-            
-            if comment:
-                room_type = comment  # e.g. "room" or "support_zone"
-                
             room_str = str(room_uri)
             if "roomname_" in room_str:
                 try:
                     room_number = room_str.split("roomname_")[-1]
-                except:
+                except Exception:
                     pass
-                    
-            # Build the Room dataclass
+
+            # Determine if it's a support zone
+            is_support_zone = (comment == "support_zone")
+
             room_obj = Room(
                 uri=room_uri,
-                name=None,
-                floor=floor_uri,
                 room_number=room_number,
-                room_type=room_type
+                is_support_zone=is_support_zone
             )
-            
+
             self.office_graph.rooms[room_uri] = room_obj
+
+        logger.info("Extracted %d rooms", len(self.office_graph.rooms))
             
-            # 2) Add room to the associated Floor (if any)
-            if floor_uri not in (None, ""):
-                # Attempt to parse a floor number if possible
-                if floor_uri not in self.office_graph.floors:
-                    possible_num = None
-                    floor_str = str(floor_uri)
-                    if "floor_" in floor_str:
-                        try:
-                            possible_num = int(floor_str.split("floor_")[-1])
-                        except ValueError:
-                            pass
-                            
-                    self.office_graph.floors[floor_uri] = Floor(
-                        uri=floor_uri,
-                        floor_number=possible_num
-                    )
-                    
-                # Add room to floor
-                self.office_graph.floors[floor_uri].add_room(room_uri)
-                
-        # 3) Extract floor-building relationships
-        building_query = """
-        SELECT ?floor ?building
-        WHERE {
-            ?floor <https://saref.etsi.org/saref4bldg/isSpaceOf> ?building .
-            ?building a <https://saref.etsi.org/saref4bldg/Building> .
-        }
-        """
-        
-        # Use a temporary defaultdict to collect floors by building
-        buildings = defaultdict(set)
-        
-        for row in self.office_graph.graph.query(building_query):
-            floor_uri = row.floor
-            building_uri = row.building
-            
-            if floor_uri in self.office_graph.floors:
-                # Update Floor object
-                self.office_graph.floors[floor_uri].building = building_uri
-                # Add floor to building
-                buildings[building_uri].add(floor_uri)
-                
-        # Convert defaultdict to regular dict and store in office_graph
-        self.office_graph.buildings = dict(buildings)
-        
-        logger.info("Extracted %d rooms, %d floors, %d building URIs",
-                   len(self.office_graph.rooms), 
-                   len(self.office_graph.floors), 
-                   len(self.office_graph.buildings))
-    
     def extract_devices(self) -> None:
         """
         Extract device info from the graph, link them to rooms/floors/buildings.
@@ -157,34 +102,7 @@ class OfficeGraphExtractor:
                 device_type=device_type
             )
             self.office_graph.devices[dev_uri] = dev_obj
-            
-        # Query for device-room-floor-building relationships
-        room_query = """
-        SELECT ?device ?room ?floor ?building
-        WHERE {
-            ?device <https://saref.etsi.org/saref4bldg/isContainedIn> ?room .
-            OPTIONAL { ?room <https://saref.etsi.org/saref4bldg/isSpaceOf> ?floor . }
-            OPTIONAL { ?floor <https://saref.etsi.org/saref4bldg/isSpaceOf> ?building . }
-        }
-        """
-        
-        for row in self.office_graph.graph.query(room_query):
-            dev_uri = row.device
-            room_uri = row.room
-            floor_uri = row.floor if row.floor else None
-            building_uri = row.building if row.building else None
-            
-            if dev_uri in self.office_graph.devices:
-                device = self.office_graph.devices[dev_uri]
-                device.room = room_uri
-                device.floor = floor_uri
-                device.building = building_uri
-                
-                # Also link the device to the Room object itself if it exists
-                if room_uri in self.office_graph.rooms:
-                    # Add device to room
-                    self.office_graph.rooms[room_uri].add_device(dev_uri)
-                    
+                            
         logger.info("Extracted %d devices", len(self.office_graph.devices))
     
     def extract_measurements(self) -> None:

@@ -99,6 +99,7 @@ def load_multiple_ttl_files(file_paths: List[str]) -> Graph:
         Combined RDFLib Graph object
     """
     combined_graph = Graph()
-    for file_path in file_paths:
+    for i, file_path in enumerate(file_paths, start=1):
+        print(f"[{i}/{len(file_paths)}] Loading: {file_path}")
         combined_graph.parse(file_path, format="turtle")
     return combined_graph

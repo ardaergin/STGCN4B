@@ -1,25 +1,23 @@
-from typing import Dict, List, Tuple, Set, Optional, Union, Any
+from typing import Dict, List, Tuple, Set
 from collections import defaultdict
 import networkx as nx
 import numpy as np
-from rdflib import Graph, Namespace, URIRef, Literal, RDF, RDFS
+from rdflib import Graph, Namespace, URIRef
 import logging
 logger = logging.getLogger(__name__)
 
 from ..core import Device, Measurement, Room, Floor
-from ..utils.ttl_loader import categorize_ttl_files, load_multiple_ttl_files
-
+from ..utils import FloorDeviceRetriever, categorize_ttl_files, load_multiple_ttl_files
 
 class OfficeGraph:
     """Class to represent and manipulate the IoT Knowledge Graph."""
     
-    def __init__(self, testing: bool = False):
+    def __init__(self, load_only_7th_floor: bool = True):
         """
         Initialize the KnowledgeGraph object.
         Args:
             testing (bool): A flag indicating whether the object is being initialized for testing purposes. Defaults to False.
         """
-        self.testing = testing
         # Main RDF graph
         self.graph = Graph()
         
@@ -42,7 +40,6 @@ class OfficeGraph:
         self.measurements: Dict[URIRef, Measurement] = {}
         self.rooms: Dict[URIRef, Room] = {}
         self.floors: Dict[URIRef, Floor] = {}
-        self.buildings: Dict[URIRef, Set[URIRef]] = {}
         
         # Property type mappings
         self.property_types: Dict[URIRef, str] = {}
@@ -51,18 +48,37 @@ class OfficeGraph:
         self.measurement_sequences: Dict[Tuple[URIRef, URIRef], List[Measurement]] = {}
 
         # Loading OfficeGraph
-        print(f"Loading OfficeGraph... (Testing Mode: {self.testing})")
-        self.load_OfficeGraph(base_dir='data/OfficeGraph')
+        if load_only_7th_floor:
+            self.retriever = FloorDeviceRetriever()
+            devices_on_floor_7 = self.retriever.get_devices_on_floor(7)
+
+            file_names = set(record["filename"] for record in devices_on_floor_7)
+            file_paths = self.retriever.get_full_paths_for_filenames(file_names)
+
+            graph_with_devices_of_a_single_floor = load_multiple_ttl_files(file_paths[:2])
+            self.graph += graph_with_devices_of_a_single_floor
+
+            self.device_room_floor_map: Dict[URIRef, Dict[str, str]] = {
+                URIRef(rec["deviceURI"]): {
+                    "room": rec["buildingSpace"],
+                    "floor": rec["floor"],
+                }
+                for rec in devices_on_floor_7
+            }
+
+        else: 
+            self.load_full_OfficeGraph(base_dir='data/OfficeGraph')
 
         # Initializing the extractor
         from .extraction import OfficeGraphExtractor
         self.extractor = OfficeGraphExtractor(self)
+        self.extract_all()
 
-        # Initializing the builder
-        from .builder import OfficeGraphBuilder
-        self.builder = OfficeGraphBuilder(self)
+        # # Initializing the builder
+        # from .builder import OfficeGraphBuilder
+        # self.builder = OfficeGraphBuilder(self)
         
-    def load_OfficeGraph(self, base_dir: str) -> None:
+    def load_full_OfficeGraph(self, base_dir: str) -> None:
         """
         Load and merge RDFLib graphs from .ttl files in the specified directory.
         This method categorizes .ttl files in the given base directory, flattens
@@ -86,12 +102,8 @@ class OfficeGraph:
         enrichments = paths_dict['enrichments']
         enrichment_files = (enrichments['devices_in_rooms'])
                             # + enrichments['wikidata_days']
-                            # + enrichments['graph_learning']
-                            
-        # If testing, only take a subset of the files
-        if self.testing:
-            device_files = device_files[:5]  # Limit to 5 device files
-        
+                            # + enrichments['graph_learning'])
+                                    
         # 2) Merge them into a single big RDFLib Graph
         all_files = device_files + enrichment_files
         combined_graph = load_multiple_ttl_files(all_files)
@@ -108,7 +120,7 @@ class OfficeGraph:
         print("Extracting the OfficeGraph data...")
 
         # 1) Rooms & Floors
-        self.extractor.extract_rooms_and_floors()
+        self.extractor.extract_rooms()
         print("- Rooms and Floors extracted")
         # 2) Devices
         self.extractor.extract_devices()
@@ -121,10 +133,10 @@ class OfficeGraph:
         print("- Property types extracted")
         # 5) Measurement sequences
         self.extractor.build_measurement_sequences()
-        print("- dMeasurement sequences extracted")
+        print("- Measurement sequences extracted")
 
-        logger.info("Extraction done: devices=%d, rooms=%d, floors=%d, measurements=%d",
-            len(self.devices), len(self.rooms), len(self.floors), len(self.measurements))
+        logger.info("Extraction done: devices=%d, rooms=%d, measurements=%d",
+            len(self.devices), len(self.rooms), len(self.measurements))
 
     def get_device_adjacency(self) -> Tuple[np.ndarray, List[URIRef]]:
         """
