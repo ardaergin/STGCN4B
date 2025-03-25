@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Set, Tuple
+from typing import List, Optional, Dict, Set
 from rdflib import URIRef, Literal, Namespace, RDF, RDFS
 
 

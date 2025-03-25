@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import Optional, Union, Dict, Any
+from typing import Optional, Dict, Any
 from rdflib import URIRef, Namespace, Literal
 import datetime
 

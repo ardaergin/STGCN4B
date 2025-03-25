@@ -1,7 +1,8 @@
 import os
-from typing import List, Dict, Tuple, Optional, Union
+from typing import List, Dict, Union
 from pathlib import Path
-from rdflib import Graph, URIRef
+from rdflib import Graph
+
 
 def get_ttl_files(directory: Union[str, Path], recursive: bool = False) -> List[str]:
     """
@@ -39,7 +40,7 @@ def categorize_ttl_files(base_dir: Union[str, Path]) -> Dict[str, List[str]]:
         'devices': [],
         'enrichments': {
             'devices_in_rooms': [],
-            'wikidata_days': [],
+            # 'wikidata_days': [],
             # 'graph_learning': []
         }
     }
@@ -61,9 +62,9 @@ def categorize_ttl_files(base_dir: Union[str, Path]) -> Dict[str, List[str]]:
             result['enrichments']['devices_in_rooms'].append(str(room_file))
         
         # Wikidata days
-        wikidata_file = enrichment_dir / 'wikidata_days_enrichment.ttl'
-        if wikidata_file.exists():
-            result['enrichments']['wikidata_days'].append(str(wikidata_file))
+        # wikidata_file = enrichment_dir / 'wikidata_days_enrichment.ttl'
+        # if wikidata_file.exists():
+        #     result['enrichments']['wikidata_days'].append(str(wikidata_file))
             
         # Graph learning enrichments
         # gl_dir = enrichment_dir / 'floor7_graph_learning_enrichment'
