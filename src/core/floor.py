@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Set
-from rdflib import URIRef, Literal, Namespace
+from rdflib import URIRef, Literal, Namespace, RDF, RDFS
 
 
 @dataclass(slots=True)
@@ -9,8 +9,6 @@ class Floor:
     floor_number: Optional[int] = None
     building: Optional[URIRef] = None
     rooms: Set[URIRef] = field(default_factory=set)
-    floor_plan_image: Optional[str] = None
-    area: Optional[float] = None
     
     def add_room(self, room_uri: URIRef) -> None:
         self.rooms.add(room_uri)
@@ -25,20 +23,31 @@ class Floor:
             "floor_number": self.floor_number,
             "building": str(self.building) if self.building else None,
             "room_count": len(self.rooms),
-            "floor_plan_image": self.floor_plan_image,
-            "area": self.area
         }
-
+    
     def to_rdf_triples(self):
         """Yield RDF triples representing this floor."""
-        saref4bldg = Namespace("https://saref.etsi.org/saref4bldg/")
-        yield (self.uri, saref4bldg.hasFloorNumber, Literal(self.floor_number) if self.floor_number is not None else Literal(-1))
+        s4bldg = Namespace("https://saref.etsi.org/saref4bldg/")
+        
+        # In s4bldg, floors don't appear to have an explicit class,
+        # so we also define a floor as a "BuildingSpace".
+        yield (self.uri, RDF.type, s4bldg.BuildingSpace)
+        
+        # Add a label with the floor number
+        if self.floor_number is not None:
+            yield (self.uri, RDFS.label, Literal(f"Floor {self.floor_number}"))
+        
+        # Connect to building
         if self.building:
-            yield (self.uri, saref4bldg.isPartOfBuilding, self.building)
-
+            yield (self.uri, s4bldg.isSpaceOf, self.building)
+        
+        # Rooms in this floor
+        for room_uri in self.rooms:
+            yield (room_uri, s4bldg.isSpaceOf, self.uri)
+    
     def __repr__(self):
         return f"Floor({self.uri}, number={self.floor_number}, rooms={len(self.rooms)})"
-
+    
     def __hash__(self):
         return hash(self.uri)
     
