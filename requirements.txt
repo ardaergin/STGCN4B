@@ -7,4 +7,6 @@ torch-geometric
 rdflib
 pandas
 matplotlib
+tk
+tcl
 seaborn
