@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from typing import Optional, Dict, Any
-from rdflib import URIRef, Namespace, Literal
+from rdflib import URIRef, Namespace, Literal, RDF
 import datetime
 
 
@@ -59,14 +59,18 @@ class Measurement:
     def to_rdf_triples(self):
         """Yield RDF triples representing this measurement."""
         saref = Namespace("https://saref.etsi.org/core/")
+        # Define the measurement as a Measurement
+        yield (self.meas_uri, RDF.type, saref.Measurement)
+        # Use the exact predicates from the data
         yield (self.meas_uri, saref.hasTimestamp, Literal(self.timestamp.isoformat()))
         yield (self.meas_uri, saref.hasValue, Literal(self.value))
         if self.unit:
-            yield (self.meas_uri, saref.hasUnit, self.unit)
+            yield (self.meas_uri, saref.isMeasuredIn, self.unit)  # Changed from hasUnit
         if self.property_type:
-            yield (self.meas_uri, saref.measuresProperty, self.property_type)
+            yield (self.meas_uri, saref.relatesToProperty, self.property_type)  # Changed from measuresProperty
+        # This triple is typically defined in the Device triples, not measurement ones
         yield (self.device_uri, saref.makesMeasurement, self.meas_uri)
-
+    
     def __repr__(self) -> str:
         return (
             f"Measurement(meas_uri={self.meas_uri}, "
@@ -83,5 +87,5 @@ class Measurement:
     def __eq__(self, other):
         """Check equality based on URI."""
         if isinstance(other, Measurement):
-            return self.uri == other.uri
+            return self.meas_uri == other.meas_uri
         return False

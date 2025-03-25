@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Any, Set
 import pandas as pd
-from rdflib import URIRef
+from rdflib import URIRef, Namespace, Literal, RDF
 import datetime
 
 from .measurement import Measurement
@@ -14,8 +14,6 @@ class Device:
     model: Optional[str] = None
     device_type: Optional[str] = None
     room: Optional[URIRef] = None
-    floor: Optional[URIRef] = None
-    building: Optional[URIRef] = None
     measurements: List[Measurement] = field(default_factory=list)
     properties: Set[URIRef] = field(default_factory=set)
     
@@ -48,7 +46,6 @@ class Device:
                 "device_uri": str(self.uri),
                 "device_type": self.device_type,
                 "room": str(self.room) if self.room else None,
-                "floor": str(self.floor) if self.floor else None,
             }
             
             if measurement.property_type:
@@ -71,12 +68,36 @@ class Device:
             "model": self.model,
             "device_type": self.device_type,
             "room": str(self.room) if self.room else None,
-            "floor": str(self.floor) if self.floor else None,
-            "building": str(self.building) if self.building else None,
             "measurement_count": len(self.measurements),
             "properties": [str(property) for property in self.properties]
         }
 
+    def to_rdf_triples(self):
+        """Yield RDF triples representing this device."""
+        saref = Namespace("https://saref.etsi.org/core/")
+        s4ener = Namespace("https://saref.etsi.org/saref4ener/")
+        ic = Namespace("https://interconnectproject.eu/example/")
+        s4bldg = Namespace("https://saref.etsi.org/saref4bldg/")
+        
+        # Define the device as a Device
+        yield (self.uri, RDF.type, s4ener.Device)
+        
+        # Add device metadata
+        if self.manufacturer:
+            yield (self.uri, saref.hasManufacturer, Literal(self.manufacturer))
+        if self.model:
+            yield (self.uri, saref.hasModel, Literal(self.model))
+        if self.device_type:
+            yield (self.uri, ic.hasDeviceType, Literal(self.device_type))
+        
+        # Link to room if available
+        if self.room:
+            yield (self.uri, s4bldg.isContainedIn, self.room)
+        
+        # Link to measurements
+        for measurement in self.measurements:
+            yield (self.uri, saref.makesMeasurement, measurement.meas_uri)
+    
     def __repr__(self):
         return (f"Device({self.uri}, "
                 f"type={self.device_type}, "
