@@ -1,20 +1,14 @@
 from collections import defaultdict
-from typing import Dict, List, Tuple, Set, Optional
-from rdflib import Graph, Namespace, URIRef, Literal
-from rdflib.namespace import RDF, RDFS
 
 import logging
 logger = logging.getLogger(__name__)
 
-from ..core import Device, Measurement, Room, Floor
+from ..core import Device, Measurement, Room
 from .officegraph import OfficeGraph
 
 
 class OfficeGraphExtractor:
-    """
-    A class that extracts all relevant objects (rooms, floors, devices, measurements, etc.)
-    from an OfficeGraph instance.
-    """
+    """A class that extracts all relevant objects from an OfficeGraph instance."""
     
     def __init__(self, office_graph: OfficeGraph):
         """
@@ -128,12 +122,11 @@ class OfficeGraphExtractor:
         for row in self.office_graph.graph.query(query):
             device_uri = row.device
             meas_uri = row.meas
-            # Convert timestamp to Python datetime if needed
             timestamp = row.timestamp.toPython() if hasattr(row.timestamp, 'toPython') else row.timestamp
             value = float(row.value)
             unit = row.unit if row.unit else None
             property_type = row.property if row.property else None
-            
+
             meas_obj = Measurement(
                 meas_uri=meas_uri,
                 device_uri=device_uri,
@@ -142,10 +135,9 @@ class OfficeGraphExtractor:
                 unit=unit,
                 property_type=property_type
             )
-            
+
             self.office_graph.measurements[meas_uri] = meas_obj
-            
-            # Attach to device
+
             if device_uri in self.office_graph.devices:
                 self.office_graph.devices[device_uri].add_measurement(meas_obj)
                 
@@ -167,35 +159,6 @@ class OfficeGraphExtractor:
                 self.office_graph.measurements[next_uri].prev_meas_uri = meas_uri
                 
         logger.info("Extracted %d measurements", len(self.office_graph.measurements))
-    
-    def extract_property_types(self) -> None:
-        """
-        Extract property type resources and their labels.
-        Updates the office_graph's property_types collection.
-        """
-        # Clear existing property types
-        self.office_graph.property_types.clear()
-        
-        # Query for property types
-        query = """
-        SELECT ?property ?label
-        WHERE {
-            ?property a ?type .
-            OPTIONAL { ?property rdfs:label ?label . }
-            FILTER(
-                STRSTARTS(STR(?type), "https://saref.etsi.org/core/") ||
-                STRSTARTS(STR(?type), "https://interconnectproject.eu/example/")
-            )
-        }
-        """
-        
-        for row in self.office_graph.graph.query(query):
-            prop_uri = row.property
-            # Use label if available, otherwise extract from URI
-            label = str(row.label) if row.label else str(prop_uri).split("/")[-1]
-            self.office_graph.property_types[prop_uri] = label
-            
-        logger.info("Extracted %d property types", len(self.office_graph.property_types))
         
     def build_measurement_sequences(self) -> None:
         """

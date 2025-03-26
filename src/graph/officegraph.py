@@ -1,5 +1,4 @@
-from typing import Dict, List, Tuple, Set
-from collections import defaultdict
+from typing import Dict, List, Tuple
 import networkx as nx
 import numpy as np
 from rdflib import Graph, Namespace, URIRef
@@ -10,14 +9,10 @@ from ..core import Device, Measurement, Room, Floor
 from ..utils import FloorDeviceRetriever, categorize_ttl_files, load_multiple_ttl_files
 
 class OfficeGraph:
-    """Class to represent and manipulate the IoT Knowledge Graph."""
+    """Class to represent and manipulate the IoT Office Graph."""
     
     def __init__(self, load_only_7th_floor: bool = True):
-        """
-        Initialize the KnowledgeGraph object.
-        Args:
-            testing (bool): A flag indicating whether the object is being initialized for testing purposes. Defaults to False.
-        """
+        """Initialize the OfficeGraph object."""
         # Main RDF graph
         self.graph = Graph()
         
@@ -40,10 +35,7 @@ class OfficeGraph:
         self.measurements: Dict[URIRef, Measurement] = {}
         self.rooms: Dict[URIRef, Room] = {}
         self.floors: Dict[URIRef, Floor] = {}
-        
-        # Property type mappings
-        self.property_types: Dict[URIRef, str] = {}
-        
+                
         # Measurement sequence links
         self.measurement_sequences: Dict[Tuple[URIRef, URIRef], List[Measurement]] = {}
 
@@ -100,9 +92,9 @@ class OfficeGraph:
         # Flatten device and enrichment lists
         device_files = paths_dict['devices']
         enrichments = paths_dict['enrichments']
-        enrichment_files = (enrichments['devices_in_rooms'])
-                            # + enrichments['wikidata_days']
-                            # + enrichments['graph_learning'])
+        enrichment_files = (enrichments['devices_in_rooms']
+                            + enrichments['wikidata_days']
+                            + enrichments['graph_learning'])
                                     
         # 2) Merge them into a single big RDFLib Graph
         all_files = device_files + enrichment_files
@@ -128,10 +120,7 @@ class OfficeGraph:
         # 3) Measurements
         self.extractor.extract_measurements()
         print("- Measurements extracted")
-        # 4) Property types
-        self.extractor.extract_property_types()
-        print("- Property types extracted")
-        # 5) Measurement sequences
+        # 4) Measurement sequences
         self.extractor.build_measurement_sequences()
         print("- Measurement sequences extracted")
 
