@@ -31,8 +31,8 @@ class Room:
         """Convert to dictionary representation."""
         return {
             "uri": str(self.uri),
-            "room_name": self.room_name,
             "room_number": self.room_number,
+            "is_support_zone": self.is_support_zone,
             "floor": str(self.floor) if self.floor else None,
             "device_count": len(self.devices),
             

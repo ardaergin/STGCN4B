@@ -1,4 +1,3 @@
-import os
 from typing import List, Dict, Union
 from pathlib import Path
 from rdflib import Graph
@@ -23,56 +22,28 @@ def get_ttl_files(directory: Union[str, Path], recursive: bool = False) -> List[
     else:
         return [str(path) for path in directory.glob('*.ttl')]
 
-def categorize_ttl_files(base_dir: Union[str, Path]) -> Dict[str, List[str]]:
+def get_device_files(base_dir: Union[str, Path]) -> List[str]:
     """
-    Categorize TTL files in the OfficeGraph directory structure.
+    Get all device TTL files from the OfficeGraph dataset.
     
     Args:
         base_dir: Base directory of the OfficeGraph dataset
         
     Returns:
-        Dictionary with categories and file lists
+        List of device file paths
     """
     if isinstance(base_dir, str):
         base_dir = Path(base_dir)
-    
-    result = {
-        'devices': [],
-        'enrichments': {
-            'devices_in_rooms': [],
-            # 'wikidata_days': [],
-            # 'graph_learning': []
-        }
-    }
-    
-    # Device files
+        
+    device_files = []
     device_dir = base_dir / 'devices'
     if device_dir.exists():
         for device_type_dir in device_dir.iterdir():
             if device_type_dir.is_dir():
                 for file_path in device_type_dir.glob('*.ttl'):
-                    result['devices'].append(str(file_path))
-    
-    # Enrichment files
-    enrichment_dir = base_dir / 'enrichments'
-    if enrichment_dir.exists():
-        # Devices in rooms
-        room_file = enrichment_dir / 'devices_in_rooms_enrichment.ttl'
-        if room_file.exists():
-            result['enrichments']['devices_in_rooms'].append(str(room_file))
-        
-        # Wikidata days
-        # wikidata_file = enrichment_dir / 'wikidata_days_enrichment.ttl'
-        # if wikidata_file.exists():
-        #     result['enrichments']['wikidata_days'].append(str(wikidata_file))
-            
-        # Graph learning enrichments
-        # gl_dir = enrichment_dir / 'floor7_graph_learning_enrichment'
-        # if gl_dir.exists() and gl_dir.is_dir():
-        #     for file_path in gl_dir.glob('*.ttl'):
-        #         result['enrichments']['graph_learning'].append(str(file_path))
-    
-    return result
+                    device_files.append(str(file_path))
+                    
+    return device_files
 
 def load_ttl_file(file_path: str) -> Graph:
     """
@@ -103,3 +74,84 @@ def load_multiple_ttl_files(file_paths: List[str]) -> Graph:
         print(f"[{i}/{len(file_paths)}] Loading: {file_path}")
         combined_graph.parse(file_path, format="turtle")
     return combined_graph
+
+def load_device_files(base_dir: Union[str, Path]) -> Graph:
+    """
+    Load all device files into an RDFLib graph.
+    
+    Args:
+        base_dir: Base directory of the OfficeGraph dataset
+        
+    Returns:
+        RDFLib Graph with all device data
+    """
+    file_paths = get_device_files(base_dir)
+    if not file_paths:
+        print("Warning: No device files found")
+        return Graph()
+    return load_multiple_ttl_files(file_paths)
+
+def load_devices_in_rooms_enrichment(base_dir: Union[str, Path]) -> Graph:
+    """
+    Load the devices in rooms enrichment into an RDFLib graph.
+    
+    Args:
+        base_dir: Base directory of the OfficeGraph dataset
+        
+    Returns:
+        RDFLib Graph with the devices in rooms enrichment
+    """
+    if isinstance(base_dir, str):
+        base_dir = Path(base_dir)
+        
+    enrichment_path = base_dir / 'enrichments' / 'devices_in_rooms_enrichment.ttl'
+    if not enrichment_path.exists():
+        print("Warning: Devices in rooms enrichment file not found")
+        return Graph()
+    
+    return load_ttl_file(str(enrichment_path))
+
+def load_wikidata_days_enrichment(base_dir: Union[str, Path]) -> Graph:
+    """
+    Load the wikidata days enrichment into an RDFLib graph.
+    
+    Args:
+        base_dir: Base directory of the OfficeGraph dataset
+        
+    Returns:
+        RDFLib Graph with the wikidata days enrichment
+    """
+    if isinstance(base_dir, str):
+        base_dir = Path(base_dir)
+        
+    enrichment_path = base_dir / 'enrichments' / 'wikidata_days_enrichment.ttl'
+    if not enrichment_path.exists():
+        print("Warning: Wikidata days enrichment file not found")
+        return Graph()
+    
+    return load_ttl_file(str(enrichment_path))
+
+def load_floor7_graph_learning_enrichments(base_dir: Union[str, Path]) -> Graph:
+    """
+    Load all floor7 graph learning enrichments into an RDFLib graph.
+    
+    Args:
+        base_dir: Base directory of the OfficeGraph dataset
+        
+    Returns:
+        RDFLib Graph with all floor7 graph learning enrichments
+    """
+    if isinstance(base_dir, str):
+        base_dir = Path(base_dir)
+        
+    gl_dir = base_dir / 'enrichments' / 'floor7_graph_learning_enrichment'
+    if not gl_dir.exists() or not gl_dir.is_dir():
+        print("Warning: Floor7 graph learning enrichment directory not found")
+        return Graph()
+    
+    file_paths = [str(file_path) for file_path in gl_dir.glob('*.ttl')]
+    if not file_paths:
+        print("Warning: No floor7 graph learning enrichment files found")
+        return Graph()
+    
+    return load_multiple_ttl_files(file_paths)
