@@ -16,12 +16,13 @@ class Device:
     room: Optional[URIRef] = None
     measurements: List[Measurement] = field(default_factory=list)
     properties: Set[URIRef] = field(default_factory=set)
+    measurements_by_property: Dict[URIRef, List[Measurement]] = field(default_factory=dict)
     
     def add_measurement(self, measurement: Measurement) -> None:
-        """Add a measurement to this device."""
         self.measurements.append(measurement)
         if measurement.property_type:
             self.properties.add(measurement.property_type)
+            self.measurements_by_property.setdefault(measurement.property_type, []).append(measurement)
 
     def get_measurements_by_property(self, property_type: URIRef) -> List[Measurement]:
         """Get all measurements of a specific property type."""
