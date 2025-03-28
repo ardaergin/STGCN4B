@@ -179,15 +179,6 @@ class OfficeGraph:
 
         logger.info("Extraction done: devices=%d, rooms=%d, measurements=%d",
             len(self.devices), len(self.rooms), len(self.measurements))
-
-    def get_device_adjacency(self) -> Tuple[np.ndarray, List[URIRef]]:
-        """
-        Get the device adjacency matrix using the builder.
-       
-        Returns:
-            The device adjacency matrix and device URIs
-        """
-        return self.builder.build_device_adjacency()
    
     def get_room_adjacency(self) -> Tuple[np.ndarray, List[URIRef]]:
         """

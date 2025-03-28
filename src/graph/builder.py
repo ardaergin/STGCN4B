@@ -1,4 +1,3 @@
-# src/core/builder.py
 from typing import List, Tuple
 import pandas as pd
 import numpy as np
@@ -213,32 +212,7 @@ class OfficeGraphBuilder:
             adjacency[device_idx, room_idx] = 1
         
         return adjacency, device_uris, room_uris
-    
-    def build_device_adjacency(self) -> Tuple[np.ndarray, List[URIRef]]:
-        """
-        Build the device adjacency matrix based on room co-location.
-        Devices are considered adjacent ONLY if they are in the same room.
-        
-        Returns:
-            A tuple containing:
-                - The device adjacency matrix as a numpy array
-                - List of device URIs in the same order as the matrix rows/columns
-        """
-        # First, build the device-room adjacency matrix
-        device_room_adj, device_uris, room_uris_all = self.build_device_room_adjacency()
-        
-        # If no devices or rooms, return empty adjacency
-        if device_room_adj.shape[0] == 0 or device_room_adj.shape[1] == 0:
-            return np.zeros((len(device_uris), len(device_uris))), device_uris
-        
-        # Compute: devices in same room = D-R * R-D^T
-        same_room_adj = np.matmul(device_room_adj, device_room_adj.T)
-        
-        # Set diagonal to zero (no self-loops)
-        np.fill_diagonal(same_room_adj, 0)
-        
-        return same_room_adj, device_uris
-    
+  
     def build_heterogeneous_graph(self) -> nx.MultiDiGraph:
         """
         Build a heterogeneous graph with rooms and devices as nodes.

@@ -75,21 +75,8 @@ def main():
     device_room_adj, device_uris, room_uris_all = office_graph.get_device_room_adjacency()
     print(f"Device-room adjacency matrix shape: {device_room_adj.shape}")
     print(f"Number of device-room connections: {np.sum(device_room_adj)}")
-    
-    # 3. Get and visualize device adjacency matrix
-    print("\nGenerating device adjacency matrix...")
-    device_adj, device_uris = office_graph.get_device_adjacency()
-    print(f"Device adjacency matrix shape: {device_adj.shape}")
-    print(f"Number of device connections: {np.sum(device_adj)}")
-    
-    # Plot device adjacency
-    if device_adj.shape[0] <= 50:  # Only plot if not too large
-        plt_device = plot_adjacency_matrix(device_adj, device_uris, title="Device Adjacency Matrix")
-        plt_device.savefig("output/images/device_adjacency_matrix.png")
-    else:
-        print("Device adjacency matrix too large for visualization")
-    
-    # 4. Get and analyze heterogeneous graph
+        
+    # 3. Get and analyze heterogeneous graph
     print("\nBuilding heterogeneous graph...")
     hetero_graph = office_graph.get_heterogeneous_graph()
     print(f"Heterogeneous graph: {len(hetero_graph.nodes())} nodes, {len(hetero_graph.edges())} edges")
