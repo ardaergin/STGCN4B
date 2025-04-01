@@ -268,3 +268,34 @@ class OfficeGraphBuilder:
                     G.add_edge(uri2, uri1, type='adjacent_to')
         
         return G
+
+    ### Simplifying the graph building ###
+    # Heterogenous with Rooms and Devices -> Homogenous with only Rooms
+    # Both static and temporal attributes -> Only temporal attributes (later on to be derived from devices)
+    def build_simple_homogeneous_graph(self) -> nx.Graph:
+        """
+        Build a homogeneous graph with only rooms as nodes, aggregating device measurements.
+        
+        Returns:
+            A NetworkX Graph with nodes for rooms, edges representing adjacency,
+            and node attributes containing aggregated device measurements.
+        """
+        self._ensure_floor_plan_loaded()
+        
+        # Initialize an undirected graph
+        G = nx.Graph()
+        
+        # Add room nodes with only devices as attributes
+        for uri in self.office_graph.rooms.keys():
+            room = self.office_graph.rooms[uri]
+
+            G.add_node(uri, devices=list(room.devices))
+        
+        # Get room adjacency information and add edges between adjacent rooms
+        room_adj, room_uris = self.build_room_adjacency()
+        for i, uri1 in enumerate(room_uris):
+            for j, uri2 in enumerate(room_uris):
+                if i < j and room_adj[i, j] == 1:
+                    G.add_edge(uri1, uri2, weight=1)
+                
+        return G

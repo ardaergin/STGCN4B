@@ -105,6 +105,7 @@ class OfficeGraph:
         self.builder = OfficeGraphBuilder(self)
         # Load floor plan data
         self.builder.load_floor_plan()
+        print("Loaded floor plan data.")
 
         # Creating Device-Room mappings to class objects
         print("Creating Device-Room mappings to class objects...")
@@ -123,7 +124,7 @@ class OfficeGraph:
         if add_enrichments and load_only_7th_floor:            
             # Load wikidata days enrichment
             wikidata_days_enrichment_graph = load_wikidata_days_enrichment(self.base_dir)
-            print("Loaded devices in rooms enrichment")
+            print("Loaded wikidata days enrichment")
 
             # Load wikidata days enrichment
             floor7_graph_learning_enrichments_graph = load_floor7_graph_learning_enrichments(self.base_dir)
@@ -150,7 +151,7 @@ class OfficeGraph:
 
         # Load wikidata days enrichment
         wikidata_days_enrichment_graph = load_wikidata_days_enrichment(self.base_dir)
-        print("Loaded devices in rooms enrichment")
+        print("Loaded wikidata days enrichment enrichment")
                                
         # Add the loaded graphs to self.graph
         self.graph += device_graph
@@ -206,3 +207,12 @@ class OfficeGraph:
             A NetworkX MultiDiGraph representing the heterogeneous graph
         """
         return self.builder.build_heterogeneous_graph()
+
+    def get_simple_homogeneous_graph(self) -> nx.MultiDiGraph:
+        """
+        Get the simple homogenous graph using the builder.
+       
+        Returns:
+            A NetworkX MultiDiGraph representing the homogenous graph
+        """
+        return self.builder.build_simple_homogeneous_graph()
