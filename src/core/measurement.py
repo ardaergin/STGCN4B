@@ -63,7 +63,7 @@ class Measurement:
             "property_type": str(self.property_type) if self.property_type else None,
             "next_meas_uri": str(self.next_meas_uri) if self.next_meas_uri else None,
             "prev_meas_uri": str(self.prev_meas_uri) if self.prev_meas_uri else None,
-            "isWorkhour": self.workhour
+            "isWorkhour": self.isWorkhour
         }
 
     def to_rdf_triples(self):
@@ -89,7 +89,7 @@ class Measurement:
             f"value={self.value}, "
             f"unit={self.unit}, "
             f"property_type={self.property_type}, "
-            f"workhour={self.workhour})"
+            f"isWorkhour={self.isWorkhour})"
         )
 
     def __hash__(self):
