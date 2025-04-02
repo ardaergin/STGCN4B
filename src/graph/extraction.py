@@ -181,3 +181,47 @@ class OfficeGraphExtractor:
             self.office_graph.measurement_sequences[key] = meas_list
             
         logger.info("Built %d measurement sequences", len(self.office_graph.measurement_sequences))
+
+    def extract_property_type_mappings(self) -> None:
+        """
+        Extract mappings from specific property URIs to their general property types.
+        Updates the office_graph's property_type_mappings collection.
+        
+        For example, maps property URIs like "ic:property_SmartSense_Motion_Sensor_30__temp_"
+        to their RDF type like "saref:Temperature", organizing them by the property type.
+        """
+        # Clear existing mappings
+        self.office_graph.property_type_mappings.clear()
+        
+        # Query for properties and their types
+        query = """
+        SELECT ?property ?propertyType
+        WHERE {
+            ?property a ?propertyType .
+            FILTER(STRSTARTS(STR(?property), STR(ic:property_)))
+        }
+        """
+        
+        # Dictionary to track all property URIs for each property type
+        type_to_properties = defaultdict(list)
+        
+        for row in self.office_graph.graph.query(query):
+            property_uri = row.property
+            property_type_uri = row.propertyType
+            
+            # Extract the short name of the property type (e.g., "Temperature" from "saref:Temperature")
+            property_type_str = str(property_type_uri)
+            # Get the part after the last '/' or '#' (if it exists)
+            type_name = property_type_str.split('/')[-1].split('#')[-1]
+            
+            # Add the property URI to the list for this property type
+            type_to_properties[type_name].append(property_uri)
+        
+        # Update the office_graph's property_type_mappings
+        self.office_graph.property_type_mappings = dict(type_to_properties)
+        
+        logger.info("Extracted mappings for %d property types", len(self.office_graph.property_type_mappings))
+        
+        # Optionally, print some stats about the mappings
+        for type_name, properties in self.office_graph.property_type_mappings.items():
+            logger.info("  - %s: %d properties", type_name, len(properties))

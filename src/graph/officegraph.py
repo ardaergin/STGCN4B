@@ -44,7 +44,10 @@ class OfficeGraph:
         self.measurements: Dict[URIRef, Measurement] = {}
         self.rooms: Dict[URIRef, Room] = {}
         self.floors: Dict[URIRef, Floor] = {}
-               
+        
+        # Mapping property types (e.g., "Temperature") to lists of specific property URIs from devices:
+        self.property_type_mappings: Dict[str, List[URIRef]] = {}
+    
         # Measurement sequence links
         self.measurement_sequences: Dict[Tuple[URIRef, URIRef], List[Measurement]] = {}
 
@@ -177,9 +180,13 @@ class OfficeGraph:
         # 4) Measurement sequences
         self.extractor.build_measurement_sequences()
         print("- Measurement sequences extracted")
+        # 5) Property type mappings
+        self.extractor.extract_property_type_mappings()
+        print("- Property type mappings extracted")
 
-        logger.info("Extraction done: devices=%d, rooms=%d, measurements=%d",
-            len(self.devices), len(self.rooms), len(self.measurements))
+        logger.info("Extraction done: devices=%d, rooms=%d, measurements=%d, property_types=%d",
+            len(self.devices), len(self.rooms), len(self.measurements), 
+            len(self.property_type_mappings))
    
     def get_room_adjacency(self) -> Tuple[np.ndarray, List[URIRef]]:
         """
