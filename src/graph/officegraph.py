@@ -51,16 +51,19 @@ class OfficeGraph:
         # Measurement sequence links
         self.measurement_sequences: Dict[Tuple[URIRef, URIRef], List[Measurement]] = {}
 
+        # Additional mapping dictionaries for downstream tasks
+        self.room_to_device: Dict[URIRef, List[URIRef]] = {}
+        self.device_to_room: Dict[URIRef, URIRef] = {}
+        self.room_to_property_type: Dict[URIRef, List[str]] = {}
+        self.room_to_property_measurements: Dict[URIRef, Dict[str, List[Measurement]]] = {}
 
         # Loading OfficeGraph
         if load_only_7th_floor:
             self.retriever = FloorDeviceRetriever()
             devices_on_floor_7 = self.retriever.get_devices_on_floor(7)
 
-
             file_names = set(record["filename"] for record in devices_on_floor_7)
             file_paths = self.retriever.get_full_paths_for_filenames(file_names)
-
 
             graph_with_devices_of_a_single_floor = load_multiple_ttl_files(file_paths)
             print("Loaded all device files.")
@@ -136,6 +139,9 @@ class OfficeGraph:
             # Add the loaded graphs to self.graph
             self.graph += wikidata_days_enrichment_graph
             self.graph += floor7_graph_learning_enrichments_graph
+
+        # Build additional mapping dictionaries for downstream tasks
+        self.build_mappings()
 
     def load_full_OfficeGraph(self) -> None:
         """
@@ -223,3 +229,90 @@ class OfficeGraph:
             A NetworkX MultiDiGraph representing the homogenous graph
         """
         return self.builder.build_simple_homogeneous_graph()
+
+    def build_mappings(self) -> None:
+        """
+        Build useful mapping dictionaries for downstream tasks:
+        - room_to_device: Maps room URIs to lists of device URIs
+        - device_to_room: Maps device URIs to their containing room URIs
+        - room_to_property_type: Maps room URIs to lists of property types measured within them
+        - room_to_property_measurements: Nested dictionary mapping rooms to property types to lists of measurements
+        """
+        print("Building mapping dictionaries...")
+        
+        # Initialize dictionaries
+        self.room_to_device = {}
+        self.device_to_room = {}
+        self.room_to_property_type = {}
+        self.room_to_property_measurements = {}
+        
+        # Build room_to_device and device_to_room mappings
+        for device_uri, mapping in self.device_room_floor_map.items():
+            room_uri = URIRef(mapping["room"])
+            
+            # room_to_device mapping
+            if room_uri not in self.room_to_device:
+                self.room_to_device[room_uri] = []
+            self.room_to_device[room_uri].append(device_uri)
+            
+            # device_to_room mapping
+            self.device_to_room[device_uri] = room_uri
+        
+        # Build room_to_property_type mapping
+        # First, get the properties measured by each device
+        device_to_property_types = {}
+        for device_uri, device in self.devices.items():
+            property_types = set()
+            for meas in device.measurements:
+                if meas.property_type:
+                    # Extract property type name from URI
+                    property_type_str = str(meas.property_type)
+                    # Check if it's in our property_type_mappings
+                    for prop_name, prop_uris in self.property_type_mappings.items():
+                        if meas.property_type in prop_uris:
+                            property_types.add(prop_name)
+                            break
+            
+            device_to_property_types[device_uri] = property_types
+        
+        # Now build room_to_property_type using device_to_room and device_to_property_types
+        for device_uri, property_types in device_to_property_types.items():
+            if device_uri in self.device_to_room:
+                room_uri = self.device_to_room[device_uri]
+                
+                if room_uri not in self.room_to_property_type:
+                    self.room_to_property_type[room_uri] = set()
+                
+                self.room_to_property_type[room_uri].update(property_types)
+        
+        # Convert sets to lists for easier serialization
+        for room_uri in self.room_to_property_type:
+            self.room_to_property_type[room_uri] = list(self.room_to_property_type[room_uri])
+        
+        # Build room_to_property_measurements
+        # This complex nested dictionary maps: room -> property_type -> list of measurements
+        for room_uri, property_types in self.room_to_property_type.items():
+            self.room_to_property_measurements[room_uri] = {}
+            
+            for prop_type in property_types:
+                # Initialize empty list for this property type
+                self.room_to_property_measurements[room_uri][prop_type] = []
+                
+                # Get devices in this room
+                if room_uri in self.room_to_device:
+                    for device_uri in self.room_to_device[room_uri]:
+                        if device_uri in self.devices:
+                            device = self.devices[device_uri]
+                            
+                            # For each measurement in the device
+                            for meas in device.measurements:
+                                if meas.property_type:
+                                    # Check if this measurement's property belongs to current property type
+                                    for p_uri in self.property_type_mappings.get(prop_type, []):
+                                        if meas.property_type == p_uri:
+                                            self.room_to_property_measurements[room_uri][prop_type].append(meas)
+                                            break
+        
+        print(f"Built mappings for {len(self.room_to_device)} rooms, {len(self.device_to_room)} devices")
+        print(f"Rooms with property types: {len(self.room_to_property_type)}")
+        print(f"Rooms with property measurements: {len(self.room_to_property_measurements)}")
