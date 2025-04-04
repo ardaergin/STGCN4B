@@ -127,50 +127,101 @@ def parse_args():
     
     return args
 
-
 def prepare_data(args):
-    """Prepare data for STGCN model."""
-    logger.info("Loading OfficeGraph...")
+    """Prepare data for STGCN model with seasonal-aware time splits that preserve temporal ordering."""
+    logger.info("Loading processed OfficeGraph data...")
     
-    # Load OfficeGraph
-    # officegraph = OfficeGraph(base_dir=args.data_dir, 
-    #                          load_only_7th_floor=True, 
-    #                          add_enrichments=False)
-    pkl_path = os.path.join(args.data_dir, "processed_data", "officegraph.pkl")
-    with open(pkl_path, "rb") as f:
-        officegraph = pickle.load(f)
-
-    # Initialize data preparation
-    data_prep = TimeSeriesPreparation(
-        officegraph,
-        start_time=args.start_time,
-        end_time=args.end_time,
-        interval_hours=args.interval_hours
-    )
+    # Load the pre-processed torch input
+    torch_input_path = os.path.join(args.data_dir, "processed_data", "torch_input.pt")
+    logger.info(f"Loading torch input from {torch_input_path}")
     
-    logger.info("Preparing STGCN data...")
+    # Load on CPU first
+    torch_input = torch.load(torch_input_path, map_location='cpu')
     
-    # Get prepared STGCN input
-    stgcn_input = data_prep.prepare_stgcn_input()
+    # Determine device
+    device = torch.device('cuda') if args.enable_cuda and torch.cuda.is_available() else torch.device('cpu')
+    logger.info(f"Using device: {device}")
     
-    # Convert to torch tensors
-    device = torch.device('cuda' if args.enable_cuda and torch.cuda.is_available() else 'cpu')
-    torch_input = data_prep.convert_to_torch_tensors(stgcn_input, device=device)
+    # Move tensors to the appropriate device
+    torch_input["adjacency_matrix"] = torch_input["adjacency_matrix"].to(device)
+    torch_input["labels"] = torch_input["labels"].to(device)
     
-    # Create train/val/test split
-    train_indices, test_indices = data_prep.create_train_test_split(
-        stgcn_input, 
-        test_ratio=args.test_ratio, 
-        random_state=args.seed
-    )
+    for time_idx in torch_input["feature_matrices"]:
+        torch_input["feature_matrices"][time_idx] = torch_input["feature_matrices"][time_idx].to(device)
     
-    # Split test set into validation and test
-    val_size = len(test_indices) // 2
-    val_indices = test_indices[:val_size]
-    test_indices = test_indices[val_size:]
+    # Get all time indices
+    time_indices = sorted(torch_input["time_indices"])
+    total_samples = len(time_indices)
     
-    logger.info(f"Train size: {len(train_indices)}, Val size: {len(val_indices)}, Test size: {len(test_indices)}")
-
+    # Group time indices by month to analyze distribution
+    months = []
+    month_to_indices = {}
+    for idx in time_indices:
+        # Time buckets contain (start_time, end_time) tuples
+        start_time = torch_input["time_buckets"][idx][0]
+        month = start_time.month
+        months.append(month)
+        
+        if month not in month_to_indices:
+            month_to_indices[month] = []
+        month_to_indices[month].append(idx)
+    
+    # Log the distribution of months in the dataset
+    month_counts = {}
+    for m in range(1, 13):
+        month_counts[m] = months.count(m)
+    logger.info(f"Month distribution in dataset: {month_counts}")
+    
+    # Create temporally contiguous blocks for each month
+    month_blocks = []
+    for month, indices in month_to_indices.items():
+        # Sort indices within each month to maintain temporal order
+        sorted_indices = sorted(indices)
+        
+        # Split into smaller contiguous blocks (e.g., 1-week blocks)
+        # This allows us to distribute each month's data while maintaining temporal coherence
+        block_size = 24 * 7  # 1 week of hourly data (adjust as needed)
+        month_blocks.extend([sorted_indices[i:i+block_size] for i in range(0, len(sorted_indices), block_size)])
+    
+    # Randomly shuffle the blocks (not the time points within blocks)
+    np.random.shuffle(month_blocks)
+    
+    # Calculate split sizes
+    test_ratio = args.test_ratio
+    val_ratio = args.test_ratio
+    total_blocks = len(month_blocks)
+    test_blocks = int(total_blocks * test_ratio)
+    val_blocks = int(total_blocks * val_ratio)
+    train_blocks = total_blocks - test_blocks - val_blocks
+    
+    # Split the blocks into train/val/test
+    test_block_indices = month_blocks[:test_blocks]
+    val_block_indices = month_blocks[test_blocks:test_blocks+val_blocks]
+    train_block_indices = month_blocks[test_blocks+val_blocks:]
+    
+    # Flatten the block indices
+    test_indices = [idx for block in test_block_indices for idx in block]
+    val_indices = [idx for block in val_block_indices for idx in block]
+    train_indices = [idx for block in train_block_indices for idx in block]
+    
+    # Sort indices within each split to maintain temporal order for sequence modeling
+    test_indices.sort()
+    val_indices.sort()
+    train_indices.sort()
+    
+    logger.info(f"Data split: Train={len(train_indices)}, Val={len(val_indices)}, Test={len(test_indices)}")
+    
+    # Check seasonal distribution in each split
+    train_months = [torch_input["time_buckets"][i][0].month for i in train_indices]
+    val_months = [torch_input["time_buckets"][i][0].month for i in val_indices]
+    test_months = [torch_input["time_buckets"][i][0].month for i in test_indices]
+    
+    for split_name, split_months in [("Train", train_months), ("Val", val_months), ("Test", test_months)]:
+        month_counts = {}
+        for m in range(1, 13):
+            month_counts[m] = split_months.count(m)
+        logger.info(f"{split_name} set month distribution: {month_counts}")
+    
     # Extract features and labels for each set
     X_train, y_train = extract_features_labels(torch_input, train_indices, n_his=args.n_his)
     X_val, y_val = extract_features_labels(torch_input, val_indices, n_his=args.n_his)
@@ -181,7 +232,9 @@ def prepare_data(args):
     val_dataset = TensorDataset(X_val, y_val)
     test_dataset = TensorDataset(X_test, y_test)
     
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    # Note: for train_loader, we don't shuffle since order matters for temporal sequences
+    # The randomization is already handled at block level
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
     

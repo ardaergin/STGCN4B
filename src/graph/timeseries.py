@@ -1,3 +1,5 @@
+import os
+import pickle
 import torch
 import numpy as np
 import networkx as nx
@@ -325,32 +327,21 @@ class TimeSeriesPreparation:
         torch_input["time_buckets"] = stgcn_input["time_buckets"]
         
         logger.info("Converted data to PyTorch tensors on device: " + str(device))
+
         return torch_input
-        
-    def create_train_test_split(self, stgcn_input, test_ratio=0.2, random_state=42):
-        """
-        Split the time buckets into training and testing sets.
-        
-        Args:
-            stgcn_input: Dictionary output from prepare_stgcn_input
-            test_ratio: Proportion of time buckets to use for testing
-            random_state: Random seed for reproducibility
-            
-        Returns:
-            tuple: (train_indices, test_indices)
-        """
-        time_indices = stgcn_input["time_indices"]
-        np.random.seed(random_state)
-        
-        # Shuffle indices
-        shuffled_indices = np.random.permutation(time_indices)
-        
-        # Calculate split point
-        test_size = int(len(time_indices) * test_ratio)
-        
-        # Split indices
-        test_indices = shuffled_indices[:test_size]
-        train_indices = shuffled_indices[test_size:]
-        
-        logger.info(f"Created train-test split: {len(train_indices)} train, {len(test_indices)} test")
-        return train_indices, test_indices
+
+if __name__ == "__main__":
+
+    with open("data/OfficeGraph/processed_data/officegraph.pkl", "rb") as f:
+        office_graph = pickle.load(f)
+    
+    data_prep = TimeSeriesPreparation(office_graph)
+    stgcn_input = data_prep.prepare_stgcn_input()
+
+    # Convert to torch tensors
+    device = torch.device('cpu') # must move the files to cuda later!
+    torch_input = data_prep.convert_to_torch_tensors(stgcn_input, device=device)
+
+    save_path = os.path.join("data", "OfficeGraph", "processed_data", "torch_input.pt")
+    torch.save(torch_input, save_path)
+    print(f"Saved torch_input to {save_path}")
