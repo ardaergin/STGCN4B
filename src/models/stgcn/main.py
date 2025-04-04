@@ -8,6 +8,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
+from sklearn.metrics import roc_auc_score, average_precision_score
 from torch.utils.data import DataLoader, TensorDataset
 import scipy.sparse as sp
 
@@ -312,9 +313,9 @@ def extract_features_labels(torch_input, indices, n_his=12):
     return X, y
 
 
-def setup_model(args, data):
-    """Set up the STGCN model and training components."""
-    logger.info("Setting up model...")
+def setup_model(args, data, train_loader=None):
+    """Set up the STGCN model and training components with class imbalance handling."""
+    logger.info("Setting up model with class imbalance handling...")
     
     # Get device
     device = data['device']
@@ -343,8 +344,30 @@ def setup_model(args, data):
     else:
         model = STGCNGraphConv(args, blocks, data["n_vertex"], data["gso"]).to(device)
     
-    # Binary classification loss function
-    criterion = torch.nn.BCEWithLogitsLoss()
+    # Calculate class weights if train_loader is provided
+    if train_loader is not None:
+        # Extract all labels from training set
+        all_labels = []
+        for _, labels in train_loader:
+            all_labels.extend(labels.cpu().numpy())
+        
+        # Count class occurrences
+        n_samples = len(all_labels)
+        n_work_hours = sum(all_labels)  # Class 1 (work hours)
+        n_non_work_hours = n_samples - n_work_hours  # Class 0 (non-work hours)
+        
+        # Calculate positive class weight (for work hours - minority class)
+        # Higher weight means the model pays more attention to this class
+        pos_weight = n_non_work_hours / n_work_hours if n_work_hours > 0 else 1.0
+        
+        logger.info(f"Class distribution in training set: Work hours={n_work_hours}, Non-work hours={n_non_work_hours}")
+        logger.info(f"Using positive class weight: {pos_weight:.4f}")
+        
+        # Binary classification loss function with class weight
+        criterion = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight, device=device))
+    else:
+        # Default loss without weighting
+        criterion = torch.nn.BCEWithLogitsLoss()
     
     # Set optimizer
     if args.optimizer == 'adam':
@@ -363,7 +386,6 @@ def setup_model(args, data):
     logger.info(f"Model setup complete with {sum(p.numel() for p in model.parameters())} parameters")
     
     return model, criterion, optimizer, scheduler, early_stopping
-
 
 def train_model(args, model, criterion, optimizer, scheduler, early_stopping, train_loader, val_loader):
     """Train the STGCN model."""
@@ -459,7 +481,7 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping, tr
 
 
 def evaluate_model(model, criterion, test_loader):
-    """Evaluate the trained model on the test set."""
+    """Evaluate the trained model on the test set with balanced metrics."""
     logger.info("Evaluating model on test set...")
     
     device = next(model.parameters()).device
@@ -480,16 +502,51 @@ def evaluate_model(model, criterion, test_loader):
             
             # Store predictions, probabilities, and labels
             probs = torch.sigmoid(outputs)
-            preds = (probs > 0.5).int()
             all_probs.extend(probs.cpu().numpy())
-            all_preds.extend(preds.cpu().numpy())
             all_labels.extend(y_batch.cpu().numpy())
     
     # Average test loss
     test_loss = test_loss / len(test_loader.dataset)
     
+    # Find optimal threshold on test set
+    from sklearn.metrics import precision_recall_curve, balanced_accuracy_score
+    precisions, recalls, thresholds = precision_recall_curve(all_labels, all_probs)
+    
+    # Compute F1 scores for each threshold
+    f1_scores = []
+    for p, r in zip(precisions, recalls):
+        if p + r == 0:
+            f1_scores.append(0)
+        else:
+            f1_scores.append(2 * p * r / (p + r))
+    
+    # Find threshold that maximizes F1 score
+    if len(thresholds) > 0:
+        optimal_idx = np.argmax(f1_scores[:-1])  # Last element of precisions/recalls doesn't have a threshold
+        optimal_threshold = thresholds[optimal_idx]
+    else:
+        optimal_threshold = 0.5  # Default if no threshold found
+    
+    logger.info(f"Optimal classification threshold: {optimal_threshold:.4f}")
+    
+    # AUC scores
+    try:
+        roc_auc = roc_auc_score(all_labels, all_probs)
+        ap_score = average_precision_score(all_labels, all_probs)
+    except ValueError:
+        # This can happen if there is only one class in y_true
+        roc_auc = float('nan')
+        ap_score = float('nan')
+
+    logger.info(f"AUC-ROC: {roc_auc:.4f}")
+    logger.info(f"AUC-PR (Average Precision): {ap_score:.4f}")
+
+    # Apply threshold to get predictions
+    all_preds = [1 if prob >= optimal_threshold else 0 for prob in all_probs]
+    
     # Calculate metrics
     accuracy = accuracy_score(all_labels, all_preds)
+    balanced_acc = balanced_accuracy_score(all_labels, all_preds)
     precision = precision_score(all_labels, all_preds, zero_division=0)
     recall = recall_score(all_labels, all_preds, zero_division=0)
     f1 = f1_score(all_labels, all_preds, zero_division=0)
@@ -500,17 +557,22 @@ def evaluate_model(model, criterion, test_loader):
     metrics = {
         'test_loss': test_loss,
         'accuracy': accuracy,
+        'balanced_accuracy': balanced_acc,
         'precision': precision,
         'recall': recall,
         'f1': f1,
+        'roc_auc': roc_auc,
+        'auc_pr': ap_score,
         'confusion_matrix': conf_matrix,
         'predictions': all_preds,
         'labels': all_labels,
-        'probabilities': all_probs
+        'probabilities': all_probs,
+        'threshold': optimal_threshold
     }
-    
+
     logger.info(f"Test Loss: {test_loss:.4f}")
     logger.info(f"Test Accuracy: {accuracy:.4f}")
+    logger.info(f"Balanced Accuracy: {balanced_acc:.4f}")
     logger.info(f"Test Precision: {precision:.4f}")
     logger.info(f"Test Recall: {recall:.4f}")
     logger.info(f"Test F1-score: {f1:.4f}")
@@ -522,6 +584,12 @@ def evaluate_model(model, criterion, test_loader):
     baseline = max(pos_count, neg_count) / len(all_labels)
     logger.info(f"Baseline Accuracy (majority class): {baseline:.4f}")
     logger.info(f"Improvement over baseline: {(accuracy - baseline) / baseline * 100:.2f}%")
+    
+    # Calculate specificity (true negative rate)
+    if conf_matrix.shape == (2, 2):
+        tn, fp, fn, tp = conf_matrix.ravel()
+        specificity = tn / (tn + fp) if (tn + fp) > 0 else 0
+        logger.info(f"Specificity (True Negative Rate): {specificity:.4f}")
     
     return metrics
 
@@ -597,9 +665,13 @@ def plot_results(args, history, metrics):
     with open(os.path.join(output_dir, 'stgcn_metrics.txt'), 'w') as f:
         f.write(f"Test Loss: {metrics['test_loss']:.4f}\n")
         f.write(f"Test Accuracy: {metrics['accuracy']:.4f}\n")
+        f.write(f"Balanced Accuracy: {metrics['balanced_accuracy']:.4f}\n")
         f.write(f"Test Precision: {metrics['precision']:.4f}\n")
         f.write(f"Test Recall: {metrics['recall']:.4f}\n")
         f.write(f"Test F1-score: {metrics['f1']:.4f}\n")
+        f.write(f"AUC-ROC: {metrics['roc_auc']:.4f}\n")
+        f.write(f"AUC-PR (Average Precision): {metrics['auc_pr']:.4f}\n")
+        f.write(f"Threshold: {metrics['threshold']:.4f}\n")
         f.write(f"Baseline Accuracy: {baseline:.4f}\n")
         f.write(f"Improvement over baseline: {(metrics['accuracy'] - baseline) / baseline * 100:.2f}%\n")
     
@@ -607,7 +679,7 @@ def plot_results(args, history, metrics):
 
 
 def main():
-    """Main function to run the STGCN model for OfficeGraph classification."""
+    """Main function to run the STGCN model for OfficeGraph classification with class imbalance handling."""
     # Parse arguments
     args = parse_args()
     
@@ -620,8 +692,10 @@ def main():
     # Prepare data
     data = prepare_data(args)
     
-    # Setup model
-    model, criterion, optimizer, scheduler, early_stopping = setup_model(args, data)
+    # Setup model with class weighting
+    model, criterion, optimizer, scheduler, early_stopping = setup_model(
+        args, data, train_loader=data['train_loader']
+    )
     
     # Train model
     model, history = train_model(
