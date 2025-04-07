@@ -8,11 +8,9 @@ import matplotlib.pyplot as plt
 import networkx as nx
 from pathlib import Path
 import sys
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
-# Add the project root to the Python path
-sys.path.append(str(Path(__file__).resolve().parent.parent))
-
-from src import OfficeGraph
+from ..graph import OfficeGraph
 
 
 def plot_adjacency_matrix(adj_matrix, titles, figsize=(10, 8), title="Adjacency Matrix"):
@@ -64,11 +62,11 @@ def main():
     
     # Plot room adjacency
     plt_room = plot_adjacency_matrix(room_adj, room_uris, title="Room Adjacency Matrix")
-    plt_room.savefig("output/images/room_adjacency_matrix.png")
+    plt_room.savefig("../../output/images/room_adjacency_matrix.png")
     
     # Plot room network
     plt_room_net = plot_network(room_adj, room_uris, title="Room Adjacency Network")
-    plt_room_net.savefig("output/images/room_adjacency_network.png")
+    plt_room_net.savefig("../../output/images/room_adjacency_network.png")
     
     # 2. Get and visualize device-room adjacency matrix
     print("\nGenerating device-room adjacency matrix...")
