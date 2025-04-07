@@ -125,7 +125,10 @@ def parse_args():
     return args
 
 def prepare_data(args):
-    """Prepare data for STGCN model with seasonal-aware time splits that preserve temporal ordering."""
+    """
+    Prepare data for STGCN model using cyclic block sampling to ensure balanced distribution
+    across the entire time range.
+    """
     logger.info("Loading processed OfficeGraph data...")
     
     # Load the pre-processed torch input
@@ -146,78 +149,94 @@ def prepare_data(args):
     for time_idx in torch_input["feature_matrices"]:
         torch_input["feature_matrices"][time_idx] = torch_input["feature_matrices"][time_idx].to(device)
     
-    # Get all time indices
+    # Get all time indices and sort them
     time_indices = sorted(torch_input["time_indices"])
     total_samples = len(time_indices)
     
-    # Group time indices by month to analyze distribution
-    months = []
-    month_to_indices = {}
-    for idx in time_indices:
-        # Time buckets contain (start_time, end_time) tuples
-        start_time = torch_input["time_buckets"][idx][0]
-        month = start_time.month
-        months.append(month)
+    # Define block size (1 week of hourly data)
+    block_size = 24 * 7
+    
+    # Create blocks of contiguous time points
+    blocks = []
+    for i in range(0, len(time_indices), block_size):
+        # Take up to block_size indices (last block might be smaller)
+        block = time_indices[i:i+block_size]
+        blocks.append(block)
+    
+    logger.info(f"Created {len(blocks)} blocks of data (each ~1 week)")
+    
+    # Define the sampling pattern for train/val/test
+    # 3:1:1 ratio (train:test:val)
+    sampling_pattern = ["train", "train", "train", "test", "val"]
+    
+    # Initialize sets for each split
+    train_indices = []
+    val_indices = []
+    test_indices = []
+    
+    # Assign blocks to splits using cyclic sampling without replacement
+    current_pattern = sampling_pattern.copy()
+    
+    for i, block in enumerate(blocks):
+        # If we've used all elements in the pattern, replenish it
+        if not current_pattern:
+            current_pattern = sampling_pattern.copy()
         
-        if month not in month_to_indices:
-            month_to_indices[month] = []
-        month_to_indices[month].append(idx)
-    
-    # Log the distribution of months in the dataset
-    month_counts = {}
-    for m in range(1, 13):
-        month_counts[m] = months.count(m)
-    logger.info(f"Month distribution in dataset: {month_counts}")
-    
-    # Create temporally contiguous blocks for each month
-    month_blocks = []
-    for month, indices in month_to_indices.items():
-        # Sort indices within each month to maintain temporal order
-        sorted_indices = sorted(indices)
+        # Randomly select an element from the current pattern
+        split_type = np.random.choice(current_pattern)
+        current_pattern.remove(split_type)
         
-        # Split into smaller contiguous blocks (e.g., 1-week blocks)
-        # This allows us to distribute each month's data while maintaining temporal coherence
-        block_size = 24 * 7  # 1 week of hourly data (adjust as needed)
-        month_blocks.extend([sorted_indices[i:i+block_size] for i in range(0, len(sorted_indices), block_size)])
+        # Assign the block to the corresponding split
+        if split_type == "train":
+            train_indices.extend(block)
+        elif split_type == "val":
+            val_indices.extend(block)
+        else:  # "test"
+            test_indices.extend(block)
+        
+        # Log the assignment
+        if i < 5 or i == len(blocks)-1:  # Just log a few blocks to avoid verbose output
+            start_date = torch_input["time_buckets"][block[0]][0]
+            end_date = torch_input["time_buckets"][block[-1]][0]
+            logger.info(f"Block {i+1}/{len(blocks)}: {len(block)} points from {start_date} to {end_date} assigned to {split_type}")
     
-    # Randomly shuffle the blocks (not the time points within blocks)
-    np.random.shuffle(month_blocks)
-    
-    # Calculate split sizes
-    test_ratio = args.test_ratio
-    val_ratio = args.test_ratio
-    total_blocks = len(month_blocks)
-    test_blocks = int(total_blocks * test_ratio)
-    val_blocks = int(total_blocks * val_ratio)
-    train_blocks = total_blocks - test_blocks - val_blocks
-    
-    # Split the blocks into train/val/test
-    test_block_indices = month_blocks[:test_blocks]
-    val_block_indices = month_blocks[test_blocks:test_blocks+val_blocks]
-    train_block_indices = month_blocks[test_blocks+val_blocks:]
-    
-    # Flatten the block indices
-    test_indices = [idx for block in test_block_indices for idx in block]
-    val_indices = [idx for block in val_block_indices for idx in block]
-    train_indices = [idx for block in train_block_indices for idx in block]
-    
-    # Sort indices within each split to maintain temporal order for sequence modeling
-    test_indices.sort()
-    val_indices.sort()
+    # Sort indices within each split to maintain temporal order
     train_indices.sort()
+    val_indices.sort()
+    test_indices.sort()
     
     logger.info(f"Data split: Train={len(train_indices)}, Val={len(val_indices)}, Test={len(test_indices)}")
     
-    # Check seasonal distribution in each split
-    train_months = [torch_input["time_buckets"][i][0].month for i in train_indices]
-    val_months = [torch_input["time_buckets"][i][0].month for i in val_indices]
-    test_months = [torch_input["time_buckets"][i][0].month for i in test_indices]
+    # Check temporal distribution in each split
+    train_dates = [torch_input["time_buckets"][i][0] for i in train_indices]
+    val_dates = [torch_input["time_buckets"][i][0] for i in val_indices]
+    test_dates = [torch_input["time_buckets"][i][0] for i in test_indices]
+    
+    # Log date ranges
+    logger.info(f"Train date range: {min(train_dates)} to {max(train_dates)}")
+    logger.info(f"Val date range: {min(val_dates)} to {max(val_dates)}")
+    logger.info(f"Test date range: {min(test_dates)} to {max(test_dates)}")
+    
+    # Check month distribution in each split
+    train_months = [date.month for date in train_dates]
+    val_months = [date.month for date in val_dates]
+    test_months = [date.month for date in test_dates]
     
     for split_name, split_months in [("Train", train_months), ("Val", val_months), ("Test", test_months)]:
         month_counts = {}
         for m in range(1, 13):
             month_counts[m] = split_months.count(m)
         logger.info(f"{split_name} set month distribution: {month_counts}")
+    
+    # Log class distribution in each split
+    train_labels = [torch_input["labels"][i].item() for i in train_indices]
+    val_labels = [torch_input["labels"][i].item() for i in val_indices]
+    test_labels = [torch_input["labels"][i].item() for i in test_indices]
+    
+    for split_name, split_labels in [("Train", train_labels), ("Val", val_labels), ("Test", test_labels)]:
+        n_work_hours = sum(split_labels)
+        n_non_work_hours = len(split_labels) - n_work_hours
+        logger.info(f"{split_name} set class distribution: Work hours={n_work_hours}, Non-work hours={n_non_work_hours}")
     
     # Extract features and labels for each set
     X_train, y_train = extract_features_labels(torch_input, train_indices, n_his=args.n_his)
@@ -229,8 +248,7 @@ def prepare_data(args):
     val_dataset = TensorDataset(X_val, y_val)
     test_dataset = TensorDataset(X_test, y_test)
     
-    # Note: for train_loader, we don't shuffle since order matters for temporal sequences
-    # The randomization is already handled at block level
+    # Create data loaders (no shuffling for sequence data)
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=False)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
     test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
