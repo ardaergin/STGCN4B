@@ -3,9 +3,10 @@ import pickle
 import torch
 import numpy as np
 import networkx as nx
+import holidays
 from rdflib import URIRef
 from typing import Dict, List, Tuple, Set, Optional, Iterable, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from collections import defaultdict
 import logging
 
@@ -46,9 +47,29 @@ class TimeSeriesPreparation:
         # Get the room adjacency matrix
         self.adjacency_matrix, self.room_uris = self.office_graph.builder.build_room_adjacency()
         
+        # Initialize Dutch holidays for the years covered by the dataset
+        self.dutch_holidays = self._initialize_dutch_holidays()
+        
         # Log initialization information
         logger.info(f"Initialized STGCNDataPreparation with {len(self.room_uris)} rooms")
         logger.info(f"Time range: {self.start_time} to {self.end_time} with {len(self.time_buckets)} buckets")
+        logger.info(f"Loaded Dutch holidays for {self.start_time.year}-{self.end_time.year}")
+
+    def _initialize_dutch_holidays(self):
+        """
+        Initialize Dutch holidays for the time range of the dataset.
+        
+        Returns:
+            holidays.HolidayBase: Dutch holiday calendar object
+        """
+        # Create Dutch holiday calendar for the years in our dataset
+        start_year = self.start_time.year
+        end_year = self.end_time.year
+        
+        # Initialize Dutch holidays (NL) for the relevant years
+        dutch_holidays = holidays.NL(years=range(start_year, end_year + 1))
+        
+        return dutch_holidays
 
     def _create_time_buckets(self) -> List[Tuple[datetime, datetime]]:
         """
@@ -226,26 +247,43 @@ class TimeSeriesPreparation:
 
     def generate_labels(self) -> np.ndarray:
         """
-        Generate labels for each time bucket based on whether it's a work hour.
+        Generate labels for each time bucket based on whether it's a work hour,
+        accounting for Dutch national holidays from the holidays package.
         
         Returns:
             numpy.ndarray: Binary labels (1 for work hour, 0 for non-work hour)
         """        
         labels = np.zeros(len(self.time_buckets), dtype=int)
         
+        # Count holidays and work hours for logging
+        holiday_hours = 0
+        
         for i, (start_time, _) in enumerate(self.time_buckets):
-            # Check if it's a weekday (0-4 is Monday-Friday)
+            # Convert datetime to date for holiday checking
+            current_date = start_time.date()
+            
+            # First check if it's a holiday
+            if current_date in self.dutch_holidays:
+                # It's a holiday, mark as non-work hour
+                labels[i] = 0
+                holiday_hours += 1
+                continue
+            
+            # If not a holiday, check if it's a weekday (0-4 is Monday-Friday)
             day_of_week = start_time.weekday()
-            # Check if it's between 9:00 and 17:00
+            
+            # Check if it's between standard Dutch office hours (9:00-17:00)
             hour_of_day = start_time.hour
             
             if (day_of_week < 5) and (9 <= hour_of_day < 17):
                 labels[i] = 1
         
-        # Log the distribution of labels
+        # Log label distribution
         work_hours = np.sum(labels)
         non_work_hours = len(labels) - work_hours
-        logger.info(f"Generated labels: {work_hours} work hours, {non_work_hours} non-work hours")
+        
+        logger.info(f"Generated labels with holiday awareness: {work_hours} work hours, {non_work_hours} non-work hours")
+        logger.info(f"Filtered out {holiday_hours} hours that fell on Dutch holidays")
         logger.info(f"Baseline accuracy: {max(work_hours, non_work_hours) / len(labels) * 100:.2f}%")
         
         return labels
@@ -273,7 +311,7 @@ class TimeSeriesPreparation:
         time_indices = list(range(len(self.time_buckets)))
         feature_matrices = self.generate_time_feature_matrices(temporal_features)
         
-        # Generate labels
+        # Generate labels with holiday awareness
         labels = self.generate_labels()
         
         # Package everything into a dictionary
