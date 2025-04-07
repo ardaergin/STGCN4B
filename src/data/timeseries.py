@@ -387,7 +387,7 @@ if __name__ == "__main__":
                         help='Include Sundays in the time buckets')
     args = parser.parse_args()
 
-    with open("data/OfficeGraph/processed_data/officegraph.pkl", "rb") as f:
+    with open("data/processed/officegraph.pkl", "rb") as f:
         office_graph = pickle.load(f)
     
     data_prep = TimeSeriesPreparation(office_graph, use_sundays=args.use_sundays)
@@ -397,6 +397,6 @@ if __name__ == "__main__":
     device = torch.device('cpu') # must move the files to cuda later!
     torch_input = data_prep.convert_to_torch_tensors(stgcn_input, device=device)
 
-    save_path = os.path.join("data", "OfficeGraph", "processed_data", "torch_input.pt")
+    save_path = os.path.join("data", "processed", "torch_input.pt")
     torch.save(torch_input, save_path)
     print(f"Saved torch_input to {save_path}")

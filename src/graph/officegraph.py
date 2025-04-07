@@ -18,7 +18,7 @@ from ..utils.ttl_loader import (
 class OfficeGraph:
     """Class to represent and manipulate the IoT Office Graph."""
    
-    def __init__(self, base_dir = 'data/OfficeGraph', 
+    def __init__(self, base_dir = 'data', 
                  load_only_7th_floor: bool = True, add_enrichments: bool = False):
         """Initialize the OfficeGraph object."""
         # Main RDF graph

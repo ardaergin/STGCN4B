@@ -11,8 +11,8 @@ class FloorDeviceRetriever:
     """
 
     def __init__(self,
-                 devices_root_dir: str = "data/OfficeGraph/devices",
-                 enrichment_ttl_path: str = "data/OfficeGraph/enrichments/devices_in_rooms_enrichment.ttl"):
+                 devices_root_dir: str = "data/devices",
+                 enrichment_ttl_path: str = "data/enrichments/devices_in_rooms_enrichment.ttl"):
         """
         :param devices_root_dir: Root path where device TTL files live.
         :param enrichment_ttl_path: Path to the 'devices_in_rooms_enrichment.ttl' file.
@@ -188,7 +188,7 @@ class FloorDeviceRetriever:
         Given a set of TTL filenames, return their full paths under devices_root_dir.
 
         :param filenames: e.g. {"C2E886.ttl", "urn_Device_SmartThings_xxx.ttl"}
-        :return: List of full paths like ["data/OfficeGraph/devices/thermostats/C2E886.ttl", ...]
+        :return: List of full paths like ["data/devices/thermostats/C2E886.ttl", ...]
         """
         matches = []
         for subdir, _, files in os.walk(self.devices_root_dir):

@@ -44,7 +44,7 @@ class OfficeGraphBuilder:
         
         print(f"Created mappings for {len(self.room_number_to_uri)} rooms")
     
-    def load_floor_plan(self, csv_path: str = "data/OfficeGraph/floor_plan/floor_7.csv") -> None:
+    def load_floor_plan(self, csv_path: str = "data/floor_plan/floor_7.csv") -> None:
         """
         Load floor plan data from CSV and create new Room instances if they don't exist.
         

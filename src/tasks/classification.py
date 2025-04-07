@@ -14,8 +14,8 @@ from torch.utils.data import DataLoader, TensorDataset
 import scipy.sparse as sp
 
 # Import our STGCN implementation
-from .utils import prepare_graph_data
-from .models import STGCNChebGraphConv, STGCNGraphConv
+from ..utils import prepare_graph_data
+from ..models.stgcn import STGCNChebGraphConv, STGCNGraphConv
 
 # Set up logging
 logging.basicConfig(
@@ -66,7 +66,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description='STGCN for OfficeGraph Classification')
     
     # Data parameters
-    parser.add_argument('--data_dir', type=str, default='data/OfficeGraph', 
+    parser.add_argument('--data_dir', type=str, default='data', 
                         help='Path to OfficeGraph data directory')
     parser.add_argument('--start_time', type=str, default='2022-03-01 00:00:00', 
                         help='Start time for analysis')
@@ -138,7 +138,7 @@ def prepare_data(args):
     logger.info("Loading processed OfficeGraph data...")
     
     # Load the pre-processed torch input
-    torch_input_path = os.path.join(args.data_dir, "processed_data", "torch_input.pt")
+    torch_input_path = os.path.join(args.data_dir, "processed", "torch_input.pt")
     logger.info(f"Loading torch input from {torch_input_path}")
     
     # Load on CPU first
