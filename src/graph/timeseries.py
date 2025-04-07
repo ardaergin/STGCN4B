@@ -18,9 +18,10 @@ class TimeSeriesPreparation:
     """
     
     def __init__(self, office_graph, 
-                 start_time: str = "2022-03-01 00:00:00",
-                 end_time: str = "2023-01-30 00:00:00",
-                 interval_hours: int = 1):
+                start_time: str = "2022-03-01 00:00:00",
+                end_time: str = "2023-01-30 00:00:00",
+                interval_hours: int = 1,
+                use_sundays: bool = False):
         """
         Initialize with an OfficeGraph instance.
         
@@ -29,11 +30,13 @@ class TimeSeriesPreparation:
             start_time: Start time for analysis in format "YYYY-MM-DD HH:MM:SS"
             end_time: End time for analysis in format "YYYY-MM-DD HH:MM:SS"
             interval_hours: Size of time buckets in hours
+            use_sundays: Whether to include Sundays in time buckets (default: False)
         """
         self.office_graph = office_graph
         self.start_time = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
         self.end_time = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
         self.interval_hours = interval_hours
+        self.use_sundays = use_sundays
         
         # Property types to ignore completely
         self.ignored_property_types: Set[str] = {"DeviceStatus", "BatteryLevel"}
@@ -74,6 +77,7 @@ class TimeSeriesPreparation:
     def _create_time_buckets(self) -> List[Tuple[datetime, datetime]]:
         """
         Create time buckets from start_time to end_time with interval_hours.
+        Optionally excludes Sundays.
         
         Returns:
             List of (start_time, end_time) tuples for each bucket
@@ -83,11 +87,17 @@ class TimeSeriesPreparation:
         
         while current_time < self.end_time:
             bucket_end = current_time + timedelta(hours=self.interval_hours)
-            time_buckets.append((current_time, bucket_end))
+            
+            # Check if we should include this bucket (skip if it's Sunday and use_sundays is False)
+            if self.use_sundays or current_time.weekday() != 6:  # 6 is Sunday in Python's datetime
+                time_buckets.append((current_time, bucket_end))
+            
             current_time = bucket_end
             
+        logger.info(f"Created {len(time_buckets)} time buckets" + 
+                (" (excluding Sundays)" if not self.use_sundays else ""))
+        
         return time_buckets
-
     def prepare_feature_matrix(self) -> Tuple[np.ndarray, List[URIRef], List[str]]:
         """
         Create a feature matrix for rooms with properties as features.
@@ -368,12 +378,19 @@ class TimeSeriesPreparation:
 
         return torch_input
 
+
 if __name__ == "__main__":
+    # Add argument parsing if needed
+    import argparse
+    parser = argparse.ArgumentParser(description='Prepare OfficeGraph data for STGCN')
+    parser.add_argument('--use_sundays', action='store_true', 
+                        help='Include Sundays in the time buckets')
+    args = parser.parse_args()
 
     with open("data/OfficeGraph/processed_data/officegraph.pkl", "rb") as f:
         office_graph = pickle.load(f)
     
-    data_prep = TimeSeriesPreparation(office_graph)
+    data_prep = TimeSeriesPreparation(office_graph, use_sundays=args.use_sundays)
     stgcn_input = data_prep.prepare_stgcn_input()
 
     # Convert to torch tensors

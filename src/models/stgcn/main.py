@@ -76,6 +76,8 @@ def parse_args():
                         help='Size of time buckets in hours')
     parser.add_argument('--output_dir', type=str, default='./output', 
                         help='Directory to save results')
+    parser.add_argument('--include_sundays', action='store_true',
+                        help='Include Sundays in the time blocks (default: False)')    
     
     # Model parameters
     parser.add_argument('--n_his', type=int, default=12, 
@@ -157,9 +159,14 @@ def prepare_data(args):
     time_indices = sorted(torch_input["time_indices"])
     total_samples = len(time_indices)
     
-    # Define block size (1 week of hourly data)
-    block_size = 24 * 7
-    
+    # Define block size based on whether to include Sundays
+    if args.include_sundays:
+        block_size = 24 * 7  # Full week
+        logger.info("Using 7-day blocks (including Sundays)")
+    else:
+        block_size = 24 * 6  # Excluding Sundays
+        logger.info("Using 6-day blocks (excluding Sundays)")
+
     # Create blocks of contiguous time points
     blocks = []
     for i in range(0, len(time_indices), block_size):
