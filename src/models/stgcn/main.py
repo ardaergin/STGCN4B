@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
-from sklearn.metrics import roc_auc_score, average_precision_score
+from sklearn.metrics import roc_auc_score, average_precision_score, balanced_accuracy_score, precision_recall_curve
 from torch.utils.data import DataLoader, TensorDataset
 import scipy.sparse as sp
 
@@ -502,9 +502,49 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping, tr
     return model, history
 
 
-def evaluate_model(model, criterion, test_loader):
-    """Evaluate the trained model on the test set with balanced metrics."""
-    logger.info("Evaluating model on test set...")
+def find_optimal_threshold(model, val_loader):
+    """Find the optimal classification threshold using validation data."""
+    logger.info("Finding optimal threshold on validation set...")
+    
+    model.eval()
+    all_probs = []
+    all_labels = []
+    
+    with torch.no_grad():
+        for X_batch, y_batch in val_loader:
+            # Forward pass
+            outputs = model(X_batch).squeeze()
+            
+            # Store probabilities and labels
+            probs = torch.sigmoid(outputs)
+            all_probs.extend(probs.cpu().numpy())
+            all_labels.extend(y_batch.cpu().numpy())
+    
+    # Find optimal threshold on validation set
+    precisions, recalls, thresholds = precision_recall_curve(all_labels, all_probs)
+    
+    # Compute F1 scores for each threshold
+    f1_scores = []
+    for p, r in zip(precisions, recalls):
+        if p + r == 0:
+            f1_scores.append(0)
+        else:
+            f1_scores.append(2 * p * r / (p + r))
+    
+    # Find threshold that maximizes F1 score
+    if len(thresholds) > 0:
+        optimal_idx = np.argmax(f1_scores[:-1])  # Last element doesn't have a threshold
+        optimal_threshold = thresholds[optimal_idx]
+    else:
+        optimal_threshold = 0.5  # Default if no threshold found
+    
+    logger.info(f"Optimal classification threshold: {optimal_threshold:.4f}")
+    return optimal_threshold
+
+
+def evaluate_model(model, criterion, test_loader, threshold=0.5):
+    """Evaluate the trained model on the test set with a pre-determined threshold."""
+    logger.info(f"Evaluating model on test set using threshold: {threshold:.4f}...")
     
     device = next(model.parameters()).device
     model.eval()
@@ -530,27 +570,6 @@ def evaluate_model(model, criterion, test_loader):
     # Average test loss
     test_loss = test_loss / len(test_loader.dataset)
     
-    # Find optimal threshold on test set
-    from sklearn.metrics import precision_recall_curve, balanced_accuracy_score
-    precisions, recalls, thresholds = precision_recall_curve(all_labels, all_probs)
-    
-    # Compute F1 scores for each threshold
-    f1_scores = []
-    for p, r in zip(precisions, recalls):
-        if p + r == 0:
-            f1_scores.append(0)
-        else:
-            f1_scores.append(2 * p * r / (p + r))
-    
-    # Find threshold that maximizes F1 score
-    if len(thresholds) > 0:
-        optimal_idx = np.argmax(f1_scores[:-1])  # Last element of precisions/recalls doesn't have a threshold
-        optimal_threshold = thresholds[optimal_idx]
-    else:
-        optimal_threshold = 0.5  # Default if no threshold found
-    
-    logger.info(f"Optimal classification threshold: {optimal_threshold:.4f}")
-    
     # AUC scores
     try:
         roc_auc = roc_auc_score(all_labels, all_probs)
@@ -563,8 +582,8 @@ def evaluate_model(model, criterion, test_loader):
     logger.info(f"AUC-ROC: {roc_auc:.4f}")
     logger.info(f"AUC-PR (Average Precision): {ap_score:.4f}")
 
-    # Apply threshold to get predictions
-    all_preds = [1 if prob >= optimal_threshold else 0 for prob in all_probs]
+    # Apply the pre-determined threshold to get predictions
+    all_preds = [1 if prob >= threshold else 0 for prob in all_probs]
     
     # Calculate metrics
     accuracy = accuracy_score(all_labels, all_preds)
@@ -589,7 +608,7 @@ def evaluate_model(model, criterion, test_loader):
         'predictions': all_preds,
         'labels': all_labels,
         'probabilities': all_probs,
-        'threshold': optimal_threshold
+        'threshold': threshold
     }
 
     logger.info(f"Test Loss: {test_loss:.4f}")
