@@ -1,3 +1,5 @@
+# from https://github.com/hazdzz/stgcn/blob/main/model/layers.py
+
 import math
 import torch
 import torch.nn as nn
@@ -21,6 +23,21 @@ class Align(nn.Module):
             x = x
         
         return x
+
+class CausalConv1d(nn.Conv1d):
+    def __init__(self, in_channels, out_channels, kernel_size, stride=1, enable_padding=False, dilation=1, groups=1, bias=True):
+        if enable_padding == True:
+            self.__padding = (kernel_size - 1) * dilation
+        else:
+            self.__padding = 0
+        super(CausalConv1d, self).__init__(in_channels, out_channels, kernel_size=kernel_size, stride=stride, padding=self.__padding, dilation=dilation, groups=groups, bias=bias)
+
+    def forward(self, input):
+        result = super(CausalConv1d, self).forward(input)
+        if self.__padding != 0:
+            return result[: , : , : -self.__padding]
+        
+        return result
 
 class CausalConv2d(nn.Conv2d):
     def __init__(self, in_channels, out_channels, kernel_size, stride=1, enable_padding=False, dilation=1, groups=1, bias=True):
@@ -52,6 +69,18 @@ class TemporalConvLayer(nn.Module):
         n_vertex: Number of vertices (rooms/nodes in graph)
         act_func: Activation function ('glu', 'gtu', 'relu', 'silu')
     """
+    
+    # Temporal Convolution Layer (GLU)
+    #
+    #        |--------------------------------| * residual connection *
+    #        |                                |
+    #        |    |--->--- casualconv2d ----- + -------|       
+    # -------|----|                                   ⊙ ------>
+    #             |--->--- casualconv2d --- sigmoid ---|                               
+    #
+    
+    # param x: tensor, [bs, c_in, ts, n_vertex]
+
     def __init__(self, Kt, c_in, c_out, n_vertex, act_func):
         super(TemporalConvLayer, self).__init__()
         self.Kt = Kt
@@ -74,12 +103,22 @@ class TemporalConvLayer(nn.Module):
         if self.act_func == 'glu' or self.act_func == 'gtu':
             x_p = x_causal_conv[:, : self.c_out, :, :]
             x_q = x_causal_conv[:, -self.c_out:, :, :]
-
+            
+            # GLU: (x_p + x_in) ⊙ sigmoid(x_q)
             if self.act_func == 'glu':
-                # GLU: (x_p + x_in) ⊙ sigmoid(x_q)
+                # Explanation of Gated Linear Units (GLU):
+                # The concept of GLU was first introduced in the paper 
+                # "Language Modeling with Gated Convolutional Networks". 
+                # URL: https://arxiv.org/abs/1612.08083
+                # In the GLU operation, the input tensor X is divided into two tensors, X_a and X_b, 
+                # along a specific dimension.
+                # In PyTorch, GLU is computed as the element-wise multiplication of X_a and sigmoid(X_b).
+                # More information can be found here: https://pytorch.org/docs/master/nn.functional.html#torch.nn.functional.glu
+                # The provided code snippet, (x_p + x_in) ⊙ sigmoid(x_q), is an example of GLU operation. 
                 x = torch.mul((x_p + x_in), torch.sigmoid(x_q))
+            
+            # GTU: tanh(x_p + x_in) ⊙ sigmoid(x_q)
             else:
-                # GTU: tanh(x_p + x_in) ⊙ sigmoid(x_q)
                 x = torch.mul(torch.tanh(x_p + x_in), torch.sigmoid(x_q))
 
         elif self.act_func == 'relu':

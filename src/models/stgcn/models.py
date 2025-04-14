@@ -1,3 +1,23 @@
+# from https://github.com/hazdzz/stgcn/blob/main/model/models.py
+
+"""
+STGCN model with support for both prediction and classification tasks.
+
+This script is a modified version of the original models.py from
+https://github.com/hazdzz/stgcn/blob/main/model/models.py
+
+Main modifications:
+- Added support for both prediction and classification tasks via task_type parameter
+- Added global pooling and optional classifier for classification tasks
+- Modified forward method to conditionally process outputs based on task type
+- For prediction: returns spatial-temporal predictions [batch, channel, time, vertex]
+- For classification: returns class predictions [batch, num_classes]
+
+Usage:
+- For prediction: model = STGCNChebGraphConv(..., task_type='prediction')
+- For classification: model = STGCNChebGraphConv(..., task_type='classification', num_classes=N)
+"""
+
 import torch
 import torch.nn as nn
 from .layers import STConvBlock, OutputBlock
@@ -5,18 +25,22 @@ from .layers import STConvBlock, OutputBlock
 class STGCNChebGraphConv(nn.Module):
     """
     Spatio-Temporal Graph Convolutional Network with Chebyshev graph convolution.
+    Supports both prediction and classification tasks.
     
     Args:
         args: Model arguments
         blocks: List of channel configurations for each block
         n_vertex: Number of vertices (rooms)
         gso: Graph shift operator (normalized Laplacian)
+        task_type: 'prediction' or 'classification'
+        num_classes: Number of classes (only used for classification task)
     """
-    def __init__(self, args, blocks, n_vertex, gso):
+    def __init__(self, args, blocks, n_vertex, gso, task_type='prediction', num_classes=None):
         super(STGCNChebGraphConv, self).__init__()
         self.blocks = blocks
         self.n_vertex = n_vertex
         self.gso = gso
+        self.task_type = task_type
         
         # Build STGCN blocks (TGTND TGTND TNFF structure)
         modules = []
@@ -32,7 +56,7 @@ class STGCNChebGraphConv(nn.Module):
         Ko = args.n_his - (len(blocks) - 3) * 2 * (args.Kt - 1)
         self.Ko = Ko
         
-        # Output block
+        # Output block for prediction task
         if self.Ko > 1:
             self.output = OutputBlock(
                 Ko, blocks[-3][-1], blocks[-2], blocks[-1][0], 
@@ -45,9 +69,14 @@ class STGCNChebGraphConv(nn.Module):
             self.relu = nn.ReLU()
             self.dropout = nn.Dropout(p=args.droprate)
         
-        # Final pooling layer to convert from [batch, 1, time, vertex] to [batch, 1]
-        # For binary classification task
-        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+        # Additional layers for classification task
+        if task_type == 'classification':
+            if num_classes is None:
+                num_classes = 1  # Default to binary classification
+            self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+            # Optional additional classification layer for multi-class
+            if num_classes > 1:
+                self.classifier = nn.Linear(blocks[-1][0], num_classes)
 
     def forward(self, x):
         """
@@ -57,7 +86,8 @@ class STGCNChebGraphConv(nn.Module):
             x: Input tensor [batch_size, features, time_steps, n_vertex]
             
         Returns:
-            x: Output tensor [batch_size, 1] for binary classification
+            For prediction: Output tensor [batch_size, pred_len, time_steps, n_vertex]
+            For classification: Output tensor [batch_size, num_classes]
         """
         # Pass through ST blocks
         x = self.st_blocks(x)
@@ -71,27 +101,37 @@ class STGCNChebGraphConv(nn.Module):
             x = self.dropout(x)
             x = self.fc2(x).permute(0, 3, 1, 2)
         
-        # Global pooling to get final classification output
-        x = self.global_pool(x).squeeze(-1).squeeze(-1)
-        
-        return x
+        # Different output processing based on task type
+        if self.task_type == 'classification':
+            # Global pooling to get final classification output
+            x = self.global_pool(x).squeeze(-1).squeeze(-1)
+            # Apply classifier for multi-class if needed
+            if hasattr(self, 'classifier'):
+                x = self.classifier(x)
+            return x
+        else:  # prediction task
+            return x  # Return spatial-temporal predictions
 
 
 class STGCNGraphConv(nn.Module):
     """
     Spatio-Temporal Graph Convolutional Network with simple graph convolution.
+    Supports both prediction and classification tasks.
     
     Args:
         args: Model arguments
         blocks: List of channel configurations for each block
         n_vertex: Number of vertices (rooms)
         gso: Graph shift operator (normalized adjacency)
+        task_type: 'prediction' or 'classification'
+        num_classes: Number of classes (only used for classification task)
     """
-    def __init__(self, args, blocks, n_vertex, gso):
+    def __init__(self, args, blocks, n_vertex, gso, task_type='prediction', num_classes=None):
         super(STGCNGraphConv, self).__init__()
         self.blocks = blocks
         self.n_vertex = n_vertex
         self.gso = gso
+        self.task_type = task_type
         
         # Build STGCN blocks (TGTND TGTND TNFF structure)
         modules = []
@@ -107,7 +147,7 @@ class STGCNGraphConv(nn.Module):
         Ko = args.n_his - (len(blocks) - 3) * 2 * (args.Kt - 1)
         self.Ko = Ko
         
-        # Output block
+        # Output block for prediction task
         if self.Ko > 1:
             self.output = OutputBlock(
                 Ko, blocks[-3][-1], blocks[-2], blocks[-1][0], 
@@ -120,9 +160,14 @@ class STGCNGraphConv(nn.Module):
             self.relu = nn.ReLU()
             self.dropout = nn.Dropout(p=args.droprate)
         
-        # Final pooling layer to convert from [batch, 1, time, vertex] to [batch, 1]
-        # For binary classification task
-        self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+        # Additional layers for classification task
+        if task_type == 'classification':
+            if num_classes is None:
+                num_classes = 1  # Default to binary classification
+            self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
+            # Optional additional classification layer for multi-class
+            if num_classes > 1:
+                self.classifier = nn.Linear(blocks[-1][0], num_classes)
 
     def forward(self, x):
         """
@@ -132,7 +177,8 @@ class STGCNGraphConv(nn.Module):
             x: Input tensor [batch_size, features, time_steps, n_vertex]
             
         Returns:
-            x: Output tensor [batch_size, 1] for binary classification
+            For prediction: Output tensor [batch_size, pred_len, time_steps, n_vertex]
+            For classification: Output tensor [batch_size, num_classes]
         """
         # Pass through ST blocks
         x = self.st_blocks(x)
@@ -146,7 +192,13 @@ class STGCNGraphConv(nn.Module):
             x = self.dropout(x)
             x = self.fc2(x).permute(0, 3, 1, 2)
         
-        # Global pooling to get final classification output
-        x = self.global_pool(x).squeeze(-1).squeeze(-1)
-        
-        return x
+        # Different output processing based on task type
+        if self.task_type == 'classification':
+            # Global pooling to get final classification output
+            x = self.global_pool(x).squeeze(-1).squeeze(-1)
+            # Apply classifier for multi-class if needed
+            if hasattr(self, 'classifier'):
+                x = self.classifier(x)
+            return x
+        else:  # prediction task
+            return x  # Return spatial-temporal predictions
