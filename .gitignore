@@ -2,3 +2,5 @@
 /.venv
 /data
 *.pyc
+/output
+scrapbook.ipynb
