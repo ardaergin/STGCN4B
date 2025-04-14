@@ -12,14 +12,17 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+from ..graph import OfficeGraph
+
 class TimeSeriesPreparation:
     """
     Class to prepare OfficeGraph data for time series modeling.
     """
     
-    def __init__(self, office_graph, 
+    def __init__(self, 
+                office_graph: OfficeGraph, 
                 start_time: str = "2022-03-01 00:00:00",
-                end_time: str = "2023-01-30 00:00:00",
+                end_time: str = "2023-01-31 00:00:00",
                 interval_hours: int = 1,
                 use_sundays: bool = False):
         """
@@ -98,6 +101,7 @@ class TimeSeriesPreparation:
                 (" (excluding Sundays)" if not self.use_sundays else ""))
         
         return time_buckets
+    
     def prepare_feature_matrix(self) -> Tuple[np.ndarray, List[URIRef], List[str]]:
         """
         Create a feature matrix for rooms with properties as features.
@@ -255,7 +259,7 @@ class TimeSeriesPreparation:
         logger.info(f"Generated feature matrices for {len(feature_matrices)} time buckets")
         return feature_matrices
 
-    def generate_labels(self) -> np.ndarray:
+    def get_labels_for_classification(self) -> np.ndarray:
         """
         Generate labels for each time bucket based on whether it's a work hour,
         accounting for Dutch national holidays from the holidays package.
@@ -298,7 +302,37 @@ class TimeSeriesPreparation:
         
         return labels
     
-    def prepare_stgcn_input(self) -> Dict[str, Any]:
+    def get_values_for_forecasting(self, consumption_dir) -> Dict[int, float]:
+        """
+        Load and process consumption data, aligning it with existing time buckets.
+        
+        Args:
+            consumption_dir: Directory containing consumption CSV files
+            
+        Returns:
+            Dictionary mapping time bucket index to consumption value
+        """
+        from .consumption import load_consumption_files, aggregate_consumption_to_hourly
+        
+        logger.info(f"Loading consumption data from {consumption_dir}")
+        
+        # Load consumption files
+        consumption_data = load_consumption_files(
+            consumption_dir, 
+            self.start_time, 
+            self.end_time
+        )
+        
+        # Aggregate to match time buckets
+        bucket_consumption = aggregate_consumption_to_hourly(
+            consumption_data, 
+            self.time_buckets
+        )
+        
+        logger.info(f"Processed consumption data for {len(bucket_consumption)} time buckets")
+        return bucket_consumption
+
+    def prepare_stgcn_input(self, task_type='classification', consumption_dir=None) -> Dict[str, Any]:
         """
         Prepare all necessary inputs for a STGCN model.
                 
@@ -312,7 +346,7 @@ class TimeSeriesPreparation:
                 - labels: Array of binary labels for each time bucket
                 - time_buckets: List of (start_time, end_time) tuples
         """  
-        logger.info("Preparing STGCN input...")
+        logger.info(f"Preparing STGCN input for {task_type} task...")
         
         # Aggregate temporal features
         temporal_features = self.aggregate_temporal_features()
@@ -320,10 +354,7 @@ class TimeSeriesPreparation:
         # Generate time-aware feature matrices
         time_indices = list(range(len(self.time_buckets)))
         feature_matrices = self.generate_time_feature_matrices(temporal_features)
-        
-        # Generate labels with holiday awareness
-        labels = self.generate_labels()
-        
+                
         # Package everything into a dictionary
         stgcn_input = {
             "adjacency_matrix": self.adjacency_matrix,
@@ -331,10 +362,18 @@ class TimeSeriesPreparation:
             "property_types": self.used_property_types,
             "feature_matrices": feature_matrices,
             "time_indices": time_indices,
-            "labels": labels,
-            "time_buckets": self.time_buckets
+            "time_buckets": self.time_buckets,
+            "task_type": task_type
         }
-        
+
+        # Generate labels with holiday awareness (if classification task)
+        if task_type == 'classification':
+            stgcn_input["labels"] = self.get_labels_for_classification()
+        elif task_type == 'forecasting':
+            if consumption_dir is None:
+                raise ValueError("consumption_dir is required for forecasting task")
+            stgcn_input["values"] = self.get_values_for_forecasting(consumption_dir)
+            
         logger.info("STGCN input preparation complete")
         return stgcn_input
     
@@ -363,11 +402,21 @@ class TimeSeriesPreparation:
                                                                     dtype=torch.float32, 
                                                                     device=device)
         
-        # Convert labels
-        torch_input["labels"] = torch.tensor(stgcn_input["labels"], 
-                                           dtype=torch.long,
-                                           device=device)
-        
+        # Classification task:
+        if "labels" in stgcn_input:
+            torch_input["labels"] = torch.tensor(stgcn_input["labels"], 
+                                            dtype=torch.long,
+                                            device=device)
+        # Forecasting task:
+        if "values" in stgcn_input:
+            consumption = np.zeros(len(stgcn_input["time_indices"]))
+            for idx, value in stgcn_input["values"].items():
+                consumption[idx] = value
+                
+            torch_input["values"] = torch.tensor(consumption,
+                                                    dtype=torch.float32,
+                                                    device=device)
+
         # Copy non-tensor data
         torch_input["room_uris"] = stgcn_input["room_uris"]
         torch_input["property_types"] = stgcn_input["property_types"]
@@ -380,23 +429,43 @@ class TimeSeriesPreparation:
 
 
 if __name__ == "__main__":
-    # Add argument parsing if needed
+
+    ### Argument parsing ###
     import argparse
     parser = argparse.ArgumentParser(description='Prepare OfficeGraph data for STGCN')
+
+    parser.add_argument('--task_type', type=str, default='classification',
+                        choices=['classification', 'forecasting'],
+                        help='Task type: classification or forecasting')
+
     parser.add_argument('--use_sundays', action='store_true', 
                         help='Include Sundays in the time buckets')
+    
+    parser.add_argument('--consumption_dir', type=str, default='data/consumption',
+                        help='Directory containing consumption CSV files (for forecasting task)')
+    
     args = parser.parse_args()
 
     with open("data/processed/officegraph.pkl", "rb") as f:
         office_graph = pickle.load(f)
     
     data_prep = TimeSeriesPreparation(office_graph, use_sundays=args.use_sundays)
-    stgcn_input = data_prep.prepare_stgcn_input()
+
+    # Prepare input based on task type
+    if args.task_type == 'classification':
+        stgcn_input = data_prep.prepare_stgcn_input(task_type=args.task_type)
+    else:  # forecasting
+        stgcn_input = data_prep.prepare_stgcn_input(
+            task_type=args.task_type,
+            consumption_dir=args.consumption_dir
+        )
 
     # Convert to torch tensors
-    device = torch.device('cpu') # must move the files to cuda later!
+    device = torch.device('cpu')  # must move the files to cuda later!
     torch_input = data_prep.convert_to_torch_tensors(stgcn_input, device=device)
 
-    save_path = os.path.join("data", "processed", "torch_input.pt")
+    # Save with task type in filename
+    file_name = f"torch_input_for_{args.task_type}.pt"
+    save_path = os.path.join("data", "processed", file_name)
     torch.save(torch_input, save_path)
     print(f"Saved torch_input to {save_path}")

@@ -1,1 +1,2 @@
-from timeseries import *
+from .timeseries import *
+from .consumption import *
