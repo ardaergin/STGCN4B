@@ -13,7 +13,7 @@ def parse_base_args(parser=None):
     parser.add_argument('--model', type=str, default='stgcn',
                       choices=['stgcn', 'astgcn'], 
                       help='Model type')
-    parser.add_argument('--task', type=str, default='classification',
+    parser.add_argument('--task_type', type=str, default='classification',
                       choices=['classification', 'forecasting'], 
                       help='Task type')
 
