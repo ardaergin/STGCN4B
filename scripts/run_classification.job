@@ -39,10 +39,10 @@ mkdir -p $TMPDIR/data/processed
 
 # Copy data to scratch (fast local disk)
 echo "Copying data to scratch space..."
-cp $HOME/eSTGNN/data/processed/torch_input.pt $TMPDIR/data/processed/
+cp $HOME/eSTGNN/data/processed/torch_input_for_classification.pt $TMPDIR/data/processed/
 
 # Check if data copy succeeded
-if [ ! -f "$TMPDIR/data/processed/torch_input.pt" ]; then
+if [ ! -f "$TMPDIR/data/processed/torch_input_for_classification.pt" ]; then
   echo "ERROR: Failed to copy data file"
   exit 1
 fi
@@ -70,7 +70,9 @@ echo "Cleaning up scratch space..."
 rm -rf $TMPDIR/data
 
 # Move SLURM logs into job-specific output directory
-mv output/classification/slurm_output_${SLURM_JOB_ID}.out $OUTPUT_DIR/slurm_output.out
-mv output/classification/slurm_error_${SLURM_JOB_ID}.err $OUTPUT_DIR/slurm_error.err
+if [ -d "$OUTPUT_DIR" ]; then
+  mv output/classification/slurm_output_${SLURM_JOB_ID}.out $OUTPUT_DIR/slurm_output.out
+  mv output/classification/slurm_error_${SLURM_JOB_ID}.err $OUTPUT_DIR/slurm_error.err
+fi
 
 echo "Job completed successfully!"
