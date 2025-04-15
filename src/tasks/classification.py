@@ -1,3 +1,5 @@
+# src/tasks/classification.py
+
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 
@@ -27,7 +29,7 @@ from ..config import parse_args
 from ..models.stgcn import STGCNChebGraphConv, STGCNGraphConv, EarlyStopping
 
 # Import other modules
-from ..data import prepare_data
+from ..data import load_and_split_data
 
 def setup_model(args, data, train_loader=None):
     """Set up the STGCN model and training components with class imbalance handling."""
@@ -432,7 +434,7 @@ def main():
         torch.cuda.manual_seed(args.seed)
     
     # Prepare data
-    data = prepare_data(args)
+    data = load_and_split_data(args)
     
     # Setup model with class weighting
     model, criterion, optimizer, scheduler, early_stopping = setup_model(
