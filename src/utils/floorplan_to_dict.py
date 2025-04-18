@@ -2,14 +2,18 @@ import xml.etree.ElementTree as ET
 import re
 import numpy as np
 from svg.path import parse_path, Line
+import os
+import argparse
 
-def svg_to_room_polygons(svg_file_path, sample_density=10):
+
+def svg_to_room_polygons(svg_file_path, sample_density=10, floor_name=None):
     """
     Extract room polygons from an SVG file created in Inkscape.
     
     Args:
         svg_file_path (str): Path to the SVG file
         sample_density (int): Number of points to sample per curve segment
+        floor_name (str, optional): Name to prefix to room identifiers
         
     Returns:
         dict: Dictionary with room names as keys and polygon points as values
@@ -36,7 +40,7 @@ def svg_to_room_polygons(svg_file_path, sample_density=10):
     
     if rooms_layer is None:
         # If no specific "rooms" layer, raise an error
-        raise ValueError("No 'rooms' layer found in the SVG file.")
+        raise ValueError(f"No 'rooms' layer found in the SVG file: {svg_file_path}")
     
     # Dictionary to store room polygons
     room_polygons = {}
@@ -53,6 +57,12 @@ def svg_to_room_polygons(svg_file_path, sample_density=10):
         # If still no name, use a default
         if not room_name:
             room_name = f"Room_{len(room_polygons) + 1}"
+        
+        # If floor_name is provided, prefix the room name
+        if floor_name:
+            # If room already has floor prefix (like "7.066"), don't add floor name
+            if not room_name.startswith(f"{floor_name}."):
+                room_name = f"{floor_name}_{room_name}"
         
         # Get the path data
         path_data = path_elem.get('d')
@@ -93,7 +103,7 @@ def svg_to_room_polygons(svg_file_path, sample_density=10):
             room_polygons[room_name] = unique_points
             
         except Exception as e:
-            print(f"Error parsing path for room {room_name}: {e}")
+            print(f"Error parsing path for room {room_name} in {svg_file_path}: {e}")
             # Try a more basic approach as fallback
             try:
                 # Extract vertices from path data using regex
@@ -148,10 +158,11 @@ def svg_to_room_polygons(svg_file_path, sample_density=10):
                 
                 room_polygons[room_name] = vertices
             except Exception as e2:
-                print(f"Failed to parse path for room {room_name} using fallback method: {e2}")
+                print(f"Failed to parse path for room {room_name} in {svg_file_path} using fallback method: {e2}")
                 continue
     
     return room_polygons
+
 
 def simplify_polygon(polygon, epsilon=0.0):
     """
@@ -221,37 +232,128 @@ def simplify_polygon(polygon, epsilon=0.0):
     indices = rdp(polygon, epsilon)
     return [polygon[i] for i in indices]
 
-def save_room_polygons(room_polygons, output_file):
+
+def save_room_polygons(all_floors, output_file):
     """
-    Save room polygons dictionary to a Python file.
+    Save room polygons dictionary to a Python file with separate dictionaries for each floor.
     
     Args:
-        room_polygons (dict): Dictionary with room names as keys and polygon points as values
+        all_floors (dict): Dictionary with floor names as keys and room polygon dicts as values
         output_file (str): Path to the output Python file
     """
     with open(output_file, 'w') as f:
-        f.write("# Room polygons extracted from SVG floor plan\n\n")
-        f.write("room_polygons = {\n")
+        f.write("# Room polygons extracted from SVG floor plans\n\n")
         
-        for room_name, points in room_polygons.items():
-            f.write(f"    '{room_name}': [\n")
-            for point in points:
-                f.write(f"        ({point[0]}, {point[1]}),\n")
-            f.write("    ],\n")
+        # Write each floor as a separate dictionary
+        for floor_name, room_polygons in all_floors.items():
+            f.write(f"{floor_name} = {{\n")
+            
+            for room_name, points in room_polygons.items():
+                f.write(f"    '{room_name}': [\n")
+                for point in points:
+                    f.write(f"        ({point[0]}, {point[1]}),\n")
+                f.write("    ],\n")
+            
+            f.write("}\n\n")
         
+        # Create a master dictionary that contains all floors
+        f.write("# Master dictionary containing all floors\n")
+        f.write("all_floors = {\n")
+        for floor_name in all_floors.keys():
+            f.write(f"    '{floor_name}': {floor_name},\n")
         f.write("}\n")
 
-# Example usage
+
+def process_svg_directory(directory_path, output_file, epsilon=0.0):
+    """
+    Process all SVG files in a directory and create a nested dictionary structure.
+    
+    Args:
+        directory_path (str): Path to directory containing SVG files
+        output_file (str): Path to output Python file
+        epsilon (float): Simplification epsilon
+        
+    Returns:
+        dict: Dictionary containing floor dictionaries
+    """
+    # Dictionary to store all floor polygons
+    all_floors = {}
+    file_count = 0
+    room_count = 0
+    
+    # List all files in the directory
+    for filename in os.listdir(directory_path):
+        if filename.lower().endswith('.svg'):
+            file_path = os.path.join(directory_path, filename)
+            
+            # Extract floor name and number from the filename 
+            base_name = os.path.splitext(filename)[0]
+            
+            # Try to extract floor number from name like "floor_7" or "floor7"
+            floor_number = None
+            match = re.search(r'floor[_-]?(\d+)', base_name, re.IGNORECASE)
+            if match:
+                floor_number = match.group(1)
+                floor_var_name = f"floor_{floor_number}"
+            else:
+                # If no floor number pattern found, use the whole filename
+                floor_var_name = base_name
+            
+            print(f"Processing {filename}...")
+            
+            try:
+                # Extract room polygons from the SVG file
+                room_polygons = svg_to_room_polygons(file_path)
+                
+                if not room_polygons:
+                    print(f"  Warning: No rooms were extracted from {filename}.")
+                    continue
+                
+                # Optionally simplify polygons
+                simplified_room_polygons = {}
+                for room, polygon in room_polygons.items():
+                    simplified_room_polygons[room] = simplify_polygon(polygon, epsilon=epsilon)
+                
+                # Add to floor-specific dictionary
+                all_floors[floor_var_name] = simplified_room_polygons
+                
+                # Update counters
+                file_count += 1
+                room_count += len(simplified_room_polygons)
+                
+                # Print summary for this file
+                print(f"  Extracted {len(simplified_room_polygons)} rooms from {filename}")
+                
+            except Exception as e:
+                print(f"  Error processing {filename}: {e}")
+    
+    # Save results as separate dictionaries
+    if all_floors:
+        save_room_polygons(all_floors, output_file)
+        print(f"\nProcessed {file_count} SVG files with a total of {room_count} rooms")
+        print(f"Saved floor-specific room polygons to {output_file}")
+    else:
+        print("No room polygons were extracted from any files.")
+    
+    return all_floors
+
+
 if __name__ == "__main__":
-    import argparse
-
-    parser = argparse.ArgumentParser(description="Extract room polygons from an Inkscape SVG file.")
-
-    parser.add_argument(
+    parser = argparse.ArgumentParser(description="Extract room polygons from Inkscape SVG files.")
+    
+    # Add support for either file or directory
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
         "--svg_file", type=str,
-        default="data/floor_plan/floor_7.svg",
-        help="Path to the input SVG file (default: data/floor_plan/floor_7.svg)"
+        # default="data/floor_plan/floor_7.svg",
+        help="Path to a single SVG file"
     )
+    input_group.add_argument(
+        "--svg_dir", type=str,
+        # default="data/floor_plan",
+        help="Path to a directory containing SVG files"
+    )
+    
     parser.add_argument(
         "--output_file", type=str,
         default="data/floor_plan/room_polygons.py",
@@ -262,30 +364,47 @@ if __name__ == "__main__":
         default=0.0,
         help="Simplification epsilon (optional, default: no simplification)"
     )
-
+    
     args = parser.parse_args()
     
     try:
-        # Extract room polygons from SVG
-        room_polygons = svg_to_room_polygons(args.svg_file)
-        
-        if not room_polygons:
-            print("Warning: No rooms were extracted. Check if the SVG has paths with inkscape:label attributes.")
-        
-        # Optionally simplify polygons to reduce number of points
-        simplified_room_polygons = {}
-        for room, polygon in room_polygons.items():
-            simplified_room_polygons[room] = simplify_polygon(polygon, epsilon=args.epsilon)
-        print(f"Simplified polygons with epsilon = {args.epsilon}")
-        
-        # Save to Python file
-        save_room_polygons(simplified_room_polygons, args.output_file)
-        
-        # Print summary
-        print(f"Extracted {len(room_polygons)} rooms from {args.svg_file}")
-        for room, polygon in simplified_room_polygons.items():
-            print(f"  {room}: {len(polygon)} points")
-        print(f"Saved room polygons to {args.output_file}")
+        if args.svg_file:
+            # Process a single file
+            room_polygons = svg_to_room_polygons(args.svg_file)
+            
+            if not room_polygons:
+                print("Warning: No rooms were extracted. Check if the SVG has paths with inkscape:label attributes.")
+            
+            # Optionally simplify polygons to reduce number of points
+            simplified_room_polygons = {}
+            for room, polygon in room_polygons.items():
+                simplified_room_polygons[room] = simplify_polygon(polygon, epsilon=args.epsilon)
+            print(f"Simplified polygons with epsilon = {args.epsilon}")
+            
+            # Extract floor name from the filename
+            base_name = os.path.splitext(os.path.basename(args.svg_file))[0]
+            match = re.search(r'floor[_-]?(\d+)', base_name, re.IGNORECASE)
+            if match:
+                floor_number = match.group(1)
+                floor_var_name = f"floor_{floor_number}"
+            else:
+                floor_var_name = base_name
+            
+            # Create a floor dictionary structure
+            all_floors = {floor_var_name: simplified_room_polygons}
+            
+            # Save to Python file
+            save_room_polygons(all_floors, args.output_file)
+            
+            # Print summary
+            print(f"Extracted {len(room_polygons)} rooms from {args.svg_file}")
+            for room, polygon in simplified_room_polygons.items():
+                print(f"  {room}: {len(polygon)} points")
+            print(f"Saved room polygons to {args.output_file}")
+            
+        else:
+            # Process a directory of SVG files
+            process_svg_directory(args.svg_dir, args.output_file, epsilon=args.epsilon)
     
     except Exception as e:
         print(f"Error: {e}")
