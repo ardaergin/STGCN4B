@@ -1,110 +1,143 @@
+#!/usr/bin/env python3
 """
-Demo script to test the adjacency matrices functionality.
+Demo script to test the adjacency matrices functionality, now with CLI arguments.
 """
 
-import os
-import numpy as np
+import argparse
+import pickle
 import matplotlib.pyplot as plt
 import networkx as nx
 from pathlib import Path
 import sys
+import os
+
+# allow imports from project root
 sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
 
-from ..graph import OfficeGraph
-
-
 def plot_adjacency_matrix(adj_matrix, titles, figsize=(10, 8), title="Adjacency Matrix"):
-    """Plot an adjacency matrix as a heatmap."""
     plt.figure(figsize=figsize)
     plt.imshow(adj_matrix, cmap='Blues')
     plt.colorbar(label='Connection')
-    
-    # Add titles to axes
-    if len(titles) <= 20:  # Only show labels if there aren't too many
-        plt.xticks(range(len(titles)), [str(t).split('/')[-1] for t in titles], rotation=90)
-        plt.yticks(range(len(titles)), [str(t).split('/')[-1] for t in titles])
-    
+    if len(titles) <= 20:
+        labels = [str(t).split('/')[-1] for t in titles]
+        plt.xticks(range(len(titles)), labels, rotation=90)
+        plt.yticks(range(len(titles)), labels)
     plt.title(title)
     plt.tight_layout()
     return plt
-
 
 def plot_network(adj_matrix, titles, figsize=(12, 10), title="Network Graph"):
-    """Plot a network graph visualization of the adjacency matrix."""
+    # use spring_layout on a weighted or unweighted graph
     G = nx.from_numpy_array(adj_matrix)
-    
-    # Relabel nodes with shortened URIs
     mapping = {i: str(uri).split('/')[-1] for i, uri in enumerate(titles)}
     G = nx.relabel_nodes(G, mapping)
-    
     plt.figure(figsize=figsize)
-    pos = nx.spring_layout(G, seed=42)  # Position nodes using force-directed layout
-    
-    # Draw network
-    nx.draw(G, pos, with_labels=True, node_color='skyblue', 
-            node_size=500, edge_color='gray', width=1, alpha=0.8)
-    
+    pos = nx.spring_layout(G, seed=42)
+    nx.draw(
+        G, pos,
+        with_labels=True,
+        node_color='skyblue',
+        node_size=500,
+        edge_color='gray',
+        width=1,
+        alpha=0.8
+    )
     plt.title(title)
     plt.tight_layout()
     return plt
 
+def parse_args():
+    p = argparse.ArgumentParser(
+        prog="demo_adjacency.py",
+        description="Visualize floor-plan adjacency (CSV or polygons)."
+    )
+    p.add_argument(
+        "--graph-pkl", "-g",
+        default="data/processed/officegraph.pkl",
+        help="Path to your pickled OfficeGraph instance"
+    )
+    p.add_argument(
+        "--using", "-u",
+        choices=["csv", "polygons"],
+        default="polygons",
+        help="Source of adjacency: CSV file or Shapely polygons."
+    )
+    p.add_argument(
+        "--kind", "-k",
+        choices=["binary", "distance", "boundary"],
+        default="binary",
+        help="(only for polygons) Type of adjacency to compute."
+    )
+    p.add_argument(
+        "--csv-path",
+        default="data/floor_plan/floor_7.csv",
+        help="Path to floor_plan CSV (if using=csv)."
+    )
+    p.add_argument(
+        "--polygons-path",
+        default="data/floor_plan/room_polygons.py",
+        help="Path to your Python file defining `all_floors` polygons."
+    )
+    p.add_argument(
+        "--output-dir", "-o",
+        default="output/adjacency",
+        help="Directory to save .png outputs"
+    )
+    return p.parse_args()
 
 def main():
-    """Run the demo to test adjacency matrices."""
-    print("Initializing OfficeGraph...")
-    office_graph = OfficeGraph(load_only_7th_floor=True)
-    
-    # 1. Get and visualize room adjacency matrix
-    print("\nGenerating room adjacency matrix...")
-    room_adj, room_uris = office_graph.get_room_adjacency()
-    print(f"Room adjacency matrix shape: {room_adj.shape}")
-    print(f"Number of room connections: {np.sum(room_adj)}")
-    
-    # Plot room adjacency
-    plt_room = plot_adjacency_matrix(room_adj, room_uris, title="Room Adjacency Matrix")
-    plt_room.savefig("../../output/images/room_adjacency_matrix.png")
-    
-    # Plot room network
-    plt_room_net = plot_network(room_adj, room_uris, title="Room Adjacency Network")
-    plt_room_net.savefig("../../output/images/room_adjacency_network.png")
-    
-    # 2. Get and visualize device-room adjacency matrix
-    print("\nGenerating device-room adjacency matrix...")
-    device_room_adj, device_uris, room_uris_all = office_graph.get_device_room_adjacency()
-    print(f"Device-room adjacency matrix shape: {device_room_adj.shape}")
-    print(f"Number of device-room connections: {np.sum(device_room_adj)}")
-        
-    # 3. Get and analyze heterogeneous graph
-    print("\nBuilding heterogeneous graph...")
-    hetero_graph = office_graph.get_heterogeneous_graph()
-    print(f"Heterogeneous graph: {len(hetero_graph.nodes())} nodes, {len(hetero_graph.edges())} edges")
-    
-    # Count node types
-    node_types = {}
-    for node, attrs in hetero_graph.nodes(data=True):
-        node_type = attrs.get('type')
-        if node_type not in node_types:
-            node_types[node_type] = 0
-        node_types[node_type] += 1
-    
-    print("Node types in heterogeneous graph:")
-    for node_type, count in node_types.items():
-        print(f"  - {node_type}: {count}")
-    
-    # Count edge types
-    edge_types = {}
-    for _, _, attrs in hetero_graph.edges(data=True):
-        edge_type = attrs.get('type')
-        if edge_type not in edge_types:
-            edge_types[edge_type] = 0
-        edge_types[edge_type] += 1
-    
-    print("Edge types in heterogeneous graph:")
-    for edge_type, count in edge_types.items():
-        print(f"  - {edge_type}: {count}")
-    
-    print("\nDemo completed. Visualization files have been saved.")
+    args = parse_args()
+    os.makedirs(args.output_dir, exist_ok=True)
 
+    # 1) load your OfficeGraph, which has builder inside
+    print(f"Loading OfficeGraph from {args.graph_pkl!r}…")
+    with open(args.graph_pkl, "rb") as f:
+        office_graph = pickle.load(f)
+    builder = office_graph.builder
+
+    # 2) initialize the floorplan based on --using
+    if args.using == "csv":
+        print(f"→ Initializing from CSV: {args.csv_path}")
+        builder.initialize_floorplan_from_CSV(args.csv_path)
+        builder.build_room_to_room_adjacency(using="csv")
+    else:
+        print(f"→ Initializing from Polygons: {args.polygons_path}")
+        builder.initialize_floorplan_from_Polygons(args.polygons_path)
+        builder.build_room_to_room_adjacency(using="polygons", kind=args.kind)
+
+    mat = builder.room_to_room_adj_matrix
+    uris = builder.room_uris
+
+    # 3) report
+    print(f"Adjacency matrix shape: {mat.shape}")
+    print(f"Total connections (sum of weights): {mat.sum():.2f}")
+
+    # 4) build suffix to avoid overwrites
+    suffix = args.using
+    if args.using == "polygons":
+        suffix += f"_{args.kind}"
+
+    # 5) plot & save heatmap
+    fig1 = plot_adjacency_matrix(
+        mat,
+        uris,
+        title=f"{args.using.title()} adjacency ({args.kind if args.using=='polygons' else 'binary'})"
+    )
+    out1 = Path(args.output_dir) / f"adjacency_matrix_{suffix}.png"
+    fig1.savefig(out1)
+    print(f"Saved matrix heatmap to {out1}")
+
+    # 6) plot & save network graph
+    fig2 = plot_network(
+        mat,
+        uris,
+        title=f"{args.using.title()} adjacency network ({args.kind if args.using=='polygons' else 'binary'})"
+    )
+    out2 = Path(args.output_dir) / f"adjacency_network_{suffix}.png"
+    fig2.savefig(out2)
+    print(f"Saved network plot to {out2}")
+
+    print("Demo completed.")
 
 if __name__ == "__main__":
     main()
