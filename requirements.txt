@@ -10,3 +10,4 @@ tk
 tcl
 seaborn
 scikit-learn
+holidays
