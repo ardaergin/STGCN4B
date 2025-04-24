@@ -12,7 +12,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-from ..graph import OfficeGraph
 
 class TimeSeriesPreparation:
     """
@@ -20,7 +19,7 @@ class TimeSeriesPreparation:
     """
     
     def __init__(self, 
-                office_graph: OfficeGraph, 
+                office_graph, 
                 start_time: str = "2022-03-01 00:00:00",
                 end_time: str = "2023-01-31 00:00:00",
                 interval_hours: int = 1,
