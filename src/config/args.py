@@ -36,20 +36,12 @@ def parse_base_args(parser=None):
                       help='Enable CUDA')
     parser.add_argument('--seed', type=int, default=42, 
                       help='Random seed')
+    
     parser.add_argument('--batch_size', type=int, default=32, 
                       help='Batch size')
     parser.add_argument('--epochs', type=int, default=100, 
                       help='Number of epochs')
-    parser.add_argument('--lr', type=float, default=0.001, 
-                      help='Learning rate')
-    parser.add_argument('--weight_decay', type=float, default=0.0001, 
-                      help='Weight decay')
-    parser.add_argument('--patience', type=int, default=15, 
-                      help='Patience for early stopping')
-    parser.add_argument('--optimizer', type=str, default='adamw', 
-                      choices=['adam', 'adamw', 'sgd'], 
-                      help='Optimizer type')
-    
+        
     return parser
 
 def add_stgcn_args(parser):
@@ -62,6 +54,9 @@ def add_stgcn_args(parser):
     # STGCN specific parameters
     parser.add_argument('--n_his', type=int, default=12, 
                       help='Number of historical time steps to use')
+    parser.add_argument('--n_pred', type=int, default=3, 
+                        help='the number of time interval for predcition, default as 3')
+    parser.add_argument('--time_intvl', type=int, default=5)
     parser.add_argument('--Kt', type=int, default=3, 
                       help='Kernel size in temporal convolution')
     parser.add_argument('--Ks', type=int, default=3, 
@@ -81,6 +76,17 @@ def add_stgcn_args(parser):
     parser.add_argument('--gamma', type=float, default=0.9, 
                       help='Gamma for learning rate scheduler')
     
+    parser.add_argument('--gso_type', type=str, default='sym_norm_lap', choices=['sym_norm_lap', 'rw_norm_lap', 'sym_renorm_adj', 'rw_renorm_adj'])
+    parser.add_argument('--enable_bias', type=bool, default=True, help='default as True')
+    parser.add_argument('--weight_decay_rate', type=float, default=0.001, help='weight decay (L2 penalty)')
+    parser.add_argument('--patience', type=int, default=10, help='early stopping patience')
+
+    parser.add_argument('--optimizer', type=str, default='adamw', 
+                      choices=['adam', 'adamw', 'nadamw', 'lion'], 
+                      help='Optimizer type')
+    parser.add_argument('--lr', type=float, default=0.001, 
+                      help='Learning rate')
+
     return parser
 
 def add_astgcn_args(parser):
