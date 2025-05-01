@@ -1,7 +1,7 @@
 import os
 import re
 from typing import List, Set
-from rdflib import Graph, Namespace
+from rdflib import Graph, Namespace, RDF
 
 class FloorDeviceRetriever:
     """
@@ -110,89 +110,93 @@ class FloorDeviceRetriever:
                 reverse_lookup[expanded].append((ttl_filename, sid))
         return reverse_lookup
 
-    def get_devices_on_floor(self, floor_number: int = 7):
+    def get_device_room_floor_graph(self, floor_number: int = 7) -> Graph:
         """
-        Runs a SPARQL query to find devices strictly on the given floor_number
-        (and not in a 'support_zone'). Then cross-references them with the local TTL filenames.
-
-        :param floor_number: e.g. 1, 2, 7, etc.
-        :return: A list of records, each record is a dict with:
-                 {
-                    "deviceURI": <string>,
-                    "short_id": <string from TTL>,
-                    "filename": <the .ttl file where we found it>,
-                    "buildingSpace": <URI of the building space>,
-                    "floor": <URI of the floor>,
-                    "roomComment": <the rdfs:comment if any, else None>
-                 }
+        Returns an RDF graph containing device-room-floor relationship triples for the specified floor.
+        
+        :param floor_number: The floor number to query (e.g., 1, 2, 7)
+        :return: RDFLib Graph containing device-room-floor relationship triples
         """
-
-        # Build the floor URI, e.g. ic:VL_floor_7 => "https://interconnectproject.eu/example/VL_floor_7"
+        # Build the floor URI
         floor_uri = f"https://interconnectproject.eu/example/VL_floor_{floor_number}"
-
-        # Parameterized SPARQL query
-        sparql_query = f"""
+        
+        # CONSTRUCT query to directly create the relationship triples
+        construct_query = f"""
+        PREFIX rdf: <http://www.w3.org/1999/02/22-rdf-syntax-ns#>
         PREFIX ic: <https://interconnectproject.eu/example/>
         PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
         PREFIX s4bldg: <https://saref.etsi.org/saref4bldg/>
-        SELECT DISTINCT ?device ?buildingSpace ?floor (SAMPLE(?comment) AS ?roomComment)
-        WHERE {{
-          ?buildingSpace a s4bldg:BuildingSpace ;
-                         s4bldg:contains ?device ;
-                         s4bldg:isSpaceOf ?floor .
-          OPTIONAL {{ ?buildingSpace rdfs:comment ?comment }}
-
-          # Must be on desired floor
-          FILTER (?floor = <{floor_uri}>)
-
-          # Exclude "support_zone"
-          FILTER (!BOUND(?comment) || ?comment != "support_zone")
-
-          # Ensure device is not contained in buildingSpaces on other floors
-          FILTER NOT EXISTS {{
-            ?otherBS s4bldg:contains ?device ;
-                     s4bldg:isSpaceOf ?otherFloor .
-            FILTER (?otherFloor != <{floor_uri}>)
-          }}
+        
+        CONSTRUCT {{
+            ?device s4bldg:isContainedIn ?buildingSpace .
+            ?buildingSpace s4bldg:contains ?device .
+            ?buildingSpace s4bldg:isSpaceOf ?floor .
+            ?buildingSpace rdf:type s4bldg:BuildingSpace .
+            ?buildingSpace rdfs:comment ?comment .
         }}
-        GROUP BY ?device ?buildingSpace ?floor
+        WHERE {{
+            ?buildingSpace a s4bldg:BuildingSpace ;
+                        s4bldg:contains ?device ;
+                        s4bldg:isSpaceOf ?floor .
+            OPTIONAL {{ ?buildingSpace rdfs:comment ?comment }}
+
+            # Must be on desired floor
+            FILTER (?floor = <{floor_uri}>)
+
+            # Exclude "support_zone"
+            FILTER (!BOUND(?comment) || ?comment != "support_zone")
+
+            # Ensure device is not contained in buildingSpaces on other floors
+            FILTER NOT EXISTS {{
+                ?otherBS s4bldg:contains ?device ;
+                        s4bldg:isSpaceOf ?otherFloor .
+                FILTER (?otherFloor != <{floor_uri}>)
+            }}
+        }}
         """
+        
+        # Execute the CONSTRUCT query
+        relationship_graph = self.graph.query(construct_query).graph
+        
+        # Bind namespaces for nicer serialization
+        relationship_graph.bind("ic", self.IC)
+        relationship_graph.bind("rdfs", self.RDFS)
+        relationship_graph.bind("s4bldg", self.S4BLDG)
+        relationship_graph.bind("rdf", RDF)
+        
+        return relationship_graph
 
-        results = self.graph.query(sparql_query)
-
-        final_records = []
-        # For each row, see if it's in our local dictionary
-        for row in results:
-            device_uri = str(row.device)
-            bspace_uri = str(row.buildingSpace)
-            floor_uri  = str(row.floor)
-            comment    = str(row.roomComment) if row.roomComment else None
-
+    def get_device_filenames_from_graph(self, relationship_graph: Graph) -> List[str]:
+        """
+        Extracts device URIs from the relationship graph and finds the corresponding
+        TTL filenames that need to be loaded.
+        
+        :param relationship_graph: Graph containing device-room-floor relationships
+        :return: List of full file paths to the TTL files that need to be loaded
+        """
+        # Extract all device URIs from the graph
+        device_uris = set()
+        
+        # Find all subjects of s4bldg:isContainedIn triples
+        for s, p, o in relationship_graph.triples((None, self.S4BLDG.isContainedIn, None)):
+            device_uris.add(str(s))
+        
+        # Find all objects of s4bldg:contains triples
+        for s, p, o in relationship_graph.triples((None, self.S4BLDG.contains, None)):
+            device_uris.add(str(o))
+        
+        # Map these URIs to filenames using the reverse lookup
+        filenames = set()
+        for device_uri in device_uris:
             if device_uri in self.reverse_lookup:
-                # match found in local TTL dictionary
-                for (filename, short_id) in self.reverse_lookup[device_uri]:
-                    rec = {
-                        "deviceURI": device_uri,
-                        "short_id": short_id,
-                        "filename": filename,
-                        "buildingSpace": bspace_uri,
-                        "floor": floor_uri,
-                        "roomComment": comment
-                    }
-                    final_records.append(rec)
-
-        return final_records
-
-    def get_full_paths_for_filenames(self, filenames: Set[str]) -> List[str]:
-        """
-        Given a set of TTL filenames, return their full paths under devices_root_dir.
-
-        :param filenames: e.g. {"C2E886.ttl", "urn_Device_SmartThings_xxx.ttl"}
-        :return: List of full paths like ["data/devices/thermostats/C2E886.ttl", ...]
-        """
-        matches = []
+                for filename, _ in self.reverse_lookup[device_uri]:
+                    filenames.add(filename)
+        
+        # Get the full paths for these filenames
+        full_paths = []
         for subdir, _, files in os.walk(self.devices_root_dir):
             for file in files:
                 if file in filenames:
-                    matches.append(os.path.join(subdir, file))
-        return matches
+                    full_paths.append(os.path.join(subdir, file))
+                    
+        return full_paths
