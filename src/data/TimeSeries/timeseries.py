@@ -2,11 +2,9 @@ import os
 import pickle
 import torch
 import numpy as np
-import networkx as nx
-import holidays
 from rdflib import URIRef
-from typing import Dict, List, Tuple, Set, Optional, Iterable, Any
-from datetime import datetime, timedelta, date
+from typing import Dict, List, Tuple, Set, Any
+from datetime import datetime, timedelta
 from collections import defaultdict
 import logging
 
@@ -23,7 +21,8 @@ class TimeSeriesPreparation:
                 start_time: str = "2022-03-01 00:00:00",
                 end_time: str = "2023-01-31 00:00:00",
                 interval_hours: int = 1,
-                use_sundays: bool = False):
+                use_sundays: bool = False,
+                country_code: str = "NL"):
         """
         Initialize with an OfficeGraph instance.
         
@@ -33,6 +32,7 @@ class TimeSeriesPreparation:
             end_time: End time for analysis in format "YYYY-MM-DD HH:MM:SS"
             interval_hours: Size of time buckets in hours
             use_sundays: Whether to include Sundays in time buckets (default: False)
+            country_code: Country code for holidays (default: NL for Netherlands)
         """
         self.office_graph = office_graph
         self.start_time = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
@@ -50,31 +50,19 @@ class TimeSeriesPreparation:
         self.time_buckets = self._create_time_buckets()
         
         # Get the room adjacency matrix
-        self.adjacency_matrix, self.room_uris = self.office_graph.builder.build_room_adjacency()
+        self.adjacency_matrix, self.room_uris = self.office_graph.builder.build_room_to_room_adjacency()
         
-        # Initialize Dutch holidays for the years covered by the dataset
-        self.dutch_holidays = self._initialize_dutch_holidays()
+        # Initialize work hour classifier for the years covered by the dataset
+        from .workhours import WorkHourClassifier
+        self.work_hour_classifier = WorkHourClassifier(
+            country_code=country_code,
+            start_year=self.start_time.year,
+            end_year=self.end_time.year
+        )
         
         # Log initialization information
         logger.info(f"Initialized STGCNDataPreparation with {len(self.room_uris)} rooms")
         logger.info(f"Time range: {self.start_time} to {self.end_time} with {len(self.time_buckets)} buckets")
-        logger.info(f"Loaded Dutch holidays for {self.start_time.year}-{self.end_time.year}")
-
-    def _initialize_dutch_holidays(self):
-        """
-        Initialize Dutch holidays for the time range of the dataset.
-        
-        Returns:
-            holidays.HolidayBase: Dutch holiday calendar object
-        """
-        # Create Dutch holiday calendar for the years in our dataset
-        start_year = self.start_time.year
-        end_year = self.end_time.year
-        
-        # Initialize Dutch holidays (NL) for the relevant years
-        dutch_holidays = holidays.NL(years=range(start_year, end_year + 1))
-        
-        return dutch_holidays
 
     def _create_time_buckets(self) -> List[Tuple[datetime, datetime]]:
         """
@@ -261,43 +249,16 @@ class TimeSeriesPreparation:
     def get_labels_for_classification(self) -> np.ndarray:
         """
         Generate labels for each time bucket based on whether it's a work hour,
-        accounting for Dutch national holidays from the holidays package.
+        using the WorkHourClassifier.
         
         Returns:
             numpy.ndarray: Binary labels (1 for work hour, 0 for non-work hour)
         """        
-        labels = np.zeros(len(self.time_buckets), dtype=int)
+        # Use the work hour classifier to classify time buckets
+        labels_list = self.work_hour_classifier.classify_time_buckets(self.time_buckets)
         
-        # Count holidays and work hours for logging
-        holiday_hours = 0
-        
-        for i, (start_time, _) in enumerate(self.time_buckets):
-            # Convert datetime to date for holiday checking
-            current_date = start_time.date()
-            
-            # First check if it's a holiday
-            if current_date in self.dutch_holidays:
-                # It's a holiday, mark as non-work hour
-                labels[i] = 0
-                holiday_hours += 1
-                continue
-            
-            # If not a holiday, check if it's a weekday (0-4 is Monday-Friday)
-            day_of_week = start_time.weekday()
-            
-            # Check if it's between standard Dutch office hours (9:00-17:00)
-            hour_of_day = start_time.hour
-            
-            if (day_of_week < 5) and (9 <= hour_of_day < 17):
-                labels[i] = 1
-        
-        # Log label distribution
-        work_hours = np.sum(labels)
-        non_work_hours = len(labels) - work_hours
-        
-        logger.info(f"Generated labels with holiday awareness: {work_hours} work hours, {non_work_hours} non-work hours")
-        logger.info(f"Filtered out {holiday_hours} hours that fell on Dutch holidays")
-        logger.info(f"Baseline accuracy: {max(work_hours, non_work_hours) / len(labels) * 100:.2f}%")
+        # Convert to numpy array
+        labels = np.array(labels_list, dtype=int)
         
         return labels
     
@@ -443,12 +404,19 @@ if __name__ == "__main__":
     parser.add_argument('--consumption_dir', type=str, default='data/consumption',
                         help='Directory containing consumption CSV files (for forecasting task)')
     
+    parser.add_argument('--country_code', type=str, default='NL',
+                        help='Country code for holidays (default: NL for Netherlands)')
+    
     args = parser.parse_args()
 
     with open("data/processed/officegraph.pkl", "rb") as f:
         office_graph = pickle.load(f)
     
-    data_prep = TimeSeriesPreparation(office_graph, use_sundays=args.use_sundays)
+    data_prep = TimeSeriesPreparation(
+        office_graph, 
+        use_sundays=args.use_sundays,
+        country_code=args.country_code
+    )
 
     # Prepare input based on task type
     if args.task_type == 'classification':
