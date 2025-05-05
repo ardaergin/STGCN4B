@@ -155,3 +155,24 @@ def load_floor7_graph_learning_enrichments(base_dir: Union[str, Path]) -> Graph:
         return Graph()
     
     return load_multiple_ttl_files(file_paths)
+
+def load_VideoLab_topology(base_dir: Union[str, Path], load_only_floor7: bool = True) -> Graph:
+    """
+    Load building topology data from a TTL file.
+    
+    Args:
+        ttl_file_path (str): Path to the building topology TTL file
+    """
+    if isinstance(base_dir, str):
+        base_dir = Path(base_dir)
+    
+    if load_only_floor7:
+        topology_path = base_dir / 'topology' / 'VideoLab_floor7.ttl'
+    else:
+        topology_path = base_dir / 'topology' / 'VideoLab.ttl'
+
+    if not topology_path.exists():
+        print("Warning: Topology enrichment file not found")
+        return Graph()
+    
+    return load_ttl_file(str(topology_path))

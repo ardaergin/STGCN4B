@@ -1,12 +1,12 @@
 import os, sys, pickle, argparse
 from typing import Dict, List, Tuple, Optional, Set
-from rdflib import Graph, Namespace, URIRef, RDF
+from rdflib import Graph, Namespace, URIRef, RDF, RDFS, XSD, OWL
 import logging
 logger = logging.getLogger(__name__)
 
-from ..core import Device, Measurement, Room, Floor
-from ..data.OfficeGraph.devices_on_floor import FloorDeviceRetriever
-from ..data.OfficeGraph.ttl_loader import load_multiple_ttl_files
+from ..core import Device, Measurement, Room, Floor, Building
+from ..data.OfficeGraph.device_loader import FloorDeviceRetriever
+from ..data.OfficeGraph.ttl_loader import load_multiple_ttl_files, load_VideoLab_topology
 
 class OfficeGraph:
     """Class to represent and manipulate the IoT Office Graph."""
@@ -22,6 +22,14 @@ class OfficeGraph:
             floors_to_load (Optional[List[int]], optional): List of floor numbers to load. 
                                                           Defaults to [7] if None.
         """
+        # Default to loading only the 7th floor
+        if floors_to_load is None:
+            floors_to_load = [7]
+        if floors_to_load == [7]:
+            only_floor7 = True
+        else: 
+            only_floor7 = False
+
         # Main RDF graph
         self.graph = Graph()
         self.base_dir = base_dir
@@ -32,10 +40,12 @@ class OfficeGraph:
         # Collections to store entities
         self._init_collections()
 
+        # Load VideoLab topology
+        VideoLab_topology = load_VideoLab_topology(self.base_dir, load_only_floor7=only_floor7)
+        self.graph += VideoLab_topology
+
         # Initialize retriever and load OfficeGraph
         self.retriever = FloorDeviceRetriever()
-        if floors_to_load is None:
-            floors_to_load = [7]  # Default to loading only the 7th floor
         self.load_devices_on_floors(floors_to_load)
 
     def _setup_namespaces(self):
@@ -46,13 +56,24 @@ class OfficeGraph:
         self.S4ENER = Namespace("https://saref.etsi.org/saref4ener/")
         self.S4BLDG = Namespace("https://saref.etsi.org/saref4bldg/")
         self.OM = Namespace("http://www.wurvoc.org/vocabularies/om-1.8/")
-        
+        self.BOT = Namespace("https://w3id.org/bot#")
+        self.GEO = Namespace("http://www.w3.org/2003/01/geo/wgs84_pos#")
+        self.GEOSPARQL = Namespace("http://www.opengis.net/ont/geosparql#")
+
         # Bind namespaces to prefixes for serialization
         self.graph.bind("ic", self.IC)
         self.graph.bind("saref", self.SAREF)
         self.graph.bind("s4ener", self.S4ENER)
         self.graph.bind("s4bldg", self.S4BLDG)
         self.graph.bind("om", self.OM)
+        self.graph.bind("bot", self.BOT)
+        self.graph.bind("geo", self.GEO)
+        self.graph.bind("geosparql", self.GEOSPARQL)
+
+        # built-in RDF namespaces (not necessary, but just in case)
+        self.graph.bind("rdfs", RDFS)
+        self.graph.bind("xsd", XSD)
+        self.graph.bind("owl", OWL)
     
     def _init_collections(self):
         """Initialize collections to store entities."""
@@ -60,13 +81,14 @@ class OfficeGraph:
         self.measurements: Dict[URIRef, Measurement] = {}
         self.rooms: Dict[URIRef, Room] = {}
         self.floors: Dict[URIRef, Floor] = {}
-        
+        self.building: Optional[Building] = None
+
         # Mapping property types to lists of specific property URIs
         self.property_type_mappings: Dict[str, List[URIRef]] = {}
         
         # Measurement sequence links
         self.measurement_sequences: Dict[Tuple[URIRef, URIRef], List[Measurement]] = {}
-        
+    
     def load_devices_on_floors(self, floor_numbers: List[int]) -> None:
         """
         Load data for specified floor(s).
@@ -110,8 +132,9 @@ class OfficeGraph:
     def _remove_duplicate_room_triples(self, input_graph: Graph) -> Graph:
         """
         Remove unnecessary triples related to duplicate rooms.
-        The TTL files of Samsung devices contain redundant entries regarding location.
-        
+        We already have derived these from the devices_in_rooms enrichment file.
+        So, we should remove these redundant entries regarding location from the TTL files of devices. 
+
         Args:
             input_graph (Graph): Input RDF graph with potentially duplicate room triples
             
@@ -181,6 +204,11 @@ class OfficeGraph:
         
         return sorted(measurements, key=lambda m: m.timestamp)
 
+
+
+
+
+
 if __name__ == "__main__":
     
     ### Arguments ###
@@ -195,7 +223,7 @@ if __name__ == "__main__":
         "--floors", 
         type=int,
         nargs="+",
-        default=[7], # multiple floors: e.g., "--floors 3 5 7 10"
+        default=[7],
         help="List of floor numbers to load (default: 7)"
     )
     args = parser.parse_args()
@@ -207,7 +235,7 @@ if __name__ == "__main__":
     print(f"Graph loaded successfully with {total_triples} triples.")
 
     ### Saving ###
-    output_path = os.path.join(args.base_dir, "processed", "officegraph_no_extraction.pkl")
+    output_path = os.path.join(args.base_dir, "processed", "officegraph_base.pkl")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     try:
         with open(output_path, "wb") as f:
