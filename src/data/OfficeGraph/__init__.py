@@ -1,2 +1,2 @@
-from .devices_on_floor import *
+from .device_loader import *
 from .ttl_loader import *
