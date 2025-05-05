@@ -11,3 +11,4 @@ tcl
 seaborn
 scikit-learn
 holidays
+pyproj
