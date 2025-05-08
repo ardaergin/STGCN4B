@@ -12,3 +12,6 @@ seaborn
 scikit-learn
 holidays
 pyproj
+# for pyproj, need to:
+# `nano .venv/bin/activate`
+# and add `export PROJ_DATA="/usr/local/share/proj`
