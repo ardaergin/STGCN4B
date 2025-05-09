@@ -6,7 +6,7 @@ logger = logging.getLogger(__name__)
 
 from ..core import Device, Measurement, Room, Floor, Building
 from ..data.OfficeGraph.device_loader import FloorDeviceRetriever
-from ..data.OfficeGraph.ttl_loader import load_multiple_ttl_files, load_VideoLab_topology
+from ..data.OfficeGraph.ttl_loader import load_multiple_ttl_files, load_VideoLab_topology, load_csv_enrichment
 
 class OfficeGraph:
     """Class to represent and manipulate the IoT Office Graph."""
@@ -41,8 +41,14 @@ class OfficeGraph:
         self._init_collections()
 
         # Load VideoLab topology
-        VideoLab_topology = load_VideoLab_topology(self.base_dir, load_only_floor7=only_floor7)
-        self.graph += VideoLab_topology
+        VideoLab_topology_graph = load_VideoLab_topology(self.base_dir, load_only_floor7=only_floor7)
+        self.graph += VideoLab_topology_graph
+        print(f"Loaded VideoLab topology ({len(VideoLab_topology_graph)} triples).")
+
+        # Load CSV enrichment
+        csv_enrichment_graph = load_csv_enrichment(self.base_dir)
+        self.graph += csv_enrichment_graph
+        print(f"Loaded CSV enrichment ({len(csv_enrichment_graph)} triples).")
 
         # Initialize retriever and load OfficeGraph
         self.retriever = FloorDeviceRetriever()
@@ -59,7 +65,9 @@ class OfficeGraph:
         self.BOT = Namespace("https://w3id.org/bot#")
         self.GEO = Namespace("http://www.w3.org/2003/01/geo/wgs84_pos#")
         self.GEOSPARQL = Namespace("http://www.opengis.net/ont/geosparql#")
-
+        self.EX = Namespace("https://example.org/")
+        self.EXONT = Namespace("https://example.org/ontology#")
+        
         # Bind namespaces to prefixes for serialization
         self.graph.bind("ic", self.IC)
         self.graph.bind("saref", self.SAREF)
@@ -69,6 +77,8 @@ class OfficeGraph:
         self.graph.bind("bot", self.BOT)
         self.graph.bind("geo", self.GEO)
         self.graph.bind("geosparql", self.GEOSPARQL)
+        self.graph.bind("ex", self.EX)
+        self.graph.bind("ex-ont", self.EXONT)
 
         # built-in RDF namespaces (not necessary, but just in case)
         self.graph.bind("rdfs", RDFS)

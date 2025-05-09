@@ -1,5 +1,3 @@
-from .floorplan_from_csv import *
-from .svg_to_polygons_dict import *
-from .floorplan_from_polygons import *
-from .svg_parser import *
-from .polygons import *
+from .csv_to_rdf import RoomEnrichmentViaCSV
+from .svg_parser import SVGParser
+from .polygons import PolygonData, SvgToRdf

@@ -176,3 +176,15 @@ def load_VideoLab_topology(base_dir: Union[str, Path], load_only_floor7: bool = 
         return Graph()
     
     return load_ttl_file(str(topology_path))
+
+def load_csv_enrichment(base_dir: Union[str, Path]) -> Graph:
+    if isinstance(base_dir, str):
+        base_dir = Path(base_dir)
+    
+    csv_enrichment_path = base_dir / 'topology' / 'VideoLab_floor7_csv_enrichment.ttl'
+
+    if not csv_enrichment_path.exists():
+        print("Warning: Topology enrichment file not found")
+        return Graph()
+    
+    return load_ttl_file(str(csv_enrichment_path))

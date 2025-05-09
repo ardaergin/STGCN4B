@@ -7,8 +7,8 @@ class Building:
     """
     Class representing a building with real-world geographic coordinates.
     """
+    name: str
     uri: Optional[URIRef] = None
-    name: Optional[str] = None
     
     # Geographic coordinates
     top_left_lat: Optional[float] = None  # e.g., 51.4455556 (51°26'44"N)
@@ -19,9 +19,8 @@ class Building:
     # Building dimensions
     height_meters: Optional[float] = None
     length_meters: Optional[float] = None
-    length_heading: Optional[float] = None
     width_meters: Optional[float] = None
-    width_heading: Optional[float] = None
+    heading: Optional[float] = None
     height_from_sealevel: Optional[float] = None
  
     # To be calculated:
@@ -74,9 +73,8 @@ class Building:
             
             # Length/Width and heading (measured via using Google Earth)
             self.length_meters = 108.5
-            self.length_heading = 298
             self.width_meters = 43
-            self.width_heading = 27
+            self.heading = 27 # Heading that the enterence of the building faces (from Google Earth)
 
     def add_floor(self, floor_uri: URIRef) -> None:
         """Add a floor to this building."""
