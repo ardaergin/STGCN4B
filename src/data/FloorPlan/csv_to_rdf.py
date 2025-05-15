@@ -60,7 +60,7 @@ class RoomEnrichmentViaCSV(NamespaceMixin):
                 # If pandas already converted to boolean
                 is_room_value = bool(row['isRoom'])
                 
-            self.graph.add((room_uri, self.EX.isRoom, Literal(is_room_value, datatype=XSD.boolean)))
+            self.graph.add((room_uri, self.EX_ONT.isProperRoom, Literal(is_room_value, datatype=XSD.boolean)))
             
             # Parse the facing directions and create window instances
             if pd.notna(row['isFacing']) and isinstance(row['isFacing'], str):

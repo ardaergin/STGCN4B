@@ -167,9 +167,9 @@ def load_VideoLab_topology(base_dir: Union[str, Path], load_only_floor7: bool = 
         base_dir = Path(base_dir)
     
     if load_only_floor7:
-        topology_path = base_dir / 'topology' / 'VideoLab_floor7.ttl'
+        topology_path = base_dir / 'topology' / 'TTLs' / 'VideoLab_floor_7.ttl'
     else:
-        topology_path = base_dir / 'topology' / 'VideoLab.ttl'
+        topology_path = base_dir / 'topology' / 'TTLs' / 'VideoLab.ttl'
 
     if not topology_path.exists():
         print("Warning: Topology enrichment file not found")

@@ -1,6 +1,14 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Set, Tuple
-from rdflib import URIRef, Literal, Namespace, RDF, RDFS
+from typing import List, Optional, Dict, Set, Any
+from rdflib import URIRef
+import logging
+import math
+
+# Set up logging
+logger = logging.getLogger(__name__)
+
+# Import the utility module
+from ..data.FloorPlan import polygon_utils
 from ..config.namespaces import NamespaceMixin
 
 
@@ -14,208 +22,227 @@ class Room(NamespaceMixin):
     devices: Set[URIRef] = field(default_factory=set)
 
     # Attributes from CSV
-    isRoom: Optional[bool] = None
+    isProperRoom: Optional[bool] = None
     hasWindows: Optional[bool] = None
     hasWindowsFacingDirection: List[float] = field(default_factory=list)
+    hasWindowsRelativeDirection: List[float] = field(default_factory=list)
+
+    # Window direction components (calculated from hasWindowsFacingDirection)
+    window_direction_sin: float = 0.0
+    window_direction_cos: float = 0.0
+    has_multiple_windows: bool = False
+
+    # Calculate based on hasWindowsRelativeDirection
+    hasBackWindows: bool = False
+    hasFrontWindows: bool = False
+    hasRightWindows: bool = False
+    hasLeftWindows: bool = False
 
     # Spatial relationships
     adjacent_rooms: List[str] = field(default_factory=list)
 
-    # Data directly from the RDF
-    wkt_polygon: Optional[str] = None
-    metric_area: Optional[float] = None
+    # Altitude of the room (from RDF)
     altitude: Optional[float] = None
 
-    # To be calculated at __post_init__:
-    ## Polygon data
-    polygon_2d: List[Tuple[float, float]] = field(default_factory=list)
-    polygon_3d: List[Tuple[float, float, float]] = field(default_factory=list)
+    # Raw polygon data from the RDF
+    geo_wkt_polygon: Optional[str] = None
+    doc_wkt_polygon: Optional[str] = None
 
-    ## Centroid
-    centroid_x: Optional[float] = None
-    centroid_y: Optional[float] = None
-    
-    ## Additional shape metrics
-    perimeter: Optional[float] = None
-    compactness: Optional[float] = None  # Circularity measure
-    width: Optional[float] = None        # Bounding box width
-    height: Optional[float] = None       # Bounding box height
-    rect_fit: Optional[float] = None     # How rectangular the room is
-    aspect_ratio: Optional[float] = None # Width to height ratio
+    # Dictionaries to store all polygon-related data
+    polygons_geo: Dict[str, Any] = field(default_factory=dict)
+    polygons_doc: Dict[str, Any] = field(default_factory=dict)
 
-    ## Boundary points (maybe useful for STGCN)
-    boundary_points: List[Tuple[float, float]] = field(default_factory=list)
-    
     def __post_init__(self):
-        """Process WKT polygon data if available."""
-        if self.wkt_polygon:
-            self._process_wkt_polygon()
-            self._calculate_spatial_metrics()
-            self._create_boundary_points()
+        """Process polygon data from RDF, if available."""
+        # Initialize the polygon dictionaries with default values
+        self._initialize_polygon_dictionaries()
+        
+        # Process geographic polygon
+        self._process_wkt_polygon('geo')
             
-    def _process_wkt_polygon(self):
-        """Extract polygon coordinates from WKT string and process them."""
-        if not self.wkt_polygon:
-            return
-            
-        # Extract coordinates from WKT string
-        # Example WKT: "POLYGON Z((x1 y1 z1, x2 y2 z2, ...))" or "POLYGON ((x1 y1 z1, x2 y2 z2, ...))"
-        try:
-            # Clean and extract coordinates
-            coords_str = self.wkt_polygon.strip()
-            
-            # Handle 'POLYGON Z' format
-            if "POLYGON Z" in coords_str:
-                # Remove 'POLYGON Z' prefix
-                coords_str = coords_str.replace("POLYGON Z", "").strip()
-            elif coords_str.startswith("POLYGON"):
-                # Remove 'POLYGON' prefix
-                coords_str = coords_str[7:].strip()
-                
-            # Remove outer parentheses
-            coords_str = coords_str.strip("()")
-            
-            # Extract coordinates directly into the polygon_2d and polygon_3d lists
-            for point_str in coords_str.split(","):
-                point = point_str.strip().split()
-                
-                if len(point) >= 2:  # Must have at least x, y
-                    x, y = float(point[0]), float(point[1])
-                    self.polygon_2d.append((x, y))
-                    
-                    if len(point) >= 3:  # Has z coordinate
-                        z = float(point[2])
-                        self.polygon_3d.append((x, y, z))
-                    elif self.altitude is not None:
-                        # Use the room's altitude as z if available
-                        self.polygon_3d.append((x, y, self.altitude))
-        except Exception as e:
-            # Log error but continue
-            print(f"Error processing WKT polygon for room {self.uri}: {e}")
-                    
-    def _calculate_spatial_metrics(self):
-        """Calculate centroid and shape metrics in a single pass for efficiency."""
-        if not self.polygon_2d or len(self.polygon_2d) < 3:
-            return
-        
-        # Use metric_area from RDF if available; otherwise calculate it
-        area = self.metric_area
-        if area is None:
-            # Calculate area using Shoelace formula
-            area = 0.0
-            n = len(self.polygon_2d)
-            for i in range(n):
-                j = (i + 1) % n
-                area += self.polygon_2d[i][0] * self.polygon_2d[j][1]
-                area -= self.polygon_2d[j][0] * self.polygon_2d[i][1]
-            area = abs(area) / 2.0
-            
-            # Store calculated area if not available from RDF
-            if self.metric_area is None:
-                self.metric_area = area
-        
-        # Early exit if area is zero
-        if area == 0:
-            return
-        
-        # Calculate perimeter and centroid simultaneously
-        perimeter = 0.0
-        cx = cy = 0.0
-        
-        # Get coordinates for bounding box calculation
-        x_coords = []
-        y_coords = []
-        
-        # Single pass through polygon vertices
-        n = len(self.polygon_2d)
-        for i in range(n):
-            p1 = self.polygon_2d[i]
-            p2 = self.polygon_2d[(i + 1) % n]
-            
-            # Add to coordinate lists for bounding box
-            x_coords.append(p1[0])
-            y_coords.append(p1[1])
-            
-            # Calculate perimeter segment
-            segment_length = ((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)**0.5
-            perimeter += segment_length
-            
-            # Calculate centroid factor
-            factor = (p1[0] * p2[1] - p2[0] * p1[1])
-            cx += (p1[0] + p2[0]) * factor
-            cy += (p1[1] + p2[1]) * factor
-        
-        # Finalize centroid calculation
-        self.centroid_x = cx / (6 * area)
-        self.centroid_y = cy / (6 * area)
-        
-        # Calculate bounding box
-        min_x, max_x = min(x_coords), max(x_coords)
-        min_y, max_y = min(y_coords), max(y_coords)
-        
-        # Calculate remaining shape metrics
-        width = max_x - min_x
-        height = max_y - min_y
-        
-        # Compactness (circularity)
-        compactness = (4 * 3.14159 * area) / (perimeter**2) if perimeter > 0 else 0
-        
-        # Rectangular fit
-        rect_fit = area / (width * height) if width > 0 and height > 0 else 0
-        
-        # Store all the calculated metrics
-        self.perimeter = perimeter
-        self.compactness = compactness
-        self.width = width
-        self.height = height
-        self.rect_fit = rect_fit
-        self.aspect_ratio = width / height if height > 0 else 0
-    
-    def _create_boundary_points(self, num_points: int = 20):
+        # Process document polygon
+        self._process_wkt_polygon('doc')
+
+        # Calculate window direction components
+        self._calculate_window_direction_components()
+
+        # Calculate window relative direction flags
+        self._calculate_window_relative_direction_flags()
+
+    def _calculate_window_direction_components(self):
         """
-        Create a list of evenly spaced points along the room boundary.
-        This can be useful for more accurate distance calculations in GNNs.
+        Calculate sine and cosine components for window directions.
+        This converts the hasWindowsFacingDirection list into:
+        - window_direction_sin: Sine component of avg direction
+        - window_direction_cos: Cosine component of avg direction
+        - has_multiple_window_directions: Flag for multiple directions
+        """
+        # Default values (no windows case)
+        self.window_direction_sin = 0.0
+        self.window_direction_cos = 0.0
+        self.has_multiple_windows = False
+        
+        # Skip if no window directions available
+        if not self.hasWindowsFacingDirection:
+            return
+        
+        # Extract valid directions - converting strings to float/int if needed
+        valid_directions = []
+        for dir_ in self.hasWindowsFacingDirection:
+            try:
+                # Convert to float or int if it's a string
+                if isinstance(dir_, str):
+                    dir_ = float(dir_)
+                
+                # Ensure it's a number
+                if isinstance(dir_, (int, float)):
+                    valid_directions.append(dir_)
+            except (ValueError, TypeError):
+                logger.warning(f"Invalid window direction value: {dir_}")
+        
+        # Skip if no valid directions
+        if not valid_directions:
+            logger.warning(f"No valid window directions for room {self.room_number}")
+            return
+        
+        # Check for multiple directions
+        self.has_multiple_windows = len(valid_directions) > 1
+        
+        # Convert directions to radians (assuming input is in degrees 0-360)
+        directions_rad = [math.radians(float(dir_)) for dir_ in valid_directions]
+        
+        # Calculate average direction components
+        sin_values = [math.sin(rad) for rad in directions_rad]
+        cos_values = [math.cos(rad) for rad in directions_rad]
+            
+        # Compute raw averages
+        raw_sin = sum(sin_values) / len(sin_values)
+        raw_cos = sum(cos_values) / len(cos_values)
+
+        # Round to 3 decimal places (change the 3 to whatever precision you like)
+        self.window_direction_sin = round(raw_sin, 3)
+        self.window_direction_cos = round(raw_cos, 3)
+        self.has_multiple_windows = len(valid_directions) > 1
+
+        logger.debug(
+            f"Room {self.room_number}: "
+            f"sin={self.window_direction_sin}, cos={self.window_direction_cos}, "
+            f"multiple={self.has_multiple_windows}"
+        )
+
+    def _calculate_window_relative_direction_flags(self):
+        """
+        Calculate boolean flags for each window direction based on hasWindowsRelativeDirection.
+        Sets hasBackWindows, hasFrontWindows, hasRightWindows, and hasLeftWindows.
+        """
+        # Reset all flags
+        self.hasBackWindows = False
+        self.hasFrontWindows = False
+        self.hasRightWindows = False
+        self.hasLeftWindows = False
+        
+        # Skip if no relative directions available
+        if not self.hasWindowsRelativeDirection:
+            return
+        
+        # Convert all directions to lowercase for case-insensitive comparison
+        directions = [d.lower() for d in self.hasWindowsRelativeDirection if isinstance(d, str)]
+        
+        # Set flags based on directions
+        self.hasBackWindows = any('back' in d for d in directions)
+        self.hasFrontWindows = any('front' in d for d in directions)
+        self.hasRightWindows = any('right' in d for d in directions)
+        self.hasLeftWindows = any('left' in d for d in directions)
+                
+    def _initialize_polygon_dictionaries(self):
+        """Initialize polygon dictionaries with default values."""
+        default_polygon_data = {
+            'wkt': None,              # Original WKT string
+            'points_2d': [],          # List of (x, y) tuples
+            'points_3d': [],          # List of (x, y, z) tuples
+            'centroid': (None, None), # (x, y) of centroid
+            'area': None,             # Area in square meters/units
+            'perimeter': None,        # Perimeter in meters/units
+            'width': None,            # Bounding box width
+            'height': None,           # Bounding box height
+            'compactness': None,      # Circularity measure
+            'rect_fit': None,         # How rectangular the room is
+            'aspect_ratio': None,     # Width to height ratio
+            'boundary_points': []     # Evenly spaced points on boundary
+        }
+        
+        # Use dict() to create a copy of the default dictionary
+        self.polygons_geo = dict(default_polygon_data)
+        self.polygons_doc = dict(default_polygon_data)
+        
+    def _process_wkt_polygon(self, polygon_type: str):
+        """
+        Process WKT polygon and calculate metrics.
         
         Args:
-            num_points: Number of points to generate along the boundary
-            
-        Returns:
-            List of (x, y) coordinates of boundary points
+            polygon_type: Either 'geo' or 'doc' to indicate which polygon to process
         """
-        if not self.polygon_2d or len(self.polygon_2d) < 3:
-            return []
+        # Determine which polygon data and dictionary to use based on type
+        if polygon_type == 'geo':
+            wkt_polygon = self.geo_wkt_polygon
+            polygon_dict = self.polygons_geo
+            altitude = self.altitude  # Only used for geo polygons
+        elif polygon_type == 'doc':
+            wkt_polygon = self.doc_wkt_polygon
+            polygon_dict = self.polygons_doc
+            altitude = None  # Not needed for doc polygons
+        else:
+            logger.error(f"Invalid polygon type: {polygon_type}")
+            return
         
-        # Calculate total perimeter length and segment lengths
-        segments = []
-        total_length = 0.0
+        # Skip processing if no polygon data
+        if not wkt_polygon:
+            logger.debug(f"No {polygon_type} WKT polygon data for room {self.room_number or self.uri}")
+            return
         
-        for i in range(len(self.polygon_2d)):
-            p1 = self.polygon_2d[i]
-            p2 = self.polygon_2d[(i + 1) % len(self.polygon_2d)]
-            segment_length = ((p2[0] - p1[0])**2 + (p2[1] - p1[1])**2)**0.5
-            segments.append((p1, p2, segment_length))
-            total_length += segment_length
-        
-        # Generate evenly spaced points
-        boundary_points = []
-        spacing = total_length / num_points
-        
-        current_distance = 0.0
-        for i, (p1, p2, length) in enumerate(segments):
-            # How many points to place on this segment
-            segment_points = max(1, int(length / spacing))
+        try:
+            # Store the WKT string
+            polygon_dict['wkt'] = wkt_polygon
             
-            for j in range(segment_points):
-                if len(boundary_points) >= num_points:
-                    break
-                    
-                # Calculate position along this segment
-                t = j / segment_points
-                x = p1[0] + t * (p2[0] - p1[0])
-                y = p1[1] + t * (p2[1] - p1[1])
-                boundary_points.append((x, y))
-        
-        self.boundary_points = boundary_points
+            # Parse the WKT string to get point lists
+            points_2d, points_3d = polygon_utils.parse_wkt_polygon(
+                wkt_polygon, 
+                altitude=altitude if polygon_type == 'geo' else None
+            )
+            
+            # Check if we have valid points
+            if not points_2d or len(points_2d) < 3:
+                logger.warning(f"Not enough valid points in {polygon_type} WKT for room {self.room_number or self.uri}")
+                return
+                
+            polygon_dict['points_2d'] = points_2d
+            polygon_dict['points_3d'] = points_3d
+            
+            # Calculate metrics
+            try:
+                metrics = polygon_utils.calculate_shape_metrics(points_2d)
+                
+                # Store metrics in the dictionary
+                polygon_dict['centroid'] = metrics['centroid']
+                polygon_dict['area'] = metrics.get('area')
+                polygon_dict['perimeter'] = metrics.get('perimeter')
+                polygon_dict['width'] = metrics.get('width')
+                polygon_dict['height'] = metrics.get('height')
+                polygon_dict['compactness'] = metrics.get('compactness')
+                polygon_dict['rect_fit'] = metrics.get('rect_fit')
+                polygon_dict['aspect_ratio'] = metrics.get('aspect_ratio')
+                
+                # Create boundary points
+                try:
+                    polygon_dict['boundary_points'] = polygon_utils.create_boundary_points(points_2d)
+                except Exception as e:
+                    logger.warning(f"Failed to create boundary points for {polygon_type} polygon in room {self.room_number or self.uri}: {str(e)}")
+                
+            except Exception as e:
+                logger.error(f"Error calculating metrics for {polygon_type} polygon in room {self.room_number or self.uri}: {str(e)}")
+                
+        except Exception as e:
+            logger.error(f"Error processing {polygon_type} WKT for room {self.room_number or self.uri}: {str(e)}")
 
     @classmethod
     def from_uri(cls, uri: URIRef, is_support_zone: bool = False) -> 'Room':
@@ -226,21 +253,35 @@ class Room(NamespaceMixin):
             try:
                 room_number = room_str.split("roomname_")[-1]
             except Exception:
-                pass
+                logger.warning(f"Failed to extract room number from URI: {uri}")
                 
         return cls(
             uri=uri,
             room_number=room_number,
             is_support_zone=is_support_zone
         )
-    
+
     def add_device(self, device_uri: URIRef) -> None:
         """Add a device to this room."""
         self.devices.add(device_uri)
-    
+
     def remove_device(self, device_uri: URIRef) -> None:
         """Remove a device from this room."""
         self.devices.discard(device_uri)
+
+    def get_floor_number(self) -> str:
+        """
+        Extracts and returns the floor number from the self.floor URIRef.
+        Falls back to 'n/a' if self.floor is None or parsing fails.
+        """
+        floor_display = 'n/a'
+        if self.floor:
+            floor_str = str(self.floor)
+            if 'floor_' in floor_str:
+                floor_display = floor_str.split('floor_')[-1].strip()
+            else:
+                floor_display = floor_str.split('/')[-1].strip()
+        return floor_display
 
     def to_dict(self) -> Dict:
         """Convert to dictionary representation."""
@@ -252,95 +293,64 @@ class Room(NamespaceMixin):
             "device_count": len(self.devices),
             
             # Attributes from CSV
-            "isRoom": self.isRoom,
+            "isProperRoom": self.isProperRoom,
             "hasWindows": self.hasWindows,
             "hasWindowsFacingDirection": self.hasWindowsFacingDirection,
+            "hasWindowsRelativeDirection": self.hasWindowsRelativeDirection,
+            
+            # Window direction flags
+            "hasBackWindows": self.hasBackWindows,
+            "hasFrontWindows": self.hasFrontWindows,
+            "hasRightWindows": self.hasRightWindows,
+            "hasLeftWindows": self.hasLeftWindows,
+            
+            # Window direction components
+            "window_direction_sin": self.window_direction_sin,
+            "window_direction_cos": self.window_direction_cos,
+            "has_multiple_windows": self.has_multiple_windows,
             
             # Spatial relationships
-            "adjacent_rooms": self.adjacent_rooms
+            "adjacent_rooms": self.adjacent_rooms,
+            
+            # Altitude if available
+            "altitude": self.altitude,
+            
+            # Include the polygon dictionaries directly
+            "polygons_geo": self.polygons_geo,
+            "polygons_doc": self.polygons_doc
         }
-        
-        # Add spatial data if available
-        if self.wkt_polygon:
-            room_dict["wkt_polygon"] = self.wkt_polygon
-        if self.metric_area is not None:
-            room_dict["metric_area"] = self.metric_area
-        if self.altitude is not None:
-            room_dict["altitude"] = self.altitude
-        
-        # Add centroid if available
-        if self.centroid_x is not None and self.centroid_y is not None:
-            room_dict["centroid"] = (self.centroid_x, self.centroid_y)
-        
-        # Add shape metrics if available
-        if self.perimeter is not None:
-            room_dict["perimeter"] = self.perimeter
-        if self.compactness is not None:
-            room_dict["compactness"] = self.compactness
-        if self.width is not None and self.height is not None:
-            room_dict["dimensions"] = (self.width, self.height)
-        if self.rect_fit is not None:
-            room_dict["rect_fit"] = self.rect_fit
-        if self.aspect_ratio is not None:
-            room_dict["aspect_ratio"] = self.aspect_ratio
         
         return room_dict
             
-        
-        # Add window information if available
-        if self.hasWindows:
-            yield (self.uri, self.EXONT.hasWindows, Literal(True))
-            
-            # Add window facing directions
-            if self.hasWindowsFacingDirection:
-                for i, heading in enumerate(self.hasWindowsFacingDirection):
-                    # Create a window instance URI
-                    window_uri = URIRef(f"{str(self.uri)}_window_{i}")
-                    
-                    # Link window to room
-                    yield (self.uri, self.EXONT.hasWindow, window_uri)
-                    
-                    # Add window type
-                    yield (window_uri, RDF.type, self.BOT.Element)
-                    
-                    # Add window properties
-                    yield (window_uri, self.EXONT.hasFacingDirection, Literal(heading, datatype=RDFS.XSD.integer))
-                    
-                    # Determine relative direction based on heading
-                    # This maps headings to relative directions (approximation)
-                    relative_dir = None
-                    if 315 <= heading < 45 or heading == 0:
-                        relative_dir = "front"
-                    elif 45 <= heading < 135:
-                        relative_dir = "right"
-                    elif 135 <= heading < 225:
-                        relative_dir = "back"
-                    elif 225 <= heading < 315:
-                        relative_dir = "left"
-                    
-                    if relative_dir:
-                        yield (window_uri, self.EXONT.facingRelativeDirection, Literal(relative_dir))
-        elif self.hasWindows is not None and not self.hasWindows:
-            yield (self.uri, self.EXONT.hasWindows, Literal(False))
-        
     def __str__(self):
-        # only show URI, room number, floor, device count and area
-        floor_display = 'n/a'
-        if self.floor:
-            floor_str = str(self.floor)
-            if 'floor_' in floor_str:
-                floor_display = floor_str.split('floor_')[-1].strip()
-            else:
-                floor_display = floor_str.split('/')[-1].strip()
+        """String representation of the room."""
+        area_str = 'n/a'
+        if self.polygons_geo.get('area') is not None:
+            area_str = f"{self.polygons_geo['area']:.2f} m²"
         
+        # Add window information to string representation
+        window_info = ""
+        if self.hasWindows:
+            window_dirs = []
+            if self.hasFrontWindows:
+                window_dirs.append("front")
+            if self.hasBackWindows:
+                window_dirs.append("back")
+            if self.hasLeftWindows:
+                window_dirs.append("left")
+            if self.hasRightWindows:
+                window_dirs.append("right")
+            window_info = f" │ windows={','.join(window_dirs)}"
+            
         return (
             f"Room {self.room_number or self.uri!r} │ "
-            f"floor={floor_display} │ "
+            f"floor={self.get_floor_number()} │ "
             f"devices={len(self.devices)} │ "
-            f"area={self.metric_area or 'n/a'} m²"
+            f"area={area_str}{window_info}"
         )
 
     def __repr__(self):
+        """Detailed representation of the room."""
         lines = ["Room("]
         # Core attributes
         for attr in [
@@ -349,62 +359,64 @@ class Room(NamespaceMixin):
             f"    is_support_zone={self.is_support_zone!r},",
             f"    floor={self.floor!r},",
             f"    n_devices={len(self.devices)!r},",
-            f"    isRoom={self.isRoom!r},",
+            f"    isProperRoom={self.isProperRoom!r},",
             f"    hasWindows={self.hasWindows!r},",
             f"    hasWindowsFacingDirection={self.hasWindowsFacingDirection!r},",
+            f"    hasWindowsRelativeDirection={self.hasWindowsRelativeDirection!r},",
+            f"    hasBackWindows={self.hasBackWindows!r},",
+            f"    hasFrontWindows={self.hasFrontWindows!r},",
+            f"    hasRightWindows={self.hasRightWindows!r},",
+            f"    hasLeftWindows={self.hasLeftWindows!r},",
+            f"    window_direction_sin={self.window_direction_sin!r},",
+            f"    window_direction_cos={self.window_direction_cos!r},",
+            f"    has_multiple_windows={self.has_multiple_windows!r},",
             f"    adjacent_rooms={self.adjacent_rooms!r},",
-            f"    wkt_polygon={self.wkt_polygon!r},",
-            f"    metric_area={self.metric_area!r},",
             f"    altitude={self.altitude!r},",
         ]:
             lines.append(attr)
-
-        # polygon_2d
-        if self.polygon_2d:
-            lines.append("    polygon_2d=[")
-            for pt in self.polygon_2d:
-                lines.append(f"        {pt!r},")
-            lines.append("    ],")
-        else:
-            lines.append(f"    polygon_2d={self.polygon_2d!r},")
-
-        # polygon_3d
-        if self.polygon_3d:
-            lines.append("    polygon_3d=[")
-            for pt in self.polygon_3d:
-                lines.append(f"        {pt!r},")
-            lines.append("    ],")
-        else:
-            lines.append(f"    polygon_3d={self.polygon_3d!r},")
-
-        # centroid and other scalars
-        lines.extend([
-            f"    centroid=({self.centroid_x!r}, {self.centroid_y!r}),",
-            f"    perimeter={self.perimeter!r},",
-            f"    compactness={self.compactness!r},",
-            f"    width={self.width!r},",
-            f"    height={self.height!r},",
-            f"    rect_fit={self.rect_fit!r},",
-            f"    aspect_ratio={self.aspect_ratio!r},",
-        ])
-
-        # boundary_points
-        if self.boundary_points:
-            lines.append("    boundary_points=[")
-            for pt in self.boundary_points:
-                lines.append(f"        {pt!r},")
-            lines.append("    ]")
-        else:
-            lines.append(f"    boundary_points={self.boundary_points!r}")
-
+        
+        # Polygon dictionaries
+        lines.append(f"    polygons_geo={{\n")
+        for key, value in self.polygons_geo.items():
+            if key.startswith('points_') or key == 'boundary_points':
+                if value:
+                    lines.append(f"        '{key}': [")
+                    for pt in value[:3]:  # Only show first few points for brevity
+                        lines.append(f"            {pt!r},")
+                    if len(value) > 3:
+                        lines.append(f"            # ... ({len(value) - 3} more points)")
+                    lines.append("        ],")
+                else:
+                    lines.append(f"        '{key}': [],")
+            else:
+                lines.append(f"        '{key}': {value!r},")
+        lines.append("    },")
+        
+        lines.append(f"    polygons_doc={{\n")
+        for key, value in self.polygons_doc.items():
+            if key.startswith('points_') or key == 'boundary_points':
+                if value:
+                    lines.append(f"        '{key}': [")
+                    for pt in value[:3]:  # Only show first few points for brevity
+                        lines.append(f"            {pt!r},")
+                    if len(value) > 3:
+                        lines.append(f"            # ... ({len(value) - 3} more points)")
+                    lines.append("        ],")
+                else:
+                    lines.append(f"        '{key}': [],")
+            else:
+                lines.append(f"        '{key}': {value!r},")
+        lines.append("    }")
+        
         lines.append(")")
         return "\n".join(lines)
-    
+
     def __hash__(self):
         return hash(self.uri)
-    
+
     def __eq__(self, other):
         """Check equality based on URI."""
         if isinstance(other, Room):
             return self.uri == other.uri
         return False
+    

@@ -92,71 +92,112 @@ class SVGParser:
         except Exception as e:
             logger.error(f"Error extracting building polygon: {e}")
             return []
-            
-    def get_room_polygons(self, floor_numbers: List[int]) -> Dict[int, Dict[str, List[Tuple[float, float]]]]:
-        """Get room polygons for specified floor numbers.
+    
+    def get_building_ground_polygon(self) -> List[Tuple[float, float]]:
+        """Get the building ground polygon from the SVG file.
         
-        Args:
-            floor_numbers: List of floor numbers to extract
-            
+        This function looks for a path with inkscape:label="building_ground" at the root level.
+        
         Returns:
-            Dictionary mapping floor numbers to room IDs to polygon points
+            List of points as (x, y) tuples representing the building ground polygon
         """
         try:
             tree = ET.parse(self.svg_path)
             root = tree.getroot()
             
-            # Store room polygons per floor
-            rooms_by_floor = {floor: {} for floor in floor_numbers}
+            # Look for a path directly labeled as "building_ground" at the root level
+            building_ground_path = root.find('.//svg:path[@inkscape:label="building_ground"]', self.ns)
             
-            # Process each floor layer
-            for floor_number in floor_numbers:
-                floor_layer_name = f"floor_{floor_number}"
-                floor_layer = root.find(f'.//svg:g[@inkscape:label="{floor_layer_name}"]', self.ns)
-                
-                if floor_layer is None:
-                    # Try with just the layer name as the number
-                    floor_layer = root.find(f'.//svg:g[@inkscape:label="{floor_number}"]', self.ns)
-                
-                if floor_layer is None:
-                    logger.warning(f"No '{floor_layer_name}' layer found in the SVG. Skipping floor {floor_number}.")
-                    continue
-                    
-                # Get transform values for the floor layer
-                transform = floor_layer.get('transform', '')
+            if building_ground_path is not None:
+                logger.info("Found building ground polygon at root level")
+                # Get the transform for the building ground path
+                transform = building_ground_path.get('transform', '')
                 transform_values = [0, 0]
                 if transform:
                     match = re.search(r'translate\(([-\d\.]+),([-\d\.]+)\)', transform)
                     if match:
                         transform_values = [float(match.group(1)), float(match.group(2))]
                 
-                logger.info(f"Floor {floor_number} transform values: {transform_values}")
+                # Parse the path data
+                d = building_ground_path.get('d', '')
+                if d:
+                    points = self._parse_svg_path(d, transform_values)
+                    logger.info(f"Extracted building ground polygon with {len(points)} points")
+                    return points
+            
+            # If we get here, no building ground polygon was found
+            logger.warning("No building ground polygon found in SVG")
+            return []
+        
+        except Exception as e:
+            logger.error(f"Error extracting building ground polygon: {e}")
+            return []
+            
+    def get_room_polygons(self) -> Dict[str, List[Tuple[float, float]]]:
+        """Get room polygons from the 'rooms' layer.
+        
+        Returns:
+            Dictionary mapping room IDs to polygon points
+        """
+        try:
+            tree = ET.parse(self.svg_path)
+            root = tree.getroot()
+            
+            # Store room polygons
+            rooms = {}
+            
+            # Find the rooms layer (with label "rooms")
+            rooms_layer = root.find('.//svg:g[@inkscape:label="rooms"]', self.ns)
+            
+            if rooms_layer is None:
+                # Try with the layer ID
+                rooms_layer = root.find('.//svg:g[@id="layer1"]', self.ns)
+            
+            if rooms_layer is None:
+                logger.warning("No 'rooms' layer found in the SVG.")
+                return {}
                 
-                # Extract room paths from floor layer
-                for path in floor_layer.findall('.//svg:path', self.ns):
-                    room_id = path.get('{http://www.inkscape.org/namespaces/inkscape}label', '')
-                    if not room_id or room_id == 'building':
-                        continue
-                        
-                    d = path.get('d', '')
-                    if d:
-                        # Parse the path data to extract points
-                        points = self._parse_svg_path(d, transform_values)
-                        
-                        # Store the room polygon
-                        rooms_by_floor[floor_number][room_id] = points
+            # Get transform values for the rooms layer
+            layer_transform = rooms_layer.get('transform', '')
+            layer_transform_values = [0, 0]
+            if layer_transform:
+                match = re.search(r'translate\(([-\d\.]+),([-\d\.]+)\)', layer_transform)
+                if match:
+                    layer_transform_values = [float(match.group(1)), float(match.group(2))]
+            
+            logger.info(f"Rooms layer transform values: {layer_transform_values}")
+            
+            # Extract room paths from the rooms layer
+            for path in rooms_layer.findall('./svg:path', self.ns):
+                room_id = path.get('{http://www.inkscape.org/namespaces/inkscape}label', '')
+                if not room_id or room_id == 'building' or room_id == 'building_ground':
+                    continue
+                    
+                # Get path-specific transform
+                path_transform = path.get('transform', '')
+                path_transform_values = list(layer_transform_values)  # Start with layer transform
+                if path_transform:
+                    match = re.search(r'translate\(([-\d\.]+),([-\d\.]+)\)', path_transform)
+                    if match:
+                        path_transform_values[0] += float(match.group(1))
+                        path_transform_values[1] += float(match.group(2))
+                
+                d = path.get('d', '')
+                if d:
+                    # Parse the path data to extract points
+                    points = self._parse_svg_path(d, path_transform_values)
+                    
+                    # Store the room polygon
+                    rooms[room_id] = points
             
             # Log summary of extracted polygons
-            total_rooms = sum(len(rooms) for rooms in rooms_by_floor.values())
-            logger.info(f"Extracted {total_rooms} room polygons across {len(floor_numbers)} floors")
-            for floor, rooms in rooms_by_floor.items():
-                logger.info(f"  Floor {floor}: {len(rooms)} rooms")
+            logger.info(f"Extracted {len(rooms)} room polygons")
                 
-            return rooms_by_floor
+            return rooms
         
         except Exception as e:
             logger.error(f"Error extracting room polygons: {e}")
-            return {floor: {} for floor in floor_numbers}
+            return {}
     
     def _parse_svg_path(self, d_attr: str, transform: List[float]) -> List[Tuple[float, float]]:
         """Parse SVG path data to extract polygon points.
