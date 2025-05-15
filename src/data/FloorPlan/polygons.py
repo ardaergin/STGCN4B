@@ -7,6 +7,7 @@ from pyproj import Transformer, CRS
 
 logger = logging.getLogger(__name__)
 
+from ...config.namespaces import NamespaceMixin
 from ...core.building import Building
 from .svg_parser import SVGParser
 
@@ -20,7 +21,7 @@ class PolygonData:
     utm_points: List[Tuple[float, float]] = None  # UTM coordinates (meters)
 
 
-class SvgToRdf:
+class SvgToRdf(NamespaceMixin):
     """Class to convert SVG floor plans to RDF spatial topology using PyProj."""
     
     def __init__(self,
@@ -55,32 +56,10 @@ class SvgToRdf:
         self.building_polygon = None
         
         # The RDF graph for output
-        self.graph = Graph()
-
-        # Name space setup
-        self._setup_namespaces()
+        self.graph = self.create_empty_graph_with_namespace_bindings()
         
         # Set up coordinate transformers
         self._setup_transformers()
-    
-    def _setup_namespaces(self):
-        # Namespaces
-        self.IC = Namespace("https://interconnectproject.eu/example/")
-        self.BOT = Namespace("https://w3id.org/bot#")
-        self.GEO = Namespace("http://www.w3.org/2003/01/geo/wgs84_pos#")
-        self.GEOSPARQL = Namespace("http://www.opengis.net/ont/geosparql#")
-        self.S4BLDG = Namespace("https://saref.etsi.org/saref4bldg/")
-        self.EX = Namespace("https://example.org/")
-
-        self.graph.bind("ic", self.IC)
-        self.graph.bind("ex", self.EX)
-        self.graph.bind("bot", self.BOT)
-        self.graph.bind("geo", self.GEO)
-        self.graph.bind("geosparql", self.GEOSPARQL)
-        self.graph.bind("s4bldg", self.S4BLDG)
-        self.graph.bind("rdfs", RDFS)
-        self.graph.bind("xsd", XSD)
-    
     def _setup_transformers(self):
         """Set up PyProj transformers for coordinate conversion."""
         # Define coordinate reference systems

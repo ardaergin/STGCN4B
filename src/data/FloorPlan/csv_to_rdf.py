@@ -3,9 +3,10 @@ from rdflib.namespace import RDFS, XSD
 import pandas as pd
 import math
 
-from ...core import Building
+from ...config.namespaces import NamespaceMixin
+from ...core.building import Building
 
-class RoomEnrichmentViaCSV:
+class RoomEnrichmentViaCSV(NamespaceMixin):
     """
     Read a CSV with columns 'URI', 'isFacing', 'isRoom' and add corresponding triples
     into an existing RDF Graph using a custom namespace for the new predicates.
@@ -15,23 +16,7 @@ class RoomEnrichmentViaCSV:
                  csv_path: str = "data/topology/VideoLab_floor7.csv"):
         self.csv_path = csv_path
         self.building = building
-        self.graph = Graph()
-        
-        # Define namespaces
-        self.IC = Namespace("https://interconnectproject.eu/example/")
-        self.S4BLDG = Namespace("https://saref.etsi.org/saref4bldg/")
-        self.EX = Namespace("https://example.org/")
-        self.BOT = Namespace("https://w3id.org/bot#")
-        self.EXONT = Namespace("https://example.org/ontology#")
-        
-        # Bind namespaces to prefixes
-        self.graph.bind("ic", self.IC)
-        self.graph.bind("s4bldg", self.S4BLDG)
-        self.graph.bind("ex", self.EX)
-        self.graph.bind("rdfs", RDFS)
-        self.graph.bind("xsd", XSD)
-        self.graph.bind("bot", self.BOT)
-        self.graph.bind("ex-ont", self.EXONT)
+        self.graph = self.create_empty_graph_with_namespace_bindings()
         
         # Mapping building-relative directions to actual headings
         self.direction_heading_map = {
@@ -67,10 +52,7 @@ class RoomEnrichmentViaCSV:
         # Add triples to the graph
         for _, row in df.iterrows():
             room_uri = URIRef(row['URI'])
-            
-            # Removed the room number triple that you don't want
-            # (The code that was here adding ex-ont:roomNumber has been removed)
-            
+                        
             # Add isRoom property - handle both string and boolean types
             if isinstance(row['isRoom'], str):
                 is_room_value = row['isRoom'].strip().upper() == 'TRUE'
@@ -108,12 +90,12 @@ class RoomEnrichmentViaCSV:
                             self.graph.add((window_uri, RDFS.label, Literal(window_label)))
                             
                             # Link window to room
-                            self.graph.add((room_uri, self.EXONT.hasWindow, window_uri))
+                            self.graph.add((room_uri, self.EX_ONT.hasWindow, window_uri))
                             
                             # Add both the building-relative direction and actual heading
-                            self.graph.add((window_uri, self.EXONT.facingRelativeDirection, Literal(direction, datatype=XSD.string)))
+                            self.graph.add((window_uri, self.EX_ONT.facingRelativeDirection, Literal(direction, datatype=XSD.string)))
                             heading = self.direction_heading_map[direction]
-                            self.graph.add((window_uri, self.EXONT.hasFacingDirection, Literal(heading, datatype=XSD.integer)))
+                            self.graph.add((window_uri, self.EX_ONT.hasFacingDirection, Literal(heading, datatype=XSD.integer)))
         
         return self.graph
     

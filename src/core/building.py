@@ -2,8 +2,11 @@ from dataclasses import dataclass, field
 from typing import Optional, Dict, Set, List, Tuple
 from rdflib import URIRef, Namespace
 
+from ..config.namespaces import NamespaceMixin
+
+
 @dataclass(slots=True)
-class Building:
+class Building(NamespaceMixin):
     """
     Class representing a building with real-world geographic coordinates.
     """
@@ -33,12 +36,7 @@ class Building:
     # Floors in this building
     floors: Set[URIRef] = field(default_factory=set)
     number_of_floors_excluding_ground_floor: Optional[int] = None
-    
-    # Namespaces
-    BOT = Namespace("https://w3id.org/bot#")
-    GEO = Namespace("http://www.w3.org/2003/01/geo/wgs84_pos#")
-    EX = Namespace("https://example.org/")
-    
+        
     def __post_init__(self):
         """Populate building information for VideoLab."""
         if self.name == "VideoLab":

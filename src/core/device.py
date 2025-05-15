@@ -4,11 +4,12 @@ import pandas as pd
 from rdflib import URIRef, Namespace, Literal, RDF
 import datetime
 
+from ..config.namespaces import NamespaceMixin
 from .measurement import Measurement
 
 
 @dataclass(slots=True)
-class Device:
+class Device(NamespaceMixin):
     uri: URIRef
     manufacturer: Optional[str] = None
     model: Optional[str] = None
@@ -17,13 +18,7 @@ class Device:
     measurements: List[Measurement] = field(default_factory=list)
     properties: Set[URIRef] = field(default_factory=set)
     measurements_by_property: Dict[URIRef, List[Measurement]] = field(default_factory=dict)
-    
-    # Define namespace constants at class level for reuse
-    SAREF = Namespace("https://saref.etsi.org/core/")
-    S4ENER = Namespace("https://saref.etsi.org/saref4ener/")
-    IC = Namespace("https://interconnectproject.eu/example/")
-    S4BLDG = Namespace("https://saref.etsi.org/saref4bldg/")
-    
+        
     def add_measurement(self, measurement: Measurement) -> None:
         """Add a measurement and update related collections."""
         self.measurements.append(measurement)
@@ -76,28 +71,7 @@ class Device:
             "measurement_count": len(self.measurements),
             "properties": [str(property) for property in self.properties]
         }
-    
-    def to_rdf_triples(self):
-        """Yield RDF triples representing this device."""
-        # Define the device as a Device
-        yield (self.uri, RDF.type, self.S4ENER.Device)
         
-        # Add device metadata
-        if self.manufacturer:
-            yield (self.uri, self.SAREF.hasManufacturer, Literal(self.manufacturer))
-        if self.model:
-            yield (self.uri, self.SAREF.hasModel, Literal(self.model))
-        if self.device_type:
-            yield (self.uri, self.IC.hasDeviceType, Literal(self.device_type))
-        
-        # Link to room if available
-        if self.room:
-            yield (self.uri, self.S4BLDG.isContainedIn, self.room)
-        
-        # Link to measurements
-        for measurement in self.measurements:
-            yield (self.uri, self.SAREF.makesMeasurement, measurement.meas_uri)
-    
     def __repr__(self):
         return (f"Device({self.uri}, "
                 f"type={self.device_type}, "

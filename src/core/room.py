@@ -1,24 +1,17 @@
 from dataclasses import dataclass, field
 from typing import List, Optional, Dict, Set, Tuple
 from rdflib import URIRef, Literal, Namespace, RDF, RDFS
+from ..config.namespaces import NamespaceMixin
 
 
 @dataclass(slots=True)
-class Room:
+class Room(NamespaceMixin):
     uri: URIRef # In the RDF files, they are written as, e.g., "ic:roomname_7.003", so uri is the full "ic:roomname_7.003"
     room_number: Optional[str] = None # the room number is just the number: "7.003"
     # NOTE: 'rdfs:label' (e.g.,`rdfs:label "7.073"`) is the room number.
     is_support_zone: bool = False  # True for support_zone, False for room
     floor: Optional[URIRef] = None
     devices: Set[URIRef] = field(default_factory=set)
-
-    # Namespace constants
-    S4BLDG = Namespace("https://saref.etsi.org/saref4bldg/")
-    BOT = Namespace("https://w3id.org/bot#")
-    GEO1 = Namespace("http://www.w3.org/2003/01/geo/wgs84_pos#")
-    GEOSPARQL = Namespace("http://www.opengis.net/ont/geosparql#")
-    EX = Namespace("http://example.org/")  # Custom namespace for extension properties
-    EXONT = Namespace("http://example.org/ontology#")  # Custom namespace for ontology extensions
 
     # Attributes from CSV
     isRoom: Optional[bool] = None
@@ -292,75 +285,7 @@ class Room:
             room_dict["aspect_ratio"] = self.aspect_ratio
         
         return room_dict
-    
-    def to_rdf_triples(self):
-        """
-        Yield RDF triples representing all room properties and attributes.
-        
-        This method generates a complete RDF representation of the Room object,
-        including all available attributes regardless of their original source.
-        """
-        # Define the room as a BuildingSpace
-        yield (self.uri, RDF.type, self.S4BLDG.BuildingSpace)
-        
-        # Add a comment for the type (room vs. support_zone)
-        comment = "support_zone" if self.is_support_zone else "room"
-        yield (self.uri, RDFS.comment, Literal(comment))
-        
-        # Add room number as label if available
-        if self.room_number:
-            yield (self.uri, RDFS.label, Literal(self.room_number))
-        
-        # Connect to floor
-        if self.floor:
-            yield (self.uri, self.S4BLDG.isSpaceOf, self.floor)
             
-        # Devices contained in this room
-        for device_uri in self.devices:
-            yield (self.uri, self.S4BLDG.contains, device_uri)
-            yield (device_uri, self.S4BLDG.isContainedIn, self.uri)
-        
-        # Add spatial data
-        if self.wkt_polygon:
-            # Create a geometry node for the WKT
-            geometry_uri = URIRef(f"{str(self.uri)}_geometry")
-            yield (self.uri, self.GEOSPARQL.hasGeometry, geometry_uri)
-            yield (geometry_uri, self.GEOSPARQL.asWKT, Literal(self.wkt_polygon))
-        
-        # Add metric area if available
-        if self.metric_area is not None:
-            yield (self.uri, self.GEOSPARQL.hasMetricArea, Literal(self.metric_area))
-        
-        # Add altitude if available
-        if self.altitude is not None:
-            yield (self.uri, self.GEO1.alt, Literal(self.altitude))
-        
-        # Add CSV enrichment data
-        if self.isRoom is not None:
-            yield (self.uri, self.EX.isRoom, Literal(self.isRoom))
-        
-        # Add derived spatial metrics
-        if self.centroid_x is not None and self.centroid_y is not None:
-            centroid_wkt = f"POINT({self.centroid_x} {self.centroid_y})"
-            yield (self.uri, self.EXONT.hasCentroid, Literal(centroid_wkt))
-        
-        if self.perimeter is not None:
-            yield (self.uri, self.EXONT.hasPerimeter, Literal(self.perimeter))
-        
-        if self.compactness is not None:
-            yield (self.uri, self.EXONT.hasCompactness, Literal(self.compactness))
-        
-        if self.width is not None:
-            yield (self.uri, self.EXONT.hasWidth, Literal(self.width))
-        
-        if self.height is not None:
-            yield (self.uri, self.EXONT.hasHeight, Literal(self.height))
-        
-        if self.rect_fit is not None:
-            yield (self.uri, self.EXONT.hasRectangularFit, Literal(self.rect_fit))
-        
-        if self.aspect_ratio is not None:
-            yield (self.uri, self.EXONT.hasAspectRatio, Literal(self.aspect_ratio))
         
         # Add window information if available
         if self.hasWindows:

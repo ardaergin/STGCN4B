@@ -3,17 +3,17 @@ from typing import Optional, Dict, Any
 from rdflib import URIRef, Namespace, Literal, RDF
 import datetime
 
+from ..config.namespaces import NamespaceMixin
+
 
 @dataclass(order=True, slots=True)
-class Measurement:
+class Measurement(NamespaceMixin):
     meas_uri: URIRef = field(compare=True)
     device_uri: URIRef = field(compare=False)
     timestamp: datetime.datetime = field(compare=True)
     value: float = field(compare=True)
     unit: Optional[URIRef] = field(default=None, compare=False)
     property_type: Optional[URIRef] = field(default=None, compare=False)
-
-    SAREF = Namespace("https://saref.etsi.org/core/")
 
     def __post_init__(self):
         """Ensuring that the timestamp attribute is a datetime instance."""
@@ -53,20 +53,6 @@ class Measurement:
             "unit": str(self.unit) if self.unit else None,
             "property_type": str(self.property_type) if self.property_type else None
         }
-
-    def to_rdf_triples(self):
-        """Yield RDF triples representing this measurement."""
-        # Define the measurement as a Measurement
-        yield (self.meas_uri, RDF.type, self.SAREF.Measurement)
-        # Use the exact predicates from the data
-        yield (self.meas_uri, self.SAREF.hasTimestamp, Literal(self.timestamp.isoformat()))
-        yield (self.meas_uri, self.SAREF.hasValue, Literal(self.value))
-        if self.unit:
-            yield (self.meas_uri, self.SAREF.isMeasuredIn, self.unit)  # Changed from hasUnit
-        if self.property_type:
-            yield (self.meas_uri, self.SAREF.relatesToProperty, self.property_type)  # Changed from measuresProperty
-        # This triple is typically defined in the Device triples, not measurement ones
-        yield (self.device_uri, self.SAREF.makesMeasurement, self.meas_uri)
     
     def __repr__(self) -> str:
         return (

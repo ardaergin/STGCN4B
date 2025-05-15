@@ -1,14 +1,15 @@
 import os, sys, pickle, argparse
 from typing import Dict, List, Tuple, Optional, Set
-from rdflib import Graph, Namespace, URIRef, RDF, RDFS, XSD, OWL
+from rdflib import Graph, URIRef, RDF
 import logging
 logger = logging.getLogger(__name__)
 
+from ..config.namespaces import NamespaceMixin
 from ..core import Device, Measurement, Room, Floor, Building
 from ..data.OfficeGraph.device_loader import FloorDeviceRetriever
 from ..data.OfficeGraph.ttl_loader import load_multiple_ttl_files, load_VideoLab_topology, load_csv_enrichment
 
-class OfficeGraph:
+class OfficeGraph(NamespaceMixin):
     """Class to represent and manipulate the IoT Office Graph."""
    
     def __init__(self, 
@@ -31,12 +32,9 @@ class OfficeGraph:
             only_floor7 = False
 
         # Main RDF graph
-        self.graph = Graph()
+        self.graph = self.create_empty_graph_with_namespace_bindings()
         self.base_dir = base_dir
        
-        # Define and bind namespaces
-        self._setup_namespaces()
-
         # Collections to store entities
         self._init_collections()
 
@@ -53,37 +51,6 @@ class OfficeGraph:
         # Initialize retriever and load OfficeGraph
         self.retriever = FloorDeviceRetriever()
         self.load_devices_on_floors(floors_to_load)
-
-    def _setup_namespaces(self):
-        """Set up and bind namespaces."""
-        # Define namespaces
-        self.IC = Namespace("https://interconnectproject.eu/example/")
-        self.SAREF = Namespace("https://saref.etsi.org/core/")
-        self.S4ENER = Namespace("https://saref.etsi.org/saref4ener/")
-        self.S4BLDG = Namespace("https://saref.etsi.org/saref4bldg/")
-        self.OM = Namespace("http://www.wurvoc.org/vocabularies/om-1.8/")
-        self.BOT = Namespace("https://w3id.org/bot#")
-        self.GEO = Namespace("http://www.w3.org/2003/01/geo/wgs84_pos#")
-        self.GEOSPARQL = Namespace("http://www.opengis.net/ont/geosparql#")
-        self.EX = Namespace("https://example.org/")
-        self.EXONT = Namespace("https://example.org/ontology#")
-        
-        # Bind namespaces to prefixes for serialization
-        self.graph.bind("ic", self.IC)
-        self.graph.bind("saref", self.SAREF)
-        self.graph.bind("s4ener", self.S4ENER)
-        self.graph.bind("s4bldg", self.S4BLDG)
-        self.graph.bind("om", self.OM)
-        self.graph.bind("bot", self.BOT)
-        self.graph.bind("geo", self.GEO)
-        self.graph.bind("geosparql", self.GEOSPARQL)
-        self.graph.bind("ex", self.EX)
-        self.graph.bind("ex-ont", self.EXONT)
-
-        # built-in RDF namespaces (not necessary, but just in case)
-        self.graph.bind("rdfs", RDFS)
-        self.graph.bind("xsd", XSD)
-        self.graph.bind("owl", OWL)
     
     def _init_collections(self):
         """Initialize collections to store entities."""

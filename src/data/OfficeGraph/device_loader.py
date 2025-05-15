@@ -3,7 +3,10 @@ import re
 from typing import List, Set
 from rdflib import Graph, Namespace, RDF
 
-class FloorDeviceRetriever:
+from ...config.namespaces import NamespaceMixin
+
+
+class FloorDeviceRetriever(NamespaceMixin):
     """
     A helper class to load the device map, parse an enrichment TTL,
     and query for devices exclusively on a specified floor (excluding support_zone).
@@ -29,11 +32,6 @@ class FloorDeviceRetriever:
 
         # Step 3: Build the reverse lookup from expanded URI -> (filename, short_id)
         self.reverse_lookup = self._build_reverse_lookup()
-
-        # Namespaces
-        self.IC     = Namespace("https://interconnectproject.eu/example/")
-        self.RDFS   = Namespace("http://www.w3.org/2000/01/rdf-schema#")
-        self.S4BLDG = Namespace("https://saref.etsi.org/saref4bldg/")
 
     def _build_file_device_map(self) -> dict:
         """
