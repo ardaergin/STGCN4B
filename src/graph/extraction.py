@@ -23,17 +23,19 @@ class OfficeGraphExtractor:
         """
         Extract rooms and floors from the graph and establish their relationships.
         Updates the office_graph's rooms and floors collections.
-        Processes spatial data including WKT polygons, metric area, and altitude.
-        Also extracts CSV enrichment data: isRoom, hasWindows, and hasWindowsFacingDirection.
+        Processes spatial data including WKT polygons (both geo and document), altitude.
+        Also extracts CSV enrichment data: isProperRoom, hasWindows, and hasWindowsFacingDirection.
         """
-        # Clear existing data
+        from collections import defaultdict
+
+        # 0) Clear existing data
         self.office_graph.rooms.clear()
         self.office_graph.floors.clear()
 
-        # First, extract all floors
+        # 1) Extract all floors
         floor_query = """
         PREFIX s4bldg: <https://saref.etsi.org/saref4bldg/>
-        PREFIX ic: <https://interconnectproject.eu/example/>
+        PREFIX ic:     <https://interconnectproject.eu/example/>
 
         SELECT DISTINCT ?floor
         WHERE {
@@ -41,148 +43,139 @@ class OfficeGraphExtractor:
             FILTER(STRSTARTS(STR(?floor), STR(ic:VL_floor_)))
         }
         """
-        
         for row in self.office_graph.graph.query(floor_query):
             floor_uri = row.floor
-            
-            # Extract the floor number from the URI
             floor_number = None
-            floor_str = str(floor_uri)
-            if "VL_floor_" in floor_str:
-                try:
-                    floor_number = int(floor_str.split("VL_floor_")[-1])
-                except Exception:
-                    pass
-            
-            # Create the Floor object
-            floor_obj = Floor(
-                uri=floor_uri,
-                floor_number=floor_number
-            )
-            
-            self.office_graph.floors[floor_uri] = floor_obj
-        
-        logger.info("Extracted %d floors", len(self.office_graph.floors))
-        
-        # Now, extract all rooms with their spatial data and link them to floors
-        room_query = """
-        PREFIX s4bldg: <https://saref.etsi.org/saref4bldg/>
-        PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
-        PREFIX geosparql: <http://www.opengis.net/ont/geosparql#>
-        PREFIX bot: <https://w3id.org/bot#>
-        PREFIX geo1: <http://www.w3.org/2003/01/geo/wgs84_pos#>
-        PREFIX ex: <https://example.org/>
-        PREFIX ex-ont: <https://example.org/ontology#>
+            try:
+                floor_number = int(str(floor_uri).split("VL_floor_")[-1])
+            except:
+                pass
 
-        SELECT ?room ?floor ?comment ?label ?wkt_polygon ?metric_area ?altitude ?isRoom 
+            floor_obj = Floor(uri=floor_uri, floor_number=floor_number)
+            self.office_graph.floors[floor_uri] = floor_obj
+
+        logger.info("Extracted %d floors", len(self.office_graph.floors))
+
+        # 2) Extract basic room data (without instantiating Room yet)
+        room_query = """
+        PREFIX s4bldg:   <https://saref.etsi.org/saref4bldg/>
+        PREFIX rdfs:     <http://www.w3.org/2000/01/rdf-schema#>
+        PREFIX geo1:     <http://www.w3.org/2003/01/geo/wgs84_pos#>
+        PREFIX ex:       <https://example.org/>
+        PREFIX ex-ont:   <https://example.org/ontology#>
+
+        SELECT ?room ?floor ?comment ?label ?altitude ?isProperRoom
         WHERE {
             ?room a s4bldg:BuildingSpace .
             ?room s4bldg:isSpaceOf ?floor .
-            OPTIONAL { ?room rdfs:comment ?comment . }
-            OPTIONAL { ?room rdfs:label ?label . }
-            
-            # Spatial data from VideoLab topology
-            OPTIONAL { 
-                ?room geosparql:hasGeometry ?geometry .
-                ?geometry geosparql:asWKT ?wkt_polygon .
-            }
-            OPTIONAL { ?room geosparql:hasMetricArea ?metric_area . }
-            OPTIONAL { ?room geo1:alt ?altitude . }
-            
-            # CSV enrichment data
-            OPTIONAL { ?room ex:isRoom ?isRoom . }
-            
-            # Exclude floors themselves
-            FILTER NOT EXISTS { ?otherRoom s4bldg:isSpaceOf ?room }
+            OPTIONAL { ?room rdfs:comment ?comment. }
+            OPTIONAL { ?room rdfs:label   ?label.   }
+            OPTIONAL { ?room geo1:alt     ?altitude.}
+            OPTIONAL { ?room ex-ont:isProperRoom    ?isProperRoom.  }
+            FILTER NOT EXISTS { ?other s4bldg:isSpaceOf ?room. }
         }
         """
-
-        # Create room objects first
+        room_data: Dict[URIRef, Dict] = {}
         for row in self.office_graph.graph.query(room_query):
-            room_uri = row.room
-            floor_uri = row.floor
-            comment = str(row.comment) if row.comment else None
-            room_number = str(row.label) if row.label else None
-            wkt_polygon = str(row.wkt_polygon) if row.wkt_polygon else None
-            metric_area = float(row.metric_area) if row.metric_area else None
-            altitude = float(row.altitude) if row.altitude else None
-            is_room_value = bool(row.isRoom) if row.isRoom is not None else None
+            room_uri     = row.room
+            floor_uri    = row.floor
+            comment      = str(row.comment)  if row.comment else None
+            room_number  = str(row.label)    if row.label   else None
+            altitude     = float(row.altitude) if row.altitude else None
+            is_room_val  = bool(row.isProperRoom)  if row.isProperRoom is not None else None
 
-            # If room_number is not in the label, try to extract from URI
-            if not room_number:
-                room_str = str(room_uri)
-                if "roomname_" in room_str:
-                    try:
-                        room_number = room_str.split("roomname_")[-1]
-                    except Exception:
-                        pass
+            if not room_number and "roomname_" in str(room_uri):
+                try:
+                    room_number = str(room_uri).split("roomname_")[-1]
+                except:
+                    pass
 
-            # Determine if it's a support zone
-            is_support_zone = (comment == "support_zone")
+            room_data[room_uri] = {
+                'floor_uri':           floor_uri,
+                'is_support_zone':     (comment == "support_zone"),
+                'room_number':         room_number,
+                'altitude':            altitude,
+                'isProperRoom':        is_room_val,
+                'geo_wkt_polygon':     None,
+                'doc_wkt_polygon':     None,
+                'window_headings':     [],
+                'relative_directions': []
+            }
 
-            # Create the Room object with direct reference to its floor
+        # 3) Extract geo/document polygons
+        geo_query = """
+        PREFIX geosparql: <http://www.opengis.net/ont/geosparql#>
+        SELECT ?room ?wkt WHERE {
+        ?room geosparql:hasGeometry ?g .
+        ?g    geosparql:asWKT      ?wkt .
+        }
+        """
+        for row in self.office_graph.graph.query(geo_query):
+            if row.room in room_data:
+                room_data[row.room]['geo_wkt_polygon'] = str(row.wkt)
+
+        doc_query = """
+        PREFIX geosparql: <http://www.opengis.net/ont/geosparql#>
+        PREFIX ex-ont:   <https://example.org/ontology#>
+        SELECT ?room ?wkt WHERE {
+        ?room ex-ont:hasDocumentGeometry ?g .
+        ?g    geosparql:asWKT            ?wkt .
+        }
+        """
+        for row in self.office_graph.graph.query(doc_query):
+            if row.room in room_data:
+                room_data[row.room]['doc_wkt_polygon'] = str(row.wkt)
+
+        # 4) Extract window headings & relative directions
+        window_query = """
+        PREFIX ex-ont: <https://example.org/ontology#>
+        SELECT ?room ?hasFacingDirection ?facingRelativeDirection WHERE {
+            ?room   ex-ont:hasWindow            ?win .
+            ?win    ex-ont:hasFacingDirection   ?hasFacingDirection .
+            ?win    ex-ont:facingRelativeDirection ?facingRelativeDirection .
+        }
+        """
+        room_windows = defaultdict(list)
+        room_relative_directions = defaultdict(list)
+        for row in self.office_graph.graph.query(window_query):
+            room = row.room
+            room_windows[room].append(int(row.hasFacingDirection))
+            room_relative_directions[room].append(str(row.facingRelativeDirection))
+
+        # 5) Merge those two separately
+        for uri, headings in room_windows.items():
+            if uri in room_data:
+                room_data[uri]['window_headings'] = headings
+
+        for uri, rel_dirs in room_relative_directions.items():
+            if uri in room_data:
+                room_data[uri]['relative_directions'] = rel_dirs
+
+        # 6) Instantiate Room objects
+        for room_uri, data in room_data.items():
+            headings = data['window_headings']
+            rel_dirs = data['relative_directions']
+
             room_obj = Room(
-                uri=room_uri,
-                room_number=room_number,
-                is_support_zone=is_support_zone,
-                floor=floor_uri,
-                wkt_polygon=wkt_polygon,
-                metric_area=metric_area,
-                altitude=altitude,
-                isRoom=is_room_value  # Add the isRoom value from CSV enrichment
+                uri                         = room_uri,
+                room_number                 = data['room_number'],
+                is_support_zone             = data['is_support_zone'],
+                floor                       = data['floor_uri'],
+                altitude                    = data['altitude'],
+                isProperRoom                = data['isProperRoom'],
+                geo_wkt_polygon             = data['geo_wkt_polygon'],
+                doc_wkt_polygon             = data['doc_wkt_polygon'],
+                hasWindows                  = bool(headings),
+                hasWindowsFacingDirection   = headings,
+                hasWindowsRelativeDirection = rel_dirs
             )
 
-            # The Room.__post_init__ method will process the WKT polygon data automatically
-            # and calculate all derived spatial properties (centroid, perimeter, etc.)
-
             self.office_graph.rooms[room_uri] = room_obj
-            
-            # Link the floor to this room
-            if floor_uri in self.office_graph.floors:
-                self.office_graph.floors[floor_uri].add_room(room_uri)
+            if data['floor_uri'] in self.office_graph.floors:
+                self.office_graph.floors[data['floor_uri']].add_room(room_uri)
+
 
         logger.info("Extracted %d rooms", len(self.office_graph.rooms))
-        
-        # Now extract window information for the rooms
-        window_query = """
-        PREFIX ex: <https://example.org/>
-        PREFIX ex-ont: <https://example.org/ontology#>
-        
-        SELECT ?room ?window ?facingDirection ?hasFacingDirection
-        WHERE {
-            ?room ex-ont:hasWindow ?window .
-            ?window ex-ont:facingRelativeDirection ?facingDirection .
-            ?window ex-ont:hasFacingDirection ?hasFacingDirection .
-        }
-        """
-        
-        # Dictionary to track windows by room
-        room_windows = {}
-        
-        for row in self.office_graph.graph.query(window_query):
-            room_uri = row.room
-            window_uri = row.window
-            facing_direction = str(row.facingDirection)
-            heading = int(row.hasFacingDirection)
-            
-            # Initialize entry for this room if not already done
-            if room_uri not in room_windows:
-                room_windows[room_uri] = []
-                
-            # Add window direction to the room's list
-            room_windows[room_uri].append(heading)
-        
-        # Update room objects with window information
-        for room_uri, headings in room_windows.items():
-            if room_uri in self.office_graph.rooms:
-                room_obj = self.office_graph.rooms[room_uri]
-                room_obj.hasWindows = True
-                room_obj.hasWindowsFacingDirection = headings
-        
-        # Set hasWindows=False for rooms with no windows found
-        for room_uri, room_obj in self.office_graph.rooms.items():
-            if room_obj.hasWindows is None:
-                room_obj.hasWindows = False
     
     def extract_devices(self) -> None:
         """
