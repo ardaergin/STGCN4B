@@ -26,7 +26,7 @@ def load_and_split_data(args):
     logger.info("Loading processed OfficeGraph data...")
     
     # Load the pre-processed torch input
-    file_name = "stgcn_input_binary.pt"
+    file_name = "torch_input.pt"
     torch_input_path = os.path.join(args.data_dir, "processed", file_name)
     logger.info(f"Loading torch input from {torch_input_path}")
     

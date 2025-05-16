@@ -39,10 +39,10 @@ mkdir -p $TMPDIR/data/processed
 
 # Copy data to scratch (fast local disk)
 echo "Copying data to scratch space..."
-cp $HOME/eSTGNN/data/processed/torch_input_for_classification.pt $TMPDIR/data/processed/
+cp $HOME/eSTGNN/data/processed/torch_input.pt $TMPDIR/data/processed/
 
 # Check if data copy succeeded
-if [ ! -f "$TMPDIR/data/processed/torch_input_for_classification.pt" ]; then
+if [ ! -f "$TMPDIR/data/processed/torch_input.pt" ]; then
   echo "ERROR: Failed to copy data file"
   exit 1
 fi
