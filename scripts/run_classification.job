@@ -10,7 +10,7 @@
 #SBATCH --output=output/classification/slurm_output_%A.out
 #SBATCH --error=output/classification/slurm_error_%A.err
 
-export OUTPUT_DIR=output/stgcn_${SLURM_JOB_ID}
+export OUTPUT_DIR=output/classification/stgcn_${SLURM_JOB_ID}
 mkdir -p $OUTPUT_DIR
 
 # Load modules
@@ -27,6 +27,8 @@ module load scikit-learn/1.3.1-gfbf-2023a
 # Install missing packages if needed
 python -c "import rdflib" 2>/dev/null || pip install --user rdflib
 python -c "import holidays" 2>/dev/null || pip install --user holidays
+python -c "import shapely" 2>/dev/null || pip install --user shapely
+python -c "import tqdm" 2>/dev/null || pip install --user tqdm
 
 # Set PyTorch optimization flags
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
