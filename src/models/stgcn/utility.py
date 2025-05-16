@@ -43,7 +43,7 @@ def calc_gso(dir_adj, gso_type):
         row_sum = np.sum(adj, axis=1).A1
         row_sum_inv = np.power(row_sum, -1)
         row_sum_inv[np.isinf(row_sum_inv)] = 0.
-        deg_inv = np.diag(row_sum_inv)
+        deg_inv = sp.diags(row_sum_inv, format='csc') # <------ Bug Fix
         # A_{rw} = D^{-1} * A
         rw_norm_adj = deg_inv.dot(adj)
 
@@ -55,6 +55,9 @@ def calc_gso(dir_adj, gso_type):
 
     else:
         raise ValueError(f'{gso_type} is not defined.')
+
+    if not sp.issparse(gso): # <------ Bug Fix
+        gso = sp.csc_matrix(gso)
 
     return gso
 
@@ -73,7 +76,8 @@ def calc_chebynet_gso(gso):
     if eigval_max >= 2:
         gso = gso - id
     else:
-        gso = 2 * gso / eigval_max - id
+        gso = gso.multiply(2.0 / eigval_max) # <------ Bug Fix, use sparse-safe operations
+        gso = gso - id
 
     return gso
 
