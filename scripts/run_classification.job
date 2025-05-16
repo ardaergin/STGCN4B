@@ -9,8 +9,9 @@
 #SBATCH --time=01:00:00
 #SBATCH --output=output/classification/slurm_output_%A.out
 #SBATCH --error=output/classification/slurm_error_%A.err
-#SBATCH --mail-type=BEGIN,END,FAIL
-#SBATCH --mail-user=your.email@domain.com
+
+export OUTPUT_DIR=output/stgcn_${SLURM_JOB_ID}
+mkdir -p $OUTPUT_DIR
 
 # Load modules
 module purge
@@ -49,8 +50,6 @@ fi
 
 # Set directories
 export DATA_DIR=$TMPDIR/data
-export OUTPUT_DIR=output/stgcn_${SLURM_JOB_ID}
-mkdir -p $OUTPUT_DIR
 
 echo "Starting training with data from $DATA_DIR"
 echo "Results will be saved to $OUTPUT_DIR"
@@ -61,18 +60,7 @@ srun python -m src.tasks.classification \
   --output_dir $OUTPUT_DIR \
   --enable_cuda
 
-# Copy results from scratch to home directory
-echo "Copying results back to home directory..."
-mkdir -p $HOME/eSTGNN/output/classification
-cp -r $OUTPUT_DIR $HOME/eSTGNN/output/classification
-
 echo "Cleaning up scratch space..."
 rm -rf $TMPDIR/data
-
-# Move SLURM logs into job-specific output directory
-if [ -d "$OUTPUT_DIR" ]; then
-  mv output/classification/slurm_output_${SLURM_JOB_ID}.out $OUTPUT_DIR/slurm_output.out
-  mv output/classification/slurm_error_${SLURM_JOB_ID}.err $OUTPUT_DIR/slurm_error.err
-fi
 
 echo "Job completed successfully!"
