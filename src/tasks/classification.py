@@ -27,7 +27,7 @@ from ..config import parse_args
 
 # Import models
 from ..models.stgcn import STGCNChebGraphConv, STGCNGraphConv, EarlyStopping
-
+from ..models.stgcn.utility import calc_gso, calc_chebynet_gso, cnv_sparse_mat_to_coo_tensor
 # Import other modules
 from ..data import load_and_split_data
 
@@ -37,6 +37,34 @@ def setup_model(args, data, train_loader=None):
     
     # Get device
     device = data['device']
+    
+    # Calculate GSO (Graph Shift Operator) from adjacency matrix
+    adjacency_matrix = data["adjacency_matrix"]
+    
+    # Convert to scipy sparse matrix if needed
+    if not sp.issparse(adjacency_matrix):
+        adj_np = adjacency_matrix.cpu().numpy()
+        adj_sp = sp.csc_matrix(adj_np)
+    else:
+        adj_sp = adjacency_matrix
+    
+    # Calculate the GSO based on the graph_conv_type using STGCN utils
+    if args.graph_conv_type == 'cheb_graph_conv':
+        # For Chebyshev graph convolution, we need the normalized Laplacian as GSO
+        gso_sp = calc_gso(adj_sp, args.gso_type)  
+        
+        # Then apply Chebyshev polynomial basis transformation if needed
+        gso_sp = calc_chebynet_gso(gso_sp)
+        
+    else:
+        # For simple graph convolution, use the normalized adjacency as GSO
+        gso_sp = calc_gso(adj_sp, args.gso_type)
+    
+    # First create sparse tensor using STGCN util
+    sparse_gso = cnv_sparse_mat_to_coo_tensor(gso_sp, device)
+    
+    # Convert to dense tensor for compatibility with einsum in model
+    gso = sparse_gso.to_dense()
     
     # Create block structure for STGCN
     blocks = []
@@ -59,12 +87,12 @@ def setup_model(args, data, train_loader=None):
     # Create model based on graph convolution type
     if args.graph_conv_type == 'cheb_graph_conv':
         model = STGCNChebGraphConv(
-            args, blocks, data["n_vertex"], data["gso"], 
+            args, blocks, data["n_vertex"], gso, 
             task_type='classification', num_classes=1
         ).to(device)
     else:
         model = STGCNGraphConv(
-            args, blocks, data["n_vertex"], data["gso"], 
+            args, blocks, data["n_vertex"], gso, 
             task_type='classification', num_classes=1
         ).to(device)
     
@@ -95,11 +123,11 @@ def setup_model(args, data, train_loader=None):
     
     # Set optimizer
     if args.optimizer == 'adam':
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay_rate)
     elif args.optimizer == 'adamw':
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay_rate)
     else:
-        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay)
+        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay_rate)
     
     # Learning rate scheduler
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
