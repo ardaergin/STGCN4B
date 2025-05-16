@@ -8,6 +8,7 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 def parse_consumption_filename(filename: str) -> datetime:
     """
     Parse date from consumption data filename.
@@ -35,7 +36,7 @@ def parse_consumption_filename(filename: str) -> datetime:
     except ValueError as e:
         # Add better error handling
         raise ValueError(f"Invalid date in filename {filename}: {str(e)}")
-    
+
 def load_consumption_files(
     consumption_dir: str, 
     start_time: datetime, 
@@ -62,21 +63,9 @@ def load_consumption_files(
     consumption_data = {}
     for file_path in csv_files:
         try:
-            # Extract date directly from filename
-            base_name = os.path.basename(file_path)
-            date_part = base_name.replace("meetdata_", "").replace(".csv", "")
-            parts = date_part.split("_")
-            
-            if len(parts) != 3:
-                logger.warning(f"Invalid filename format: {file_path}")
-                continue
-                
-            try:
-                year, month, day = int(parts[0]), int(parts[1]), int(parts[2])
-                file_date = datetime(year, month, day).date()  # Convert to date object immediately
-            except ValueError:
-                logger.warning(f"Invalid date in filename: {file_path}")
-                continue
+            # Parsing file names using the helper function
+            file_datetime = parse_consumption_filename(file_path)
+            file_date = file_datetime.date()
             
             # Skip if outside date range
             if file_date < start_time.date() or file_date > end_time.date():
@@ -103,6 +92,7 @@ def load_consumption_files(
     
     logger.info(f"Loaded {len(consumption_data)} days of consumption data")
     return consumption_data
+
 def aggregate_consumption_to_hourly(
     consumption_data: Dict[datetime.date, pd.DataFrame],
     time_buckets: List[Tuple[datetime, datetime]]
