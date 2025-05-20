@@ -1,17 +1,36 @@
+# Python version: 3.11.3
 setuptools
 wheel
 numpy==1.26.4
-torch
-torch-geometric
-rdflib
-pandas
-matplotlib
-tk
-tcl
-seaborn
-scikit-learn
-holidays
-pyproj
-# for pyproj, need to:
-# `nano .venv/bin/activate`
-# and add `export PROJ_DATA="/usr/local/share/proj`
+
+# Torch and family
+torch==2.1.2
+torchvision==0.16.2
+torchaudio==2.1.2
+torch-scatter==2.1.2
+torch-sparse==0.6.18
+torch-cluster==1.6.3
+torch-spline-conv==1.2.2
+torch-geometric==2.6.1
+torch-geometric-temporal==0.56.0
+
+# RDF and graph processing
+rdflib==7.1.4
+networkx==3.4.2
+
+# Data handling and visualization
+pandas==2.2.3
+matplotlib==3.10.3
+seaborn==0.13.2
+plotly==6.1.0
+
+# Machine learning
+scikit-learn==1.6.1
+lightgbm==4.6.0
+
+# Data specific utilities
+holidays==0.72 # timeseries-related
+shapely==2.1.0 # working with polygons
+pyproj==3.7.1 # Polygons + Geo-coordinates
+### NOTE: For pyproj, add to .venv/bin/activate:
+### export PROJ_DATA="/usr/local/share/proj"
