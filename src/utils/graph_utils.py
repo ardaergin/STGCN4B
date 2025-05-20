@@ -1,121 +1,69 @@
-import numpy as np
 import torch
-import scipy.sparse as sp
+from torch_geometric.utils import add_self_loops, degree, get_laplacian
+from torch_geometric.nn.conv.gcn_conv import gcn_norm
 
-def normalize(mx):
+def calc_gso_edge(edge_index: torch.LongTensor,
+                  edge_weight: torch.Tensor,
+                  num_nodes: int,
+                  gso_type: str,
+                  device: torch.device):
     """
-    Normalize sparse matrix.
-    
-    Args:
-        mx: scipy.sparse matrix
-    
-    Returns:
-        normalized sparse matrix
-    """
-    rowsum = np.array(mx.sum(1))
-    r_inv = np.power(rowsum, -1).flatten()
-    r_inv[np.isinf(r_inv)] = 0.
-    r_mat_inv = sp.diags(r_inv)
-    mx = r_mat_inv.dot(mx)
-    return mx
+    Replace calc_gso + calc_chebynet_gso + cnv_sparse_mat_to_coo_tensor.
 
-def normalize_adj(adj):
+    gso_type ∈ {
+      'sym_norm_adj', 'sym_renorm_adj', 'sym_norm_lap', 'sym_renorm_lap',
+      'rw_norm_adj',  'rw_renorm_adj',  'rw_norm_lap',  'rw_renorm_lap'
+    }
     """
-    Symmetrically normalize adjacency matrix.
-    
-    Args:
-        adj: adjacency matrix in scipy.sparse format
-    
-    Returns:
-        normalized adjacency matrix
-    """
-    adj = sp.coo_matrix(adj)
-    rowsum = np.array(adj.sum(1))
-    d_inv_sqrt = np.power(rowsum, -0.5).flatten()
-    d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
-    d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
-    return adj.dot(d_mat_inv_sqrt).transpose().dot(d_mat_inv_sqrt).tocoo()
+    # 1) Handle adjacency vs Laplacian
+    is_lap = gso_type.endswith('_lap')
+    base = 'sym' if gso_type.startswith('sym') else 'rw'
+    renorm = 'renorm' in gso_type
 
-def calc_laplacian(adj, normalize_laplacian=True):
-    """
-    Calculate Laplacian of graph.
-    
-    Args:
-        adj: adjacency matrix
-        normalize_laplacian: whether to normalize Laplacian
-    
-    Returns:
-        Laplacian matrix in scipy.sparse format
-    """
-    adj = sp.coo_matrix(adj)
-    d = np.array(adj.sum(1))
-    d_inv_sqrt = np.power(d, -0.5).flatten()
-    d_inv_sqrt[np.isinf(d_inv_sqrt)] = 0.
-    d_mat_inv_sqrt = sp.diags(d_inv_sqrt)
-    
-    if not normalize_laplacian:
-        # Unnormalized Laplacian: L = D - A
-        d_mat = sp.diags(d.flatten())
-        laplacian = d_mat - adj
+    if not is_lap:
+        # --- adjacency normalization ---
+        if base == 'sym':
+            # symmetric renormalized adj: D^-½ (A + I) D^-½
+            edge_index, edge_weight = gcn_norm(
+                edge_index, edge_weight,
+                num_nodes=num_nodes,
+                add_self_loops=renorm,
+                improved=False  # use 1 in I; set True for “2I” trick
+            )
+        else:
+            # random-walk adj: D⁻¹ (A + I) if renorm else D⁻¹ A
+            if renorm:
+                edge_index, edge_weight = add_self_loops(
+                    edge_index, edge_weight,
+                    fill_value=1.0, num_nodes=num_nodes)
+            row, _ = edge_index
+            deg = degree(row, num_nodes=num_nodes)
+            deg_inv = deg.pow(-1)
+            deg_inv[deg_inv == float('inf')] = 0
+            edge_weight = deg_inv[row] * edge_weight
+
     else:
-        # Normalized Laplacian: L = I - D^(-1/2) A D^(-1/2)
-        normalized_adj = d_mat_inv_sqrt.dot(adj).dot(d_mat_inv_sqrt)
-        laplacian = sp.eye(adj.shape[0]) - normalized_adj
-    
-    return laplacian
+        # --- laplacian normalization ---
+        norm_type = 'sym' if base == 'sym' else 'rw'
+        if renorm:
+            edge_index, edge_weight = add_self_loops(
+                edge_index,
+                edge_weight,
+                fill_value=1.0,
+                num_nodes=num_nodes
+            )
+        # now compute (I - Â) or D^-½(D - Â)D^-½
+        norm_type = 'sym' if base == 'sym' else 'rw'
+        edge_index, edge_weight = get_laplacian(
+            edge_index,
+            edge_weight,
+            normalization=norm_type,
+            num_nodes=num_nodes
+        )
 
-def calc_chebyshev_polynomials(laplacian, K):
-    """
-    Calculate Chebyshev polynomials for graph convolution.
-    
-    Args:
-        laplacian: Laplacian matrix
-        K: Order of Chebyshev polynomial
-    
-    Returns:
-        List of Chebyshev polynomials of the Laplacian
-    """
-    # Rescale Laplacian to [-1, 1]
-    laplacian = 2 * laplacian / laplacian.max() - sp.eye(laplacian.shape[0])
-    
-    # Initialize Chebyshev polynomials
-    cheb_polynomials = [sp.eye(laplacian.shape[0]), laplacian]
-    
-    # Recursively compute higher order Chebyshev polynomials
-    for k in range(2, K):
-        cheb_polynomial = 2 * laplacian.dot(cheb_polynomials[k-1]) - cheb_polynomials[k-2]
-        cheb_polynomials.append(cheb_polynomial)
-    
-    return cheb_polynomials
-
-def prepare_graph_data(adjacency_matrix, graph_conv_type='cheb_graph_conv', K=3):
-    """
-    Prepare graph data for STGCN model.
-    
-    Args:
-        adjacency_matrix: Room adjacency matrix
-        graph_conv_type: Type of graph convolution ('cheb_graph_conv' or 'graph_conv')
-        K: Order of Chebyshev polynomial
-    
-    Returns:
-        GSO: Graph shift operator
-    """
-    # Make sure adjacency matrix is in scipy.sparse format
-    if not sp.issparse(adjacency_matrix):
-        adjacency_matrix = sp.coo_matrix(adjacency_matrix)
-    
-    # Add self-connections (diagonal)
-    adj_with_self = adjacency_matrix + sp.eye(adjacency_matrix.shape[0])
-    
-    if graph_conv_type == 'cheb_graph_conv':
-        # Calculate normalized Laplacian
-        laplacian = calc_laplacian(adj_with_self, normalize_laplacian=True)
-        
-        # For Chebyshev polynomials, return the normalized Laplacian
-        gso = laplacian.todense()
-        return torch.FloatTensor(gso)
-    else:
-        # For simple graph convolution, return the normalized adjacency matrix
-        normalized_adj = normalize_adj(adj_with_self)
-        gso = normalized_adj.todense()
-        return torch.FloatTensor(gso)
+    # Now return a dense GSO (so that your Cheb / GraphConv layers see a Tensor)
+    return torch.sparse_coo_tensor(
+        edge_index, edge_weight,
+        (num_nodes, num_nodes),
+        device=device
+    ).to_dense()

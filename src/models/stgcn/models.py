@@ -8,11 +8,11 @@ https://github.com/hazdzz/stgcn/blob/main/model/models.py
 
 Main modifications:
 - Added support for both forecasting and classification tasks via task_type parameter
-- Added global pooling and optional classifier for classification tasks
+- Added global pooling and optional classifier for single-value forecasting and classification tasks
 - Modified forward method to conditionally process outputs based on task type
 
 Usage:
-- For full spatio-temporal forecasting: model = STGCNChebGraphConv(..., task_type='forecasting_full')
+- For full spatio-temporal forecasting (the original architecture): model = STGCNChebGraphConv(..., task_type='forecasting_full')
 - For forecasting a single (consumption) value : model = STGCNChebGraphConv(..., task_type='forecasting')
 - For classification: model = STGCNChebGraphConv(..., task_type='classification', num_classes=N)
 """
@@ -39,15 +39,20 @@ class STGCNChebGraphConv(nn.Module):
         super(STGCNChebGraphConv, self).__init__()
         self.blocks = blocks
         self.n_vertex = n_vertex
+        # gso(s) can be a single GSO or a list of GSOs, one per block
+        if not isinstance(gso, (list, tuple)):
+            gso = [gso] * (len(blocks) - 3)
+        assert len(gso) == len(blocks) - 3, \
+            f"Need {len(blocks)-3} GSOs for {len(blocks)-3} blocks, got {len(gso)}"
         self.gso = gso
         self.task_type = task_type
         
         # Build STGCN blocks (TGTND TGTND TNFF structure)
         modules = []
-        for l in range(len(blocks) - 3):
+        for l, gso_l in enumerate(self.gso):
             modules.append(STConvBlock(
                 args.Kt, args.Ks, n_vertex, blocks[l][-1], blocks[l+1], 
-                args.act_func, 'cheb_graph_conv', gso, 
+                args.act_func, 'cheb_graph_conv', gso_l, 
                 True, args.droprate
             ))
         self.st_blocks = nn.Sequential(*modules)
@@ -136,15 +141,20 @@ class STGCNGraphConv(nn.Module):
         super(STGCNGraphConv, self).__init__()
         self.blocks = blocks
         self.n_vertex = n_vertex
+        # gso can be a single GSO or a list of GSOs, one per block
+        if not isinstance(gso, (list, tuple)):
+            gso = [gso] * (len(blocks) - 3)
+        assert len(gso) == len(blocks) - 3, \
+            f"Need {len(blocks)-3} GSOs for {len(blocks)-3} blocks, got {len(gso)}"
         self.gso = gso
         self.task_type = task_type
         
         # Build STGCN blocks (TGTND TGTND TNFF structure)
         modules = []
-        for l in range(len(blocks) - 3):
+        for l, gso_l in enumerate(self.gso):
             modules.append(STConvBlock(
                 args.Kt, args.Ks, n_vertex, blocks[l][-1], blocks[l+1], 
-                args.act_func, 'graph_conv', gso, 
+                args.act_func, 'graph_conv', gso_l, 
                 True, args.droprate
             ))
         self.st_blocks = nn.Sequential(*modules)

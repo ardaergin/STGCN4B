@@ -16,6 +16,32 @@ def parse_base_args(parser=None):
     parser.add_argument('--task_type', type=str, default='classification',
                       choices=['classification', 'forecasting'], 
                       help='Task type')
+    
+    # Graph core
+    parser.add_argument('--gso_mode', type=str, default='dynamic',
+                      choices=['static', 'dynamic'], 
+                      help='Adjacency matrix type')
+    parser.add_argument('--adjacency_type', type=str,
+                        choices=['binary', 'weighted'],
+                        default='weighted',
+                        help='Type of adjacency that was used: binary or weighted')
+    parser.add_argument('--gso_type', type=str, default='rw_norm_adj',
+        choices=[
+            'sym_norm_adj',  'sym_renorm_adj',  'sym_norm_lap',  'sym_renorm_lap',
+            'rw_norm_adj',   'rw_renorm_adj',   'rw_norm_lap',   'rw_renorm_lap',
+        ],
+        help=(
+            "Which Graph-Shift Operator to build:\n"
+            "  • sym_norm_adj   : D^{-½} A D^{-½}\n"
+            "  • sym_renorm_adj : D^{-½}(A+I)D^{-½}\n"
+            "  • sym_norm_lap   : I - D^{-½} A D^{-½}\n"
+            "  • sym_renorm_lap : I - D^{-½}(A+I)D^{-½}\n"
+            "  • rw_norm_adj    : D^{-1} A\n"
+            "  • rw_renorm_adj  : D^{-1}(A+I)\n"
+            "  • rw_norm_lap    : I - D^{-1} A\n"
+            "  • rw_renorm_lap  : I - D^{-1}(A+I)"
+        )
+    )
 
     # Data parameters
     parser.add_argument('--data_dir', type=str, default='data', 
@@ -37,7 +63,7 @@ def parse_base_args(parser=None):
     parser.add_argument('--seed', type=int, default=42, 
                       help='Random seed')
     
-    parser.add_argument('--batch_size', type=int, default=32, 
+    parser.add_argument('--batch_size', type=int, default=144, 
                       help='Batch size')
     parser.add_argument('--epochs', type=int, default=100, 
                       help='Number of epochs')
@@ -52,7 +78,7 @@ def add_stgcn_args(parser):
     (Yu et al., 2018)
     """
     # STGCN specific parameters
-    parser.add_argument('--n_his', type=int, default=12, 
+    parser.add_argument('--n_his', type=int, default=24, 
                       help='Number of historical time steps to use')
     parser.add_argument('--n_pred', type=int, default=3, 
                         help='the number of time interval for predcition, default as 3')
@@ -61,12 +87,12 @@ def add_stgcn_args(parser):
                       help='Kernel size in temporal convolution')
     parser.add_argument('--Ks', type=int, default=3, 
                       help='Kernel size in graph convolution')
-    parser.add_argument('--stblock_num', type=int, default=2, 
+    parser.add_argument('--stblock_num', type=int, default=3, 
                       help='Number of ST-Conv blocks')
     parser.add_argument('--act_func', type=str, default='glu', 
                       choices=['glu', 'gtu', 'relu', 'silu'], 
                       help='Activation function')
-    parser.add_argument('--graph_conv_type', type=str, default='cheb_graph_conv', 
+    parser.add_argument('--graph_conv_type', type=str, default='graph_conv', 
                       choices=['cheb_graph_conv', 'graph_conv'], 
                       help='Graph convolution type')
     parser.add_argument('--droprate', type=float, default=0.5, 
@@ -75,16 +101,14 @@ def add_stgcn_args(parser):
                       help='Step size for learning rate scheduler')
     parser.add_argument('--gamma', type=float, default=0.9, 
                       help='Gamma for learning rate scheduler')
-    
-    parser.add_argument('--gso_type', type=str, default='sym_norm_lap', choices=['sym_norm_lap', 'rw_norm_lap', 'sym_renorm_adj', 'rw_renorm_adj'])
     parser.add_argument('--enable_bias', type=bool, default=True, help='default as True')
     parser.add_argument('--weight_decay_rate', type=float, default=0.001, help='weight decay (L2 penalty)')
     parser.add_argument('--patience', type=int, default=10, help='early stopping patience')
 
     parser.add_argument('--optimizer', type=str, default='adamw', 
-                      choices=['adam', 'adamw', 'nadamw', 'lion'], 
+                      choices=['adam', 'adamw', 'sgd'], 
                       help='Optimizer type')
-    parser.add_argument('--lr', type=float, default=0.001, 
+    parser.add_argument('--lr', type=float, default=0.0001, 
                       help='Learning rate')
 
     return parser
@@ -92,6 +116,7 @@ def add_stgcn_args(parser):
 def add_astgcn_args(parser):
     """
     ASTGCN-specific arguments.
+    
     ASTGCN: Attention-based spatial-temporal graph convolutional network.
     (Guo et al., 2019)
     """

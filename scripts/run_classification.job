@@ -25,6 +25,10 @@ module load matplotlib/3.7.2-gfbf-2023a
 module load scikit-learn/1.3.1-gfbf-2023a
 
 # Install missing packages if needed
+python -c "import torch-geometric" 2>/dev/null || pip install --user torch-geometric \
+  torch-scatter torch-sparse torch-cluster torch-spline-conv \
+  -f https://data.pyg.org/whl/torch-2.1.0+cu121.html
+python -c "import torch-geometric-temporal" 2>/dev/null || pip install --user torch-geometric-temporal
 python -c "import rdflib" 2>/dev/null || pip install --user rdflib
 python -c "import holidays" 2>/dev/null || pip install --user holidays
 python -c "import shapely" 2>/dev/null || pip install --user shapely
@@ -42,11 +46,15 @@ mkdir -p $TMPDIR/data/processed
 
 # Copy data to scratch (fast local disk)
 echo "Copying data to scratch space..."
-cp $HOME/eSTGNN/data/processed/torch_input.pt $TMPDIR/data/processed/
+cp $HOME/eSTGNN/data/processed/torch_input_binary.pt \
+   $HOME/eSTGNN/data/processed/torch_input_weighted.pt \
+   $TMPDIR/data/processed/
+
 
 # Check if data copy succeeded
-if [ ! -f "$TMPDIR/data/processed/torch_input.pt" ]; then
-  echo "ERROR: Failed to copy data file"
+if [ ! -f "$TMPDIR/data/processed/torch_input_binary.pt" ] || \ 
+   [ ! -f "$TMPDIR/data/processed/torch_input_weighted.pt" ]; then
+  echo "ERROR: Failed to copy one or more data files"
   exit 1
 fi
 

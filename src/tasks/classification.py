@@ -8,10 +8,10 @@ import sys
 import logging
 import numpy as np
 import torch
+from torch_geometric.utils import dense_to_sparse
 import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix, accuracy_score, precision_score, recall_score, f1_score
 from sklearn.metrics import roc_auc_score, average_precision_score, balanced_accuracy_score, precision_recall_curve
-from torch.utils.data import DataLoader, TensorDataset
 import scipy.sparse as sp
 
 # Set up logging
@@ -22,51 +22,60 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Import argument parser
-from ..config import parse_args
-
-# Import models
-from ..models.stgcn import STGCNChebGraphConv, STGCNGraphConv, EarlyStopping
-from ..models.stgcn.utility import calc_gso, calc_chebynet_gso, cnv_sparse_mat_to_coo_tensor
-# Import other modules
-from ..data import load_and_split_data
+from ..config.args import parse_args
+from ..data.load_and_split import load_and_split_data
+from ..utils.graph_utils import calc_gso_edge
+from ..models.stgcn import EarlyStopping
 
 def setup_model(args, data, train_loader=None):
     """Set up the STGCN model and training components with class imbalance handling."""
-    logger.info("Setting up model with class imbalance handling...")
+    logger.info("Setting up model for forecasting...")
+    device   = data['device']
+    n_vertex = data['n_vertex']
     
-    # Get device
-    device = data['device']
-    
-    # Calculate GSO (Graph Shift Operator) from adjacency matrix
-    adjacency_matrix = data["adjacency_matrix"]
-    
-    # Convert to scipy sparse matrix if needed
-    if not sp.issparse(adjacency_matrix):
-        adj_np = adjacency_matrix.cpu().numpy()
-        adj_sp = sp.csc_matrix(adj_np)
-    else:
-        adj_sp = adjacency_matrix
-    
-    # Calculate the GSO based on the graph_conv_type using STGCN utils
-    if args.graph_conv_type == 'cheb_graph_conv':
-        # For Chebyshev graph convolution, we need the normalized Laplacian as GSO
-        gso_sp = calc_gso(adj_sp, args.gso_type)  
+    if args.adjacency_type == "weighted" and args.gso_type not in ("rw_norm_adj", "rw_renorm_adj"):
+        raise ValueError(
+            f"When adjacency_type='weighted' you must pick gso_type "
+            f"in {{'rw_norm_adj','rw_renorm_adj'}}, got '{args.gso_type}'."
+        )
+
+    # Build a single static GSO
+    static_A = data["adjacency_matrix"]
+    edge_index, edge_weight = dense_to_sparse(static_A)
+    static_gso = calc_gso_edge(
+        edge_index, edge_weight, 
+        num_nodes           = n_vertex,
+        gso_type            = args.gso_type,
+        device              = device,
+    )
+    if args.gso_mode == "static":
+        gso = static_gso
+
+    # Build dynamic GSOs
+    elif args.gso_mode == "dynamic":
+        dynamic_adjacencies_dict = data.get("dynamic_adjacencies", {})
+        dynamic_adjacencies = list(dynamic_adjacencies_dict.values())
+        dynamic_adjacencies = dynamic_adjacencies[: args.stblock_num]
+        dynamic_gsos = []
+        for adjacency_matrix in dynamic_adjacencies:
+            edge_index, edge_weight = dense_to_sparse(adjacency_matrix)
+            G = calc_gso_edge(
+                edge_index, edge_weight, 
+                num_nodes           = n_vertex,
+                gso_type            = args.gso_type,
+                device              = device,
+            )
+            dynamic_gsos.append(G)
+
+        # In case we've got fewer than stblock_num, pad with the static GSO
+        while len(dynamic_gsos) < args.stblock_num:
+            dynamic_gsos.append(static_gso)
         
-        # Then apply Chebyshev polynomial basis transformation if needed
-        gso_sp = calc_chebynet_gso(gso_sp)
-        
+        gso = dynamic_gsos
+    
     else:
-        # For simple graph convolution, use the normalized adjacency as GSO
-        gso_sp = calc_gso(adj_sp, args.gso_type)
-    
-    # First create sparse tensor using STGCN util
-    sparse_gso = cnv_sparse_mat_to_coo_tensor(gso_sp, device)
-    
-    # Convert to dense tensor for compatibility with einsum in model
-    gso = sparse_gso.to_dense()
-    
-    # Create block structure for STGCN
+        raise ValueError(f"Unknown gso_mode: {args.gso_mode!r}. Must be 'static' or 'dynamic'.")
+
     blocks = []
     blocks.append([data["n_features"]])  # Input features
     
@@ -81,20 +90,22 @@ def setup_model(args, data, train_loader=None):
     elif Ko > 0:
         blocks.append([128, 128])
         
-    # Output is binary classification (1 or 0)
+    # Output is a single continuous value
     blocks.append([1])  
     
     # Create model based on graph convolution type
     if args.graph_conv_type == 'cheb_graph_conv':
-        model = STGCNChebGraphConv(
-            args, blocks, data["n_vertex"], gso, 
-            task_type='classification', num_classes=1
-        ).to(device)
+        from ..models.stgcn.models import STGCNChebGraphConv as Model
     else:
-        model = STGCNGraphConv(
-            args, blocks, data["n_vertex"], gso, 
-            task_type='classification', num_classes=1
-        ).to(device)
+        from ..models.stgcn.models import STGCNGraphConv as Model
+
+    model = Model(
+        args     = args,
+        blocks   = blocks,
+        n_vertex = n_vertex,
+        gso      = gso,
+        task_type= 'forecasting',
+    ).to(device)
     
     # Calculate class weights if train_loader is provided
     if train_loader is not None:
