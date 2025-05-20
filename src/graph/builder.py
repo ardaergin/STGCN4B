@@ -1481,34 +1481,45 @@ class OfficeGraphBuilder:
                 # For each property type
                 for prop_type in self.used_property_types:
                     # Initialize feature dictionary for this property
-                    prop_features = {
-                        "mean": 0.0,
-                        "std": 0.0,
-                        "min": 0.0,
-                        "max": 0.0,
-                        "has_property": 0.0,
-                        "measurement_count": 0
-                    }
+                    if prop_type == "Contact":
+                        prop_features = {
+                            "sum": 0.0,
+                            "has_property": 0.0,
+                            "measurement_count": 0
+                        }
+                    else:
+                        prop_features = {
+                            "mean": 0.0,
+                            "std": 0.0,
+                            "min": 0.0,
+                            "max": 0.0,
+                            "has_property": 0.0,
+                            "measurement_count": 0
+                        }
                     
                     # Check if room has this property type
                     if room_uri in room_properties and prop_type in room_properties[room_uri]:
                         prop_features["has_property"] = 1.0
                         
                         # Get measurements for this property type in this room
-                        measurements = []
+                        measurement_values = []
                         if room_uri in room_measurements and prop_type in room_measurements[room_uri]:
                             for meas in room_measurements[room_uri][prop_type]:
                                 # Check if measurement falls within this time bucket
                                 if bucket_start <= meas.timestamp < bucket_end:
-                                    measurements.append(meas.value)
-                        
-                        # Calculate statistics if there are measurements
-                        if measurements:
-                            prop_features["mean"] = float(np.mean(measurements))
-                            prop_features["std"] = float(np.std(measurements)) if len(measurements) > 1 else 0.0
-                            prop_features["min"] = float(np.min(measurements))
-                            prop_features["max"] = float(np.max(measurements))
-                            prop_features["measurement_count"] = len(measurements)
+                                    measurement_values.append(meas.value)
+
+                        if measurement_values:
+                            if prop_type == "Contact":
+                                prop_features["sum"] = float(sum(measurement_values))
+                                prop_features["measurement_count"] = len(measurement_values)
+                            else:
+                                # Calculate statistics if there are measurements
+                                prop_features["mean"] = float(np.mean(measurement_values))
+                                prop_features["std"] = float(np.std(measurement_values)) if len(measurement_values) > 1 else 0.0
+                                prop_features["min"] = float(np.min(measurement_values))
+                                prop_features["max"] = float(np.max(measurement_values))
+                                prop_features["measurement_count"] = len(measurement_values)
                     
                     # Add property features to temporal features
                     temporal_features[prop_type] = prop_features
