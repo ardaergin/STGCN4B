@@ -76,8 +76,12 @@ def setup_model(args, data, train_loader=None):
     else:
         raise ValueError(f"Unknown gso_mode: {args.gso_mode!r}. Must be 'static' or 'dynamic'.")
 
+    logger.info(f"Input shape check - Feature dimension: {data['n_features']}")
+    logger.info(f"Sample batch shape from dataloader: {next(iter(data['train_loader']))[0].shape}")
+    
     blocks = []
     blocks.append([data["n_features"]])  # Input features
+    logger.info(f"Model first block input dimension: {blocks[0][0]}")
     
     # Add intermediate blocks
     for _ in range(args.stblock_num):

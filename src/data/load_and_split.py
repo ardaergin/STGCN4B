@@ -113,7 +113,7 @@ def extract_features_targets(torch_input, indices, n_his=12, task_type='classifi
 
     Returns:
         Tuple[Tensor, Tensor]: (X, y)
-            X shape: [num_samples, 1, n_his, n_rooms] - mean across features
+            X shape: [num_samples, n_features, n_his, n_rooms] - preserving all features
             y shape: [num_samples] for classification, [num_samples, 1] for forecasting
     """
     device = torch_input["feature_matrices"][indices[0]].device
@@ -121,10 +121,8 @@ def extract_features_targets(torch_input, indices, n_his=12, task_type='classifi
     
     # Get the appropriate target based on task type
     if task_type == 'classification':
-        # Use "workhour_labels" for classification task
         targets = torch_input["workhour_labels"]
     else:  # forecasting
-        # Use "consumption_values" for forecasting task
         targets = torch_input["consumption_values"]
 
     X_list = []
@@ -142,12 +140,12 @@ def extract_features_targets(torch_input, indices, n_his=12, task_type='classifi
 
         # Stack the sequence: shape will be [n_his, n_rooms, n_features]
         x_seq = torch.stack([feature_matrices[t] for t in time_window], dim=0)
-
-        # Take mean across features to get shape [n_his, n_rooms]
-        x_seq = x_seq.mean(dim=2, keepdim=False)  # [n_his, n_rooms]
-
-        # Add batch and channel dimensions
-        x_seq = x_seq.unsqueeze(0)  # [1, n_his, n_rooms]
+        
+        # Transpose to get [n_features, n_his, n_rooms]
+        x_seq = x_seq.permute(2, 0, 1)
+        
+        # Add batch dimension
+        x_seq = x_seq.unsqueeze(0)  # [1, n_features, n_his, n_rooms]
 
         # Add to list
         X_list.append(x_seq)
@@ -157,13 +155,14 @@ def extract_features_targets(torch_input, indices, n_his=12, task_type='classifi
         logger.warning(f"No valid sequences found for indices of length {len(indices)}")
         # Return empty tensors with correct shapes if no valid sequences
         n_rooms = feature_matrices[indices[0]].shape[0]
+        n_features = feature_matrices[indices[0]].shape[1]
         return (
-            torch.empty((0, 1, n_his, n_rooms), device=device),
+            torch.empty((0, n_features, n_his, n_rooms), device=device),
             torch.empty((0), device=device) if task_type == 'classification' else torch.empty((0, 1), device=device)
         )
 
-    # Final shape: [batch, 1, n_his, n_rooms]
-    X = torch.stack(X_list).to(device)
+    # Final shape: [batch, n_features, n_his, n_rooms]
+    X = torch.cat(X_list, dim=0).to(device)
     
     # For classification, stack normally
     # For forecasting, reshape to [batch, 1] to match regression output
@@ -172,7 +171,7 @@ def extract_features_targets(torch_input, indices, n_his=12, task_type='classifi
     else:  # forecasting
         y = torch.stack(y_list).to(device).view(-1, 1)
 
-    logger.info(f"Final feature tensor shape: {X.shape}")  # [batch, 1, n_his, rooms]
+    logger.info(f"Final feature tensor shape: {X.shape}")  # [batch, n_features, n_his, rooms]
     logger.info(f"Final target shape: {y.shape}")
 
     return X, y
