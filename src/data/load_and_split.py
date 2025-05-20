@@ -1,7 +1,6 @@
 import os
 import sys
 import logging
-import numpy as np
 import torch
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -26,7 +25,7 @@ def load_and_split_data(args):
     logger.info("Loading processed OfficeGraph data...")
     
     # Load the pre-processed torch input
-    file_name = "torch_input.pt"
+    file_name = f"torch_input_{args.adjacency_type}.pt"
     torch_input_path = os.path.join(args.data_dir, "processed", file_name)
     logger.info(f"Loading torch input from {torch_input_path}")
     
@@ -39,6 +38,11 @@ def load_and_split_data(args):
     
     # Move tensors to the appropriate device
     torch_input["adjacency_matrix"] = torch_input["adjacency_matrix"].to(device)
+    
+    # Move dynamic adjacencies to device
+    if "dynamic_adjacencies" in torch_input:
+        for step in torch_input["dynamic_adjacencies"]:
+            torch_input["dynamic_adjacencies"][step] = torch_input["dynamic_adjacencies"][step].to(device)
     
     # Move appropriate tensor based on task
     if args.task_type == 'classification':
@@ -81,12 +85,13 @@ def load_and_split_data(args):
     
     logger.info(f"Data preparation completed. Number of rooms: {n_vertex}, Features: {n_features}")
     
-    # Return only the data loaders and metadata (not prepared GSO)
+    # Return only the data loaders and metadata
     return {
         'train_loader': train_loader,
         'val_loader': val_loader,
         'test_loader': test_loader,
         'adjacency_matrix': torch_input["adjacency_matrix"],  # Raw adjacency matrix
+        'dynamic_adjacencies': torch_input["dynamic_adjacencies"] if "dynamic_adjacencies" in torch_input else None,
         'n_vertex': n_vertex,
         'n_features': n_features,
         'room_uris': torch_input["room_uris"],
@@ -94,7 +99,6 @@ def load_and_split_data(args):
         'time_buckets': torch_input["time_buckets"] if "time_buckets" in torch_input else None,
         'device': device
     }
-
 
 def extract_features_targets(torch_input, indices, n_his=12, task_type='classification'):
     """

@@ -588,7 +588,7 @@ class OfficeGraphBuilder:
         Args:
             matrix_type: Kind of adjacency. Options:
                 - 'binary': Basic binary adjacency based on proximity
-                - 'boundary_proportional': Weighted adjacency where each room's influence is proportional to target's perimeter
+                - 'weighted': Weighted adjacency where each room's influence is proportional to target's perimeter
             distance_threshold: Maximum distance for considering rooms adjacent (in meters)
             
         Returns:
@@ -602,12 +602,12 @@ class OfficeGraphBuilder:
             adj_df = self.calculate_binary_adjacency(distance_threshold=distance_threshold)
             self.adjacency_type = "binary"
             
-        elif matrix_type == "boundary_proportional":
+        elif matrix_type == "weighted":
             adj_df = self.calculate_proportional_boundary_adjacency(distance_threshold=distance_threshold)
-            self.adjacency_type = "boundary_proportional"
+            self.adjacency_type = "weighted"
         
         else:
-            raise ValueError(f"Unknown adjacency kind: {matrix_type}. Use 'binary' or 'boundary_proportional'.")
+            raise ValueError(f"Unknown adjacency kind: {matrix_type}. Use 'binary' or 'weighted'.")
         
         # Store both the DataFrame and the numpy array
         self.adjacency_matrix_df = adj_df
@@ -643,7 +643,7 @@ class OfficeGraphBuilder:
         plt.imshow(self.room_to_room_adj_matrix, cmap=cmap)
         
         # Add colorbar with label based on adjacency type
-        if hasattr(self, 'adjacency_type') and self.adjacency_type == 'boundary_proportional':
+        if hasattr(self, 'adjacency_type') and self.adjacency_type == 'weighted':
             plt.colorbar(label='Proportion of shared boundary')
         else:
             plt.colorbar(label='Connection strength')
@@ -675,17 +675,394 @@ class OfficeGraphBuilder:
         
         plt.tight_layout()
 
+    def calculate_information_propagation_masks(self):
+        """
+        Calculate a series of masking matrices representing information propagation
+        from rooms with devices to other rooms in the building.
+        
+        The function continues calculating propagation steps until equilibrium is reached
+        (no new rooms can receive information).
+        
+        Returns:
+            Dictionary mapping step indices (starting from 0) to masking matrices (numpy arrays)
+            where 1 indicates a room can pass information and 0 indicates it is masked
+        """
+        if not hasattr(self, 'adjacency_matrix_df') or self.adjacency_matrix_df is None:
+            raise ValueError("Room adjacency matrix not found. Run build_room_to_room_adjacency first.")
+        
+        # Get device presence information
+        room_has_device = np.zeros(len(self.adj_matrix_room_uris), dtype=bool)
+        for i, room_uri in enumerate(self.adj_matrix_room_uris):
+            if room_uri in self.office_graph.rooms:
+                room = self.office_graph.rooms[room_uri]
+                if room.devices:  # Room has at least one device
+                    room_has_device[i] = True
+        
+        logger.info(f"Found {room_has_device.sum()} rooms with devices out of {len(room_has_device)} total rooms")
+        
+        # Get adjacency matrix as numpy array
+        adjacency = self.room_to_room_adj_matrix.copy()
+        
+        # Initialize masks dictionary
+        masks = {}
+        
+        # Step 0: Only rooms with devices can pass information
+        can_pass_info = room_has_device.copy()
+        
+        # Create initial mask matrix
+        mask_matrix = np.zeros_like(adjacency)
+        for i in range(len(can_pass_info)):
+            if can_pass_info[i]:
+                mask_matrix[i, :] = 1  # Room can pass information to others
+        
+        masks[0] = mask_matrix
+        
+        # Continue propagation until equilibrium (no new rooms activated)
+        step = 1
+        while True:
+            # Identify newly activated rooms (those that receive information in this step)
+            newly_activated = np.zeros_like(can_pass_info)
+            
+            for i in range(len(can_pass_info)):
+                if not can_pass_info[i]:  # Room doesn't have information yet
+                    # Check if it receives info from any room that can pass info
+                    for j in range(len(can_pass_info)):
+                        if can_pass_info[j] and adjacency[j, i] > 0:
+                            newly_activated[i] = True
+                            break
+            
+            # If no new rooms were activated, we've reached equilibrium
+            if not np.any(newly_activated):
+                logger.info(f"Information propagation reached equilibrium after {step} steps")
+                break
+                
+            # Update the can_pass_info array
+            can_pass_info = np.logical_or(can_pass_info, newly_activated)
+            
+            # Create new mask matrix
+            mask_matrix = np.zeros_like(adjacency)
+            for i in range(len(can_pass_info)):
+                if can_pass_info[i]:
+                    mask_matrix[i, :] = 1  # Room can pass information to others
+            
+            masks[step] = mask_matrix
+            logger.info(f"Step {step}: {newly_activated.sum()} new rooms can pass information")
+            
+            step += 1
+            
+            # Safety check to prevent infinite loops
+            if step > len(can_pass_info):
+                logger.warning(f"Stopping propagation after {step} steps (exceeded number of rooms)")
+                break
+        
+        # Log summary
+        active_rooms = [np.sum(masks[step].sum(axis=1) > 0) for step in masks]
+        logger.info(f"Created {len(masks)} information propagation masks")
+        logger.info(f"Rooms that can pass information at each step: {active_rooms}")
+        
+        return masks
+
+    def apply_masks_to_adjacency(self, masks=None):
+        """
+        Apply information propagation masks to the adjacency matrix 
+        to create multiple adjacency matrices representing the progressive flow
+        of information through the building.
+        
+        Args:
+            masks: Dictionary mapping step indices to masking matrices.
+                If None, calls calculate_information_propagation_masks
+        
+        Returns:
+            Dictionary mapping step indices to masked adjacency matrices
+        """
+        if not hasattr(self, 'room_to_room_adj_matrix') or self.room_to_room_adj_matrix is None:
+            raise ValueError("Room adjacency matrix not found. Run build_room_to_room_adjacency first.")
+        
+        # Calculate masks if not provided
+        if masks is None:
+            masks = self.calculate_information_propagation_masks()
+        
+        # Get adjacency matrix as numpy array
+        adjacency = self.room_to_room_adj_matrix.copy()
+        
+        # Apply masks to create multiple adjacency matrices
+        masked_adjacencies = {}
+        
+        for step, mask in masks.items():
+            # Element-wise multiplication of mask and adjacency
+            masked_adj = adjacency * mask
+            masked_adjacencies[step] = masked_adj
+        
+        self.masked_adjacencies = masked_adjacencies
+        logger.info(f"Created {len(masked_adjacencies)} masked adjacency matrices")
+        
+        return masked_adjacencies
+    
+    def create_interactive_plotly_visualization(self, output_file='output/builder/propagation_visualization.html'):
+        """
+        Create an interactive Plotly visualization of information propagation
+        and export it to a standalone HTML file.
+        
+        Device rooms are colored green at Step 0, and subsequent information propagation
+        is shown in shades of blue.
+        
+        Args:
+            output_file: Path to save the HTML output file
+            
+        Returns:
+            Plotly figure object
+        """
+        import plotly.graph_objects as go
+        from plotly.subplots import make_subplots
+        import numpy as np
+        
+        if not hasattr(self, 'masked_adjacencies') or not self.masked_adjacencies:
+            raise ValueError("Masked adjacency matrices not found. Run apply_masks_to_adjacency first.")
+            
+        if not hasattr(self, 'room_polygons') or not self.room_polygons:
+            raise ValueError("Room polygons not found. Run initialize_room_polygons first.")
+        
+        # Define the number of steps
+        n_steps = len(self.masked_adjacencies)
+        
+        # Extract information about which rooms can pass info at each step
+        room_info_by_step = {}
+        for step in range(n_steps):
+            mask = self.masked_adjacencies[step]
+            can_pass_info = mask.sum(axis=1) > 0  # Rooms that can pass info
+            room_info_by_step[step] = can_pass_info
+        
+        # Define colors
+        device_color = '#2ca02c'  # Forest green for device rooms
+        inactive_color = '#f0f0f0'  # Light gray for inactive rooms
+        # Shades of blue for rooms activated in steps 1-N
+        propagation_colors = ['#c6dbef', '#6baed6', '#2171b5', '#08306b']
+        
+        # Create a plotly figure with steps as frames
+        fig = go.Figure()
+        
+        # Add frames for each step
+        frames = []
+        for step in range(n_steps):
+            frame_data = []
+            
+            # For each room polygon
+            for i, room_uri in enumerate(self.adj_matrix_room_uris):
+                if room_uri in self.room_polygons:
+                    polygon = self.room_polygons[room_uri]
+                    
+                    # Extract polygon coordinates
+                    x, y = polygon.exterior.xy
+                    
+                    # Check if this is a device room (active at step 0)
+                    is_device_room = room_info_by_step[0][i]
+                    
+                    # Determine when this room gets activated
+                    activation_step = n_steps  # Default: not activated
+                    for s in range(n_steps):
+                        if room_info_by_step[s][i]:
+                            activation_step = s
+                            break
+                    
+                    # Determine color based on activation status for this step
+                    if activation_step <= step:
+                        # Room is active at this step
+                        if is_device_room:
+                            # Device rooms always show in green
+                            color = device_color
+                        else:
+                            # Non-device rooms show in blue based on when they were activated
+                            blue_idx = min(activation_step - 1, len(propagation_colors) - 1)
+                            color = propagation_colors[blue_idx]
+                    else:
+                        # Not yet activated
+                        color = inactive_color
+                    
+                    # Create room label
+                    room_id = self.room_names.get(room_uri, str(room_uri).split('/')[-1])
+                    if is_device_room:
+                        room_id = f"{room_id}*"  # Mark device rooms
+                    
+                    # Create a polygon for this room
+                    room_trace = go.Scatter(
+                        x=list(x) + [x[0]],  # Close the polygon
+                        y=list(y) + [y[0]],
+                        fill='toself',
+                        fillcolor=color,
+                        line=dict(color='black', width=1),
+                        text=room_id,
+                        hoverinfo='text',
+                        showlegend=False
+                    )
+                    
+                    frame_data.append(room_trace)
+            
+            # Create frame for this step
+            frame = go.Frame(
+                data=frame_data,
+                name=f"Step {step}",
+                layout=go.Layout(
+                    title=f"Information Propagation - Step {step}: "
+                        f"{np.sum(room_info_by_step[step])}/{len(self.adj_matrix_room_uris)} rooms can pass information"
+                )
+            )
+            frames.append(frame)
+        
+        # Add the initial data (step 0)
+        fig.add_traces(frames[0].data)
+        fig.frames = frames
+        
+        # Set up slider control
+        sliders = [{
+            'steps': [
+                {
+                    'method': 'animate',
+                    'args': [
+                        [f"Step {i}"],
+                        {
+                            'frame': {'duration': 300, 'redraw': True},
+                            'mode': 'immediate',
+                            'transition': {'duration': 300}
+                        }
+                    ],
+                    'label': f"Step {i}"
+                } for i in range(n_steps)
+            ],
+            'active': 0,
+            'yanchor': 'top',
+            'xanchor': 'left',
+            'currentvalue': {
+                'font': {'size': 16},
+                'prefix': 'Step: ',
+                'visible': True,
+                'xanchor': 'right'
+            },
+            'transition': {'duration': 300, 'easing': 'cubic-in-out'},
+            'pad': {'b': 10, 't': 50},
+            'len': 0.9,
+            'x': 0.1,
+            'y': 0
+        }]
+        
+        # Play and pause buttons
+        updatemenus = [{
+            'type': 'buttons',
+            'showactive': False,
+            'buttons': [
+                {
+                    'label': 'Play',
+                    'method': 'animate',
+                    'args': [
+                        None,
+                        {
+                            'frame': {'duration': 500, 'redraw': True},
+                            'fromcurrent': True,
+                            'transition': {'duration': 300, 'easing': 'quadratic-in-out'}
+                        }
+                    ]
+                },
+                {
+                    'label': 'Pause',
+                    'method': 'animate',
+                    'args': [
+                        [None],
+                        {
+                            'frame': {'duration': 0, 'redraw': False},
+                            'mode': 'immediate',
+                            'transition': {'duration': 0}
+                        }
+                    ]
+                }
+            ],
+            'direction': 'left',
+            'pad': {'r': 10, 't': 87},
+            'type': 'buttons',
+            'x': 0.1,
+            'y': 0,
+            'xanchor': 'right',
+            'yanchor': 'top'
+        }]
+        
+        # Update figure layout
+        fig.update_layout(
+            title="Information Propagation Through Building",
+            autosize=True,
+            width=900,
+            height=700,
+            margin=dict(l=50, r=50, t=100, b=100),
+            sliders=sliders,
+            updatemenus=updatemenus
+        )
+        
+        # Set axes properties
+        fig.update_xaxes(visible=False)
+        fig.update_yaxes(visible=False)
+        
+        # Make sure the aspect ratio is preserved
+        fig.update_layout(yaxis=dict(scaleanchor="x", scaleratio=1))
+        
+        # Add legend
+        legend_traces = [
+            go.Scatter(
+                x=[None], y=[None], mode='markers',
+                marker=dict(size=15, color=device_color),
+                name='Device Rooms',
+                showlegend=True
+            ),
+            go.Scatter(
+                x=[None], y=[None], mode='markers',
+                marker=dict(size=15, color=propagation_colors[0]),
+                name='First Propagation',
+                showlegend=True
+            ),
+            go.Scatter(
+                x=[None], y=[None], mode='markers',
+                marker=dict(size=15, color=propagation_colors[1]),
+                name='Second Propagation',
+                showlegend=True
+            ),
+            go.Scatter(
+                x=[None], y=[None], mode='markers',
+                marker=dict(size=15, color=propagation_colors[2]),
+                name='Third Propagation',
+                showlegend=True
+            ),
+            go.Scatter(
+                x=[None], y=[None], mode='markers',
+                marker=dict(size=15, color=inactive_color),
+                name='Inactive Rooms',
+                showlegend=True
+            )
+        ]
+        
+        for trace in legend_traces:
+            fig.add_trace(trace)
+        
+        # Add annotation for device rooms
+        fig.add_annotation(
+            text="* Rooms with devices",
+            xref="paper", yref="paper",
+            x=0.01, y=0.01,
+            showarrow=False,
+            font=dict(size=12)
+        )
+        
+        # Save as HTML
+        if output_file:
+            fig.write_html(output_file)
+            logger.info(f"Interactive visualization saved to {output_file}")
+        
+        return fig
+
     #############################
     # Graph
     #############################
 
-    def build_homogeneous_graph(self, weighted: bool = False, static_room_attributes: List[str] = None) -> nx.Graph:
+    def build_homogeneous_graph(self, static_room_attributes: List[str] = None) -> nx.Graph:
         """
         Build a homogeneous graph with rooms as nodes, including specified room attributes.
         
         Args:
-            weighted: if True, use the actual values in `self.room_to_room_adj_matrix`
-                    as edge weights; otherwise every edge gets weight=1.
             attributes: List of room attributes to include as node features. 
                     Format can be:
                     - Simple attribute name: 'room_number', 'is_support_zone'
@@ -760,7 +1137,7 @@ class OfficeGraphBuilder:
                 if w != 0:
                     G.add_edge(room1_uri,
                             room2_uri,
-                            weight=(w if weighted else 1))
+                            weight=w) # if we've fed binary adjacency, everything gets 1 essentially
         
         self.homogeneous_graph = G
         
@@ -1362,6 +1739,7 @@ class OfficeGraphBuilder:
         # Package everything into a dictionary
         stgcn_input = {
             "adjacency_matrix": self.room_to_room_adj_matrix,
+            "dynamic_adjacencies": self.masked_adjacencies,
             "room_uris": self.room_uris,
             "property_types": self.used_property_types,
             "feature_matrices": self.feature_matrices,
@@ -1470,11 +1848,17 @@ class OfficeGraphBuilder:
         """
         torch_input = {}
         
-        # Convert adjacency matrices
+        # Adjacency matrices
         torch_input["adjacency_matrix"] = torch.tensor(stgcn_input["adjacency_matrix"], 
                                                      dtype=torch.float32, 
                                                      device=device)
-                
+        
+        torch_input["dynamic_adjacencies"] = {}
+        for step, masked_adj in stgcn_input["dynamic_adjacencies"].items():
+            torch_input["dynamic_adjacencies"][step] = torch.tensor(masked_adj, 
+                                                                  dtype=torch.float32,
+                                                                  device=device)
+
         # Convert feature matrices
         torch_input["feature_matrices"] = {}
         for time_idx, feature_matrix in stgcn_input["feature_matrices"].items():
@@ -1482,20 +1866,18 @@ class OfficeGraphBuilder:
                                                                    dtype=torch.float32, 
                                                                    device=device)
         
-        # Classification task:
-        if "workhour_labels" in stgcn_input:
-            torch_input["workhour_labels"] = torch.tensor(stgcn_input["workhour_labels"], 
-                                                        dtype=torch.long,
-                                                        device=device)
-        # Forecasting task:
-        if "consumption_values" in stgcn_input:
-            consumption = np.zeros(len(stgcn_input["time_indices"]))
-            for idx, value in stgcn_input["consumption_values"].items():
-                consumption[idx] = value
-                
-            torch_input["consumption_values"] = torch.tensor(consumption,
-                                              dtype=torch.float32,
-                                              device=device)
+        # Classification task
+        torch_input["workhour_labels"] = torch.tensor(stgcn_input["workhour_labels"], 
+                                                    dtype=torch.long,
+                                                    device=device)
+        # Forecasting task
+        consumption = np.zeros(len(stgcn_input["time_indices"]))
+        for idx, value in stgcn_input["consumption_values"].items():
+            consumption[idx] = value
+        
+        torch_input["consumption_values"] = torch.tensor(consumption,
+                                            dtype=torch.float32,
+                                            device=device)
 
         # Copy non-tensor data
         torch_input["room_uris"] = stgcn_input["room_uris"]
@@ -1579,9 +1961,9 @@ if __name__ == "__main__":
     
     # Adjacency-related arguments
     parser.add_argument('--adjacency_type', type=str,
-                        choices=['binary', 'boundary_proportional'],
-                        default='boundary_proportional',
-                        help='Type of adjacency to use: binary or boundary_proportional')
+                        choices=['binary', 'weighted'],
+                        default='weighted',
+                        help='Type of adjacency to use: binary or weighted')
     
     parser.add_argument('--distance_threshold', type=float,
                         default=5.0,
@@ -1703,11 +2085,12 @@ if __name__ == "__main__":
         else:
             plt.show()
     
+    # Creating (masked) adjacency matrices
+    builder.apply_masks_to_adjacency()
+
     # Build homogeneous graph
     logger.info("Building homogeneous graph")
-    builder.build_homogeneous_graph(
-        weighted=True
-    )
+    builder.build_homogeneous_graph()
     
     # Plot network graph if requested
     if args.plot_network:
@@ -1736,14 +2119,14 @@ if __name__ == "__main__":
     # Prepare STGCN input
     stgcn_input = builder.prepare_stgcn_input()
     torch_tensors = builder.convert_to_torch_tensors(stgcn_input)
-    output_path = os.path.join(args.output_dir, f"stgcn_input_{args.adjacency_type}.pt")
+    output_path = os.path.join(args.output_dir, f"torch_input_{args.adjacency_type}.pt")
     torch.save(torch_tensors, output_path)
     logger.info(f"Saved tensors to {output_path}")
 
     # — Tabular baseline inputs —
     logger.info("Preparing data for tabular baseline")
     tab = builder.prepare_tabular_input()
-    tabular_path = os.path.join(args.output_dir, f"tab_input_{args.adjacency_type}.npz")
+    tabular_path = os.path.join(args.output_dir, f"tab_input.npz")
     np.savez_compressed(
         tabular_path,
         X=tab["X"],
