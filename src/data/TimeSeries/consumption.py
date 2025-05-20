@@ -93,67 +93,69 @@ def load_consumption_files(
     logger.info(f"Loaded {len(consumption_data)} days of consumption data")
     return consumption_data
 
-def aggregate_consumption_to_hourly(
+def aggregate_consumption_to_time_buckets(
     consumption_data: Dict[datetime.date, pd.DataFrame],
-    time_buckets: List[Tuple[datetime, datetime]]
+    time_buckets: List[Tuple[datetime, datetime]],
+    interval: str
 ) -> Dict[int, float]:
     """
-    Aggregate 15-minute consumption data to match time buckets,
-    assuming exactly 96 readings per day (4 per hour) in sequential order.
+    Aggregate consumption data to match time buckets.
+    Maps the timestamp in consumption data to the end time of time buckets.
     
     Args:
         consumption_data: Dictionary of consumption DataFrames by date
         time_buckets: List of (start_time, end_time) tuples
-        
+        interval: Time interval ('15min', '30min', '1h', or '2h')
+
     Returns:
         Dictionary mapping time bucket index to consumption value
     """
-    logger.info("Aggregating consumption data to match time buckets")
+    logger.info(f"Aggregating consumption data to match time buckets with interval {interval}")
     
+    if interval not in ['15min', '30min', '1h', '2h']:
+        raise ValueError(f"Unsupported interval: {interval}. Use '15min', '30min', '1h', or '2h'.")
+
     # Initialize result dictionary
     bucket_consumption = {}
     
-    # Keep track of which time bucket indices correspond to which date and hour
-    date_hour_to_bucket_idx = {}
+    # Create a lookup from (date, end_time_str) to bucket index
+    time_bucket_lookup = {}
     for i, (bucket_start, bucket_end) in enumerate(time_buckets):
         bucket_date = bucket_start.date()
-        bucket_hour = bucket_start.hour
-        
-        # Key is a tuple of (date, hour)
-        date_hour_to_bucket_idx[(bucket_date, bucket_hour)] = i
+        time_str = bucket_end.strftime('%H:%M')
+        time_bucket_lookup[(bucket_date, time_str)] = i
     
-    # Process each date with consumption data
+    # Process each date's consumption data
     for date, df in consumption_data.items():
-        # Ensure data is sorted by the original order
-        df_sorted = df.reset_index(drop=True)
-        
-        # Check if we have the expected 96 entries (24 hours × 4 readings per hour)
-        if len(df_sorted) != 96:
-            logger.warning(f"Expected 96 readings for {date}, got {len(df_sorted)}. Will process anyway.")
-        
-        # Group readings into hourly buckets (4 readings per hour)
-        # Each hour corresponds to indices: hour*4, hour*4+1, hour*4+2, hour*4+3
-        for hour in range(24):
-            # Indices for this hour (4 readings of 15 minutes each)
-            start_idx = hour * 4
-            end_idx = start_idx + 4
-            
-            # Make sure we don't go out of bounds
-            if end_idx > len(df_sorted):
-                logger.warning(f"Insufficient data for hour {hour} on {date}")
-                break
-            
-            # Get the 4 readings for this hour
-            hourly_readings = df_sorted.iloc[start_idx:end_idx]
-            
-            # Calculate average consumption for this hour
-            avg_consumption = hourly_readings['consumption'].mean()
-            
-            # Find the corresponding bucket index
-            bucket_key = (date, hour)
-            if bucket_key in date_hour_to_bucket_idx:
-                bucket_idx = date_hour_to_bucket_idx[bucket_key]
-                bucket_consumption[bucket_idx] = avg_consumption
+
+        if interval == '15min':
+            sum_up_rows = 1
+        elif interval == '30min':
+            sum_up_rows = 2
+        elif interval == '1h':
+            sum_up_rows = 4
+        elif interval == '2h':
+            sum_up_rows = 8
+
+        df_reset = df.reset_index(drop=True)
+        groups = [df_reset.iloc[i:i+sum_up_rows] for i in range(0, len(df_reset), sum_up_rows)]
+        interval_df = pd.DataFrame({
+            'time': [group.iloc[-1]['time'] for group in groups],
+            'consumption': [group['consumption'].mean() for group in groups]
+        })
+
+        for _, row in interval_df.iterrows():
+            time_str = row['time']
+            consumption_value = row['consumption']
+                        
+            # Look up the bucket index
+            lookup_key = (date, time_str)
+            if lookup_key in time_bucket_lookup:
+                bucket_idx = time_bucket_lookup[lookup_key]
+                bucket_consumption[bucket_idx] = consumption_value
     
     logger.info(f"Created consumption data for {len(bucket_consumption)} time buckets")
-    return bucket_consumption
+
+    sorted_bucket_consumption = {k: bucket_consumption[k] for k in sorted(bucket_consumption.keys())}
+
+    return sorted_bucket_consumption

@@ -40,7 +40,6 @@ class OfficeGraphBuilder:
         # Time-related properties
         self.start_time = None
         self.end_time = None
-        self.interval_hours = None
         self.time_buckets = None
         self.temporal_graphs = None
         
@@ -81,7 +80,7 @@ class OfficeGraphBuilder:
     def initialize_time_parameters(self, 
                                   start_time: str = "2022-03-01 00:00:00",
                                   end_time: str = "2023-01-31 00:00:00",
-                                  interval_hours: int = 1,
+                                  interval: str   = "1h",
                                   use_sundays: bool = False):
         """
         Initialize time-related parameters and create time buckets.
@@ -89,45 +88,29 @@ class OfficeGraphBuilder:
         Args:
             start_time: Start time for analysis in format "YYYY-MM-DD HH:MM:SS"
             end_time: End time for analysis in format "YYYY-MM-DD HH:MM:SS"
-            interval_hours: Size of time buckets in hours
+            interval: Frequency (15min, 30min, 1h, 2h…)
             use_sundays: Whether to include Sundays in time buckets
         """
         self.start_time = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
         self.end_time = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
-        self.interval_hours = interval_hours
+        self.interval = interval
         self.use_sundays = use_sundays
+
+        # Build buckets at arbitrary freq (15min, 30min, 1h, 2h…)
+        full_index = pd.date_range(self.start_time,
+                                   self.end_time,
+                                   freq=self.interval,
+                                   inclusive="left")
+        if not self.use_sundays:
+            full_index = full_index[full_index.weekday != 6]
         
-        # Create time buckets
-        self.time_buckets = self._create_time_buckets()
+        # store as list of (start, end)
+        off = pd.tseries.frequencies.to_offset(self.interval)
+        self.time_buckets = [(ts, ts + off) for ts in full_index]
+        self.time_buckets = [(ts.to_pydatetime(), (ts + off).to_pydatetime()) for ts in full_index]
         
-        logger.info(f"Initialized time parameters from {self.start_time} to {self.end_time}")
-        logger.info(f"Created {len(self.time_buckets)} time buckets of {interval_hours} hour(s) each")
-    
-    def _create_time_buckets(self) -> List[Tuple[datetime, datetime]]:
-        """
-        Create time buckets from start_time to end_time with interval_hours.
-        Optionally excludes Sundays.
+        logger.info(f"Created {len(self.time_buckets)} buckets at frequency {self.interval}")
         
-        Returns:
-            List of (start_time, end_time) tuples for each bucket
-        """
-        if not self.start_time or not self.end_time or not self.interval_hours:
-            raise ValueError("Time parameters not initialized. Call initialize_time_parameters first.")
-            
-        current_time = self.start_time
-        time_buckets = []
-        
-        while current_time < self.end_time:
-            bucket_end = current_time + timedelta(hours=self.interval_hours)
-            
-            # Check if we should include this bucket (skip if it's Sunday and use_sundays is False)
-            if self.use_sundays or current_time.weekday() != 6:  # 6 is Sunday in Python's datetime
-                time_buckets.append((current_time, bucket_end))
-            
-            current_time = bucket_end
-            
-        return time_buckets
-    
     def split_time_buckets(self,
                         train_blocks=4,
                         val_blocks=1,
@@ -156,14 +139,14 @@ class OfficeGraphBuilder:
         # Get all time indices
         time_indices = list(range(len(self.time_buckets)))
         
-        # Define block size based on whether to include Sundays
-        if self.use_sundays:
-            block_size = 24 * 7  # Full week (assuming 1-hour buckets)
-            logger.info("Using 7-day blocks (including Sundays)")
-        else:
-            block_size = 24 * 6  # Excluding Sundays
-            logger.info("Using 6-day blocks (excluding Sundays)")
-        
+        # Compute how many buckets per day, then per week (or 6-day)
+        # (so 96/day for 15min, 48/day for 30T, 24/day for 1H, etc.)
+        offset = pd.Timedelta(self.interval)
+        buckets_per_day = int(pd.Timedelta("1D") / offset)
+        days_per_block = 7 if self.use_sundays else 6
+        block_size = buckets_per_day * days_per_block
+        logger.info(f"Using {days_per_block}-day blocks, {block_size} buckets at {self.interval} each.")
+
         # Create blocks of contiguous time points
         blocks = []
         for i in range(0, len(time_indices), block_size):
@@ -1705,7 +1688,7 @@ class OfficeGraphBuilder:
             raise ValueError("Time buckets not initialized. Call initialize_time_parameters first.")
         
         # Import consumption utilities
-        from ..data.TimeSeries.consumption import load_consumption_files, aggregate_consumption_to_hourly
+        from ..data.TimeSeries.consumption import load_consumption_files, aggregate_consumption_to_time_buckets
         
         # Load consumption files
         consumption_data = load_consumption_files(
@@ -1715,9 +1698,10 @@ class OfficeGraphBuilder:
         )
         
         # Aggregate to match time buckets
-        bucket_consumption = aggregate_consumption_to_hourly(
+        bucket_consumption = aggregate_consumption_to_time_buckets(
             consumption_data, 
-            self.time_buckets
+            self.time_buckets,
+            self.interval
         )
         
         logger.info(f"Processed consumption data for {len(bucket_consumption)} time buckets")
@@ -1933,9 +1917,9 @@ if __name__ == "__main__":
                         default="2023-01-31 00:00:00",
                         help='End time for analysis (YYYY-MM-DD HH:MM:SS)')
     
-    parser.add_argument('--interval_hours', type=int, 
-                        default=1,
-                        help='Size of time buckets in hours')
+    parser.add_argument('--interval', type=str, 
+                        default="1h",
+                        help='Frequency of time buckets as a pandas offset string e.g., ("15min", "30min", "1h", "2h")')
     
     parser.add_argument('--use_sundays', action='store_true',
                         help='Include Sundays in the analysis')
@@ -1964,7 +1948,7 @@ if __name__ == "__main__":
     
     parser.add_argument('--simplify_polygons', action='store_true',
                         dest='simplify_polygons',
-                        help='Polygon simplification (enabled by default)')
+                        help='Polygon simplification (off by default)')
     
     parser.add_argument('--simplify_epsilon', type=float,
                         default=0.1,
@@ -2043,7 +2027,7 @@ if __name__ == "__main__":
     builder.initialize_time_parameters(
         start_time=args.start_time,
         end_time=args.end_time,
-        interval_hours=args.interval_hours,
+        interval=args.interval,
         use_sundays=args.use_sundays
     )
     
@@ -2130,14 +2114,14 @@ if __name__ == "__main__":
     # Prepare STGCN input
     stgcn_input = builder.prepare_stgcn_input()
     torch_tensors = builder.convert_to_torch_tensors(stgcn_input)
-    output_path = os.path.join(args.output_dir, f"torch_input_{args.adjacency_type}.pt")
+    output_path = os.path.join(args.output_dir, f"torch_input_{args.adjacency_type}_{args.interval}.pt")
     torch.save(torch_tensors, output_path)
     logger.info(f"Saved tensors to {output_path}")
 
     # — Tabular baseline inputs —
     logger.info("Preparing data for tabular baseline")
     tab = builder.prepare_tabular_input()
-    tabular_path = os.path.join(args.output_dir, f"tab_input.npz")
+    tabular_path = os.path.join(args.output_dir, f"tab_input_{args.interval}.npz")
     np.savez_compressed(
         tabular_path,
         X=tab["X"],

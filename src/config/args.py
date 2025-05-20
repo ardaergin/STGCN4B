@@ -42,6 +42,9 @@ def parse_base_args(parser=None):
             "  • rw_renorm_lap  : I - D^{-1}(A+I)"
         )
     )
+    parser.add_argument('--interval', type=str, 
+                        default="1h",
+                        help='Frequency of time buckets as a pandas offset string e.g., ("15min", "30min", "1h", "2h")')
 
     # Data parameters
     parser.add_argument('--data_dir', type=str, default='data', 

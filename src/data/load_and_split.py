@@ -25,7 +25,7 @@ def load_and_split_data(args):
     logger.info("Loading processed OfficeGraph data...")
     
     # Load the pre-processed torch input
-    file_name = f"torch_input_{args.adjacency_type}.pt"
+    file_name = f"torch_input_{args.adjacency_type}_{args.interval}.pt"
     torch_input_path = os.path.join(args.data_dir, "processed", file_name)
     logger.info(f"Loading torch input from {torch_input_path}")
     
