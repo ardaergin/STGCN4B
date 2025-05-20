@@ -4,3 +4,4 @@
 *.pyc
 /output
 scrapbook.ipynb
+.python-version
