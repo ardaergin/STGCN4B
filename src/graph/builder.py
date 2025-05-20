@@ -1551,9 +1551,18 @@ class OfficeGraphBuilder:
         # Get ordered list of room URIs (to ensure consistency across all time buckets)
         room_uris = list(first_graph.nodes())
                 
-        # Temporal features from the property measurements
-        temporal_feature_types = [f"{prop_type}.{stat}" for prop_type in self.used_property_types 
-                            for stat in ["mean", "std", "min", "max", "has_property"]]
+        # Define feature types based on property types
+        temporal_feature_types = []
+        for prop_type in self.used_property_types:
+            if prop_type == "Contact":
+                # Contact only has sum and has_property features
+                temporal_feature_types.extend([f"{prop_type}.sum", f"{prop_type}.has_property"])
+            else:
+                # Other properties have mean, std, min, max, has_property
+                temporal_feature_types.extend([
+                    f"{prop_type}.mean", f"{prop_type}.std", f"{prop_type}.min", 
+                    f"{prop_type}.max", f"{prop_type}.has_property"
+                ])
         
         # Calculate dimensions for feature matrices
         n_rooms = len(room_uris)
@@ -1602,21 +1611,34 @@ class OfficeGraphBuilder:
                 if "temporal_features" in graph.nodes[room_uri]:
                     room_temp_features = graph.nodes[room_uri]["temporal_features"]
                     
-                    # Extract temporal features
+                    # Extract temporal features - track feature index separately
                     feat_idx = 0
                     for prop_type in self.used_property_types:
                         if prop_type in room_temp_features:
                             prop_feats = room_temp_features[prop_type]
                             
-                            # Extract individual statistics
-                            temporal_features[room_idx, feat_idx] = prop_feats["mean"]
-                            temporal_features[room_idx, feat_idx + 1] = prop_feats["std"]
-                            temporal_features[room_idx, feat_idx + 2] = prop_feats["min"]
-                            temporal_features[room_idx, feat_idx + 3] = prop_feats["max"]
-                            temporal_features[room_idx, feat_idx + 4] = prop_feats["has_property"]
-                        
-                        # Increment feature index by number of statistics per property
-                        feat_idx += 5
+                            # Extract features based on property type
+                            if prop_type == "Contact":
+                                # For Contact, we store sum and has_property
+                                temporal_features[room_idx, feat_idx] = prop_feats["sum"]
+                                temporal_features[room_idx, feat_idx + 1] = prop_feats["has_property"]
+                                # Increment feature index by 2
+                                feat_idx += 2
+                            else:
+                                # For other properties, store mean, std, min, max, has_property
+                                temporal_features[room_idx, feat_idx] = prop_feats["mean"]
+                                temporal_features[room_idx, feat_idx + 1] = prop_feats["std"]
+                                temporal_features[room_idx, feat_idx + 2] = prop_feats["min"]
+                                temporal_features[room_idx, feat_idx + 3] = prop_feats["max"]
+                                temporal_features[room_idx, feat_idx + 4] = prop_feats["has_property"]
+                                # Increment feature index by 5
+                                feat_idx += 5
+                        else:
+                            # If property not available for this room, skip the appropriate number of features
+                            if prop_type == "Contact":
+                                feat_idx += 2
+                            else:
+                                feat_idx += 5
             
             # Combine static and temporal features
             combined_features = np.hstack([static_features, temporal_features])
