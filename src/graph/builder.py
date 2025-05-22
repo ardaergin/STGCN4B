@@ -78,8 +78,10 @@ class OfficeGraphBuilder:
     #############################
         
     def initialize_time_parameters(self, 
-                                  start_time: str = "2022-03-01 00:00:00",
-                                  end_time: str = "2023-01-31 00:00:00",
+                                  start_time: str = "2022-03-07 00:00:00", # Monday
+                                  # The data starts at 03-01 (Tuesday), but we start at 03-07 (Monday)
+                                  end_time: str = "2023-01-29 00:00:00", # 01-29, Sunday
+                                  # The data ends at 01-31 (Tuesday), but we end at 01-29 (Monday)
                                   interval: str   = "1h",
                                   use_sundays: bool = False):
         """
@@ -96,13 +98,13 @@ class OfficeGraphBuilder:
         self.interval = interval
         self.use_sundays = use_sundays
 
-        # Build buckets at arbitrary freq (15min, 30min, 1h, 2h…)
+        # Build buckets at arbitrary freq (15min, 30min, 1h, 2h, …)
         full_index = pd.date_range(self.start_time,
                                    self.end_time,
                                    freq=self.interval,
                                    inclusive="left")
         if not self.use_sundays:
-            full_index = full_index[full_index.weekday != 6]
+            full_index = full_index[full_index.weekday != 6] # Sunday = 6
         
         # store as list of (start, end)
         off = pd.tseries.frequencies.to_offset(self.interval)
@@ -155,18 +157,41 @@ class OfficeGraphBuilder:
             blocks.append(block)
         
         n_blocks = len(blocks)
-        logger.info(f"Created {n_blocks} blocks of data (each ~1 week)")
+        logger.info(f"Created {n_blocks} blocks of data (each 1 week)")
         
         # Calculate total requested blocks
         total_requested_blocks = train_blocks + val_blocks + test_blocks
         
         # Check if the requested blocks divide evenly into available blocks
-        if n_blocks % total_requested_blocks != 0:
-            raise ValueError(f"The week block number ({n_blocks}) is not divisible by the "
-                            f"requested block counts ({total_requested_blocks}). "
-                            f"Please adjust your train_blocks, val_blocks, and test_blocks "
-                            f"so their sum divides {n_blocks} evenly.")
+        n_extra_blocks = n_blocks % total_requested_blocks
+        if n_extra_blocks != 0:
+            logger.warning(f"The week block number ({n_blocks}) is not divisible by the "
+                        f"requested block counts ({total_requested_blocks}). "
+                        f"There are {n_extra_blocks} extra blocks. "
+                        f"So, {n_extra_blocks} randomly chosen blocks will be assigned to train.")
+            
+            # Randomly select n_extra_blocks indices
+            extra_block_indices = np.random.choice(range(n_blocks), n_extra_blocks, replace=False)
+            
+            # Initialize train_indices list for extra blocks
+            train_indices = []
+            
+            # Add the selected blocks to training and remove them from blocks
+            # We need to process in reverse order to avoid index shifting during removal
+            for idx in sorted(extra_block_indices, reverse=True):
+                train_indices.extend(blocks[idx])
+                blocks.pop(idx)
+            
+            # Update n_blocks after removal
+            n_blocks = len(blocks)
+        else:
+            # Initialize empty train_indices if no extra blocks
+            train_indices = []
         
+        # Initialize rest of the indices
+        val_indices = []
+        test_indices = []
+
         # Calculate the repeat factor - how many times to repeat the pattern
         repeat_factor = n_blocks // total_requested_blocks
         
@@ -174,12 +199,7 @@ class OfficeGraphBuilder:
         basic_pattern = ["train"] * train_blocks + ["val"] * val_blocks + ["test"] * test_blocks
         
         # Repeat the pattern the necessary number of times
-        sampling_pattern = basic_pattern * repeat_factor
-        
-        # Initialize sets for each split
-        train_indices = []
-        val_indices = []
-        test_indices = []
+        sampling_pattern = basic_pattern * repeat_factor        
         
         # Shuffle the sampling pattern
         np.random.shuffle(sampling_pattern)
@@ -206,11 +226,11 @@ class OfficeGraphBuilder:
         self.val_indices = val_indices
         self.test_indices = test_indices
         
-        logger.info(f"Data split: Train={len(train_indices)} samples ({train_blocks * repeat_factor} blocks), "
+        logger.info(f"Data split: Train={len(train_indices)} samples ({(train_blocks * repeat_factor)+n_extra_blocks} blocks), "
                     f"Val={len(val_indices)} samples ({val_blocks * repeat_factor} blocks), "
                     f"Test={len(test_indices)} samples ({test_blocks * repeat_factor} blocks)")
         logger.info(f"Pattern [{','.join([str(b) for b in basic_pattern])}] repeated {repeat_factor} times")
-                
+    
     #############################
     # Polygons
     #############################
@@ -1932,11 +1952,11 @@ if __name__ == "__main__":
 
     # Time-related arguments
     parser.add_argument('--start_time', type=str, 
-                        default="2022-03-01 00:00:00",
+                        default="2022-03-07 00:00:00",
                         help='Start time for analysis (YYYY-MM-DD HH:MM:SS)')
-    
+
     parser.add_argument('--end_time', type=str, 
-                        default="2023-01-31 00:00:00",
+                        default="2023-01-30 00:00:00",
                         help='End time for analysis (YYYY-MM-DD HH:MM:SS)')
     
     parser.add_argument('--interval', type=str, 
@@ -1951,8 +1971,8 @@ if __name__ == "__main__":
         type=int,
         nargs=3,
         metavar=("TRAIN", "VAL", "TEST"),
-        default=[4, 1, 1],
-        help="train/val/test split in number of blocks (default: 4 1 1)"
+        default=[3, 1, 1],
+        help="train/val/test split in number of blocks (default: 3 1 1)"
     )
     
     parser.add_argument(
