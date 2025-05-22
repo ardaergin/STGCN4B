@@ -9,12 +9,15 @@ from ..core import Device, Measurement, Room, Floor, Building
 from ..data.OfficeGraph.device_loader import FloorDeviceRetriever
 from ..data.OfficeGraph.ttl_loader import load_multiple_ttl_files, load_VideoLab_topology, load_csv_enrichment
 
-class OfficeGraph(NamespaceMixin):
+from .extraction import OfficeGraphExtractor
+
+class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
     """Class to represent and manipulate the IoT Office Graph."""
    
     def __init__(self, 
                  base_dir = 'data', 
-                 floors_to_load: Optional[List[int]] = None):
+                 floors_to_load: Optional[List[int]] = None,
+                 auto_extract: bool = True):
         """
         Initialize the OfficeGraph object.
 
@@ -22,6 +25,8 @@ class OfficeGraph(NamespaceMixin):
             base_dir (str, optional): Base directory for data files. Defaults to 'data'.
             floors_to_load (Optional[List[int]], optional): List of floor numbers to load. 
                                                           Defaults to [7] if None.
+            auto_extract (bool, optional): Whether to automatically extract entities after loading.
+                                         Defaults to True.
         """
         # Default to loading only the 7th floor
         if floors_to_load is None:
@@ -51,6 +56,12 @@ class OfficeGraph(NamespaceMixin):
         # Initialize retriever and load OfficeGraph
         self.retriever = FloorDeviceRetriever()
         self.load_devices_on_floors(floors_to_load)
+        
+        # Automatically extract entities if requested
+        if auto_extract:
+            print("Extracting entities from the graph...")
+            self.extract_all()
+            print("Entity extraction complete.")
     
     def _init_collections(self):
         """Initialize collections to store entities."""
@@ -182,10 +193,6 @@ class OfficeGraph(NamespaceMixin):
         return sorted(measurements, key=lambda m: m.timestamp)
 
 
-
-
-
-
 if __name__ == "__main__":
     
     ### Arguments ###
@@ -203,16 +210,25 @@ if __name__ == "__main__":
         default=[7],
         help="List of floor numbers to load (default: 7)"
     )
+    parser.add_argument(
+        "--no-extract",
+        action="store_true",
+        help="Skip automatic entity extraction"
+    )
     args = parser.parse_args()
 
     ### Running ###
     print(f"Starting OfficeGraph with base directory '{args.base_dir}' and floors {args.floors}")
-    office_graph = OfficeGraph(base_dir=args.base_dir, floors_to_load=args.floors)
+    office_graph = OfficeGraph(
+        base_dir=args.base_dir, 
+        floors_to_load=args.floors,
+        auto_extract=not args.no_extract
+    )
     total_triples = len(office_graph.graph)
     print(f"Graph loaded successfully with {total_triples} triples.")
 
     ### Saving ###
-    output_path = os.path.join(args.base_dir, "processed", "officegraph_base.pkl")
+    output_path = os.path.join(args.base_dir, "processed", "officegraph.pkl")
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     try:
         with open(output_path, "wb") as f:
