@@ -117,7 +117,7 @@ class OfficeGraphBuilder:
                         train_blocks=4,
                         val_blocks=1,
                         test_blocks=1,
-                        seed=42):
+                        seed=2658918):
         """
         Split time buckets into train, validation, and test sets using block-wise sampling.
         Takes the direct number of blocks for each split and requires that the total requested
@@ -1666,18 +1666,108 @@ class OfficeGraphBuilder:
             # Store the combined feature matrix for this time bucket
             feature_matrices[time_idx] = combined_features
         
-        # Store feature names for reference
-        self.feature_names = self.static_room_attributes + temporal_feature_types
-        self.static_feature_count = n_static_features
-        self.temporal_feature_count = n_temporal_features
-        self.feature_matrices = feature_matrices
-        self.room_uris = room_uris
+        # After filling `feature_matrices[t] = combined_features` for each t:
+        time_indices = sorted(self.temporal_graphs.keys())
+        # Stack into array of shape (T, R, F)
+        all_feats = np.stack([feature_matrices[t] for t in time_indices], axis=0)
 
-        logger.info(f"Generated feature matrices for {len(feature_matrices)} time buckets")
-        logger.info(f"Feature matrix shape: {n_rooms} rooms × {n_static_features + n_temporal_features} features " +
-                f"({n_static_features} static + {n_temporal_features} temporal)")
-        
+        # Save dimensions & names
+        self.feature_matrices = {
+            t: all_feats[i] for i, t in enumerate(time_indices)
+        }
+        self.room_uris = room_uris
+        self.feature_names = self.static_room_attributes + temporal_feature_types
+        self.static_feature_count  = n_static_features
+        self.temporal_feature_count = n_temporal_features
+
+        # Now standardize continuous features (in-place)
+        self.standardize_continuous_features()
+
+        logger.info(f"Generated and standardized feature matrices for {len(time_indices)} time buckets")
     
+    #############################
+    # Normalization
+    #############################
+    
+    def standardize_continuous_features(self) -> Dict[str, Dict[str, float]]:
+        """
+        Z-score normalization of only the continuous features, computed on the train set.
+        Binary flags (static or '.has_property') are left untouched.
+        """
+        if not hasattr(self, 'feature_matrices') or not self.feature_matrices:
+            raise ValueError("Feature matrices not available. Run generate_feature_matrices first.")
+        if not hasattr(self, 'train_indices') or not self.train_indices:
+            raise ValueError("Train indices not available. Run split_time_buckets first.")
+        if not hasattr(self, 'feature_names') or not self.feature_names:
+            raise ValueError("Feature names not available. Run generate_feature_matrices first.")
+
+        feature_names = self.feature_names
+        F = len(feature_names)
+        time_indices = sorted(self.feature_matrices.keys())
+        T, R = len(time_indices), next(iter(self.feature_matrices.values())).shape[0]
+
+        # --- Build binary-mask explicitly ---
+        static_binary = {
+            'hasWindows','has_multiple_windows','hasBackWindows','hasFrontWindows',
+            'hasRightWindows','hasLeftWindows','isProperRoom'
+        }
+        continuous_mask = np.ones(F, dtype=bool)
+        for i, fn in enumerate(feature_names):
+            if fn in static_binary or fn.endswith('.has_property'):
+                continuous_mask[i] = False
+        continuous_indices = np.where(continuous_mask)[0]
+        logger.info(f"Standardizing {len(continuous_indices)}/{F} continuous features")
+
+        # --- Stack train data and compute mean/std ---
+        # shape (T, R, F) → select train buckets → reshape to (T_train*R, F)
+        all_feats = np.stack([self.feature_matrices[t] for t in time_indices], axis=0)
+        train_feats = all_feats[self.train_indices]             # (T_train, R, F)
+        train_flat  = train_feats.reshape(-1, F)               # (T_train*R, F)
+
+        means = train_flat[:, continuous_indices].mean(axis=0)
+        stds  = train_flat[:, continuous_indices].std(axis=0)
+        # guard zero‐variance
+        stds[stds < 1e-6] = 1.0
+
+        # Save for inference
+        self.continuous_indices = continuous_indices
+        self.feature_mean  = means
+        self.feature_std   = stds
+
+        # --- Apply normalization to every bucket ---
+        # vectorized over rooms:
+        all_feats[:, :, continuous_indices] = (
+            (all_feats[:, :, continuous_indices] - means[None, None, :])
+            / stds[None, None, :]
+        )
+
+        # Check:
+        for i in continuous_indices:
+            logger.info(
+                f"After norm – feature '{feature_names[i]}' has "
+                f"µ≈{all_feats[:,:,i].mean():.2f}, σ≈{all_feats[:,:,i].std():.2f}; "
+                f"min/max = {all_feats[:,:,i].min():.2f}/{all_feats[:,:,i].max():.2f}"
+            )
+
+        # write back into dict
+        for idx, t in enumerate(time_indices):
+            self.feature_matrices[t] = all_feats[idx]
+
+        # Build detailed params
+        detailed = {}
+        for i, fn in enumerate(feature_names):
+            if i in continuous_indices:
+                detailed[fn] = {'mean': float(means[np.where(continuous_indices==i)[0][0]]),
+                                'std':  float(stds [np.where(continuous_indices==i)[0][0]]),
+                                'is_continuous': True}
+            else:
+                detailed[fn] = {'mean': 0.0, 'std': 1.0, 'is_continuous': False}
+
+        self.detailed_normalization_params = detailed
+        logger.info("Finished standardizing continuous features.")
+        return detailed
+
+
     #############################
     # Task-Specific Data Preparation
     #############################
@@ -1715,40 +1805,65 @@ class OfficeGraphBuilder:
         
         return labels
     
-    def get_forecasting_values(self) -> Dict[int, float]:
+    def get_forecasting_values(self, normalize: bool = True) -> Dict[int, float]:
         """
-        Load and process consumption data for forecasting.
-        
+        Load, aggregate (to time buckets), and optionally Z-score normalize
+        consumption data for forecasting.
+
         Args:
-            consumption_dir: Directory containing consumption CSV files
-            
+            normalize: if True, return (cons - mean_train)/std_train,
+                       else return raw consumption.
+
         Returns:
             Dictionary mapping time bucket index to consumption value
+            (normalized if normalize=True).
         """
-        # Check if time buckets are available
-        if not self.time_buckets:
-            raise ValueError("Time buckets not initialized. Call initialize_time_parameters first.")
-        
-        # Import consumption utilities
-        from ..data.TimeSeries.consumption import load_consumption_files, aggregate_consumption_to_time_buckets
-        
-        # Load consumption files
+        # 1) load and aggregate exactly as before
+        from ..data.TimeSeries.consumption import (
+            load_consumption_files,
+            aggregate_consumption_to_time_buckets
+        )
         consumption_data = load_consumption_files(
-            self.consumption_dir, 
-            self.start_time, 
+            self.consumption_dir,
+            self.start_time,
             self.end_time
         )
-        
-        # Aggregate to match time buckets
         bucket_consumption = aggregate_consumption_to_time_buckets(
-            consumption_data, 
+            consumption_data,
             self.time_buckets,
             self.interval
         )
-        
-        logger.info(f"Processed consumption data for {len(bucket_consumption)} time buckets")
-        return bucket_consumption
-    
+        # now bucket_consumption: { idx: raw_value }
+
+        # 2) If this is the first time through, compute & store raw series as an array
+        if not hasattr(self, '_raw_consumption_array'):
+            T = len(self.time_buckets)
+            arr = np.zeros(T, dtype=float)
+            for i in range(T):
+                arr[i] = bucket_consumption[i]
+            self._raw_consumption_array = arr
+
+        # 3) If asked for raw, just return the dict
+        if not normalize:
+            logger.info(f"Returning raw consumption for {len(bucket_consumption)} buckets")
+            return bucket_consumption
+
+        # 4) Otherwise—fit Z-score on train split once, then reuse:
+        if not hasattr(self, 'target_mean'):
+            train_arr = self._raw_consumption_array[self.train_indices]
+            mu    = train_arr.mean()
+            sigma = train_arr.std() if train_arr.std()>1e-6 else 1.0
+            self.target_mean = float(mu)
+            self.target_std  = float(sigma)
+            logger.info(f"Fitted target norm: mean={mu:.3f}, std={sigma:.3f}")
+
+        # 5) Build normalized dict and return
+        normed = {}
+        for idx, raw in bucket_consumption.items():
+            normed[idx] = float((raw - self.target_mean) / self.target_std)
+        logger.info(f"Returning normalized consumption for {len(normed)} buckets")
+        return normed
+
     #############################
     # STGCN Input Preparation
     #############################
@@ -2040,7 +2155,8 @@ if __name__ == "__main__":
                        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     
     # Load OfficeGraph
-    from .extraction import OfficeGraph, OfficeGraphExtractor
+    from .officegraph import OfficeGraph
+    from .extraction import OfficeGraphExtractor
     logger.info(f"Loading OfficeGraph from {args.officegraph_path}")
     with open(args.officegraph_path, 'rb') as f:
         office_graph = pickle.load(f)
