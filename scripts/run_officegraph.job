@@ -1,13 +1,12 @@
 #!/bin/bash
-#SBATCH --partition=cpu
+#SBATCH --partition=rome
 #SBATCH --job-name=officegraph_extraction
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=128G
+#SBATCH --mem=32G
 #SBATCH --time=01:00:00
 #SBATCH --output=data/processed/logs/slurm_output_%A.out
 #SBATCH --error=data/processed/logs/slurm_error_%A.err
-
 export OUTPUT_DIR=data/processed/
 mkdir -p $OUTPUT_DIR
 
@@ -20,7 +19,6 @@ module load Python-bundle-PyPI/2023.06-GCCcore-12.3.0
 # Install missing packages if needed
 python -c "import rdflib" 2>/dev/null || pip install --user rdflib
 python -c "import shapely" 2>/dev/null || pip install --user shapely
-python -c "import tqdm" 2>/dev/null || pip install --user tqdm
 
 # Move into your project directory
 cd $HOME/eSTGNN
@@ -31,9 +29,9 @@ mkdir -p $TMPDIR/data/topology
 
 # Copy data to scratch (maintaining proper directory structure)
 echo "Copying data to scratch space..."
-cp -r $HOME/data/devices $TMPDIR/data/
-cp $HOME/data/enrichments/devices_in_rooms_enrichment.ttl $TMPDIR/data/enrichments/
-cp -r $HOME/data/topology/TTLs $TMPDIR/data/topology/
+cp -r $HOME/eSTGNN/data/devices $TMPDIR/data/
+cp $HOME/eSTGNN/data/enrichments/devices_in_rooms_enrichment.ttl $TMPDIR/data/enrichments/
+cp -r $HOME/eSTGNN/data/topology/TTLs $TMPDIR/data/topology/
 
 # Check if data copy succeeded
 if [ ! -d "$TMPDIR/data/devices" ]; then
