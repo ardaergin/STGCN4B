@@ -21,8 +21,8 @@ openmeteo = openmeteo_requests.Client(session = retry_session)
 # The order of variables in hourly or daily is important to assign them correctly below
 url = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 params = {
-	"latitude": 52.52,
-	"longitude": 13.41,
+	"latitude": 51.4455556,
+	"longitude": 5.4594444,
 	"start_date": "2022-02-28",
 	"end_date": "2023-02-01",
 	"hourly": ["temperature_2m", "relative_humidity_2m", "precipitation", "wind_speed_10m", "wind_speed_80m", "cloud_cover", "wind_direction_80m", "wind_direction_10m", "weather_code"],
@@ -67,6 +67,14 @@ hourly_data["wind_direction_10m"] = hourly_wind_direction_10m
 hourly_data["weather_code"] = hourly_weather_code
 
 hourly_dataframe = pd.DataFrame(data = hourly_data)
+
+# ─── CONVERT UTC → Europe/Berlin & STRIP TZ INFO ────────────────────────────────
+hourly_dataframe['date'] = (
+    hourly_dataframe['date']
+      .dt.tz_convert('Europe/Berlin')
+      .dt.tz_localize(None)
+)
+# ────────────────────────────────────────────────────────────────────────────────
 
 # Create the data/weather directory if it doesn't exist
 os.makedirs('data/weather', exist_ok=True)
