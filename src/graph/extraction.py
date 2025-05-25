@@ -1,7 +1,7 @@
 import logging
 from collections import defaultdict
 from rdflib import URIRef
-from typing import Dict, Tuple
+from typing import Dict, Tuple, List
 
 logger = logging.getLogger(__name__)
 
@@ -338,4 +338,48 @@ class OfficeGraphExtractor:
         self.extract_devices()
         self.extract_measurements()
         self.build_measurement_sequences()
+        self.extract_property_type_mappings()
+
+    def extract_all_parallel(self, num_workers: int = 4):
+        """
+        Parallel version of extract_all. Only measurement sequences are parallelized.
+        """
+        from multiprocessing import Pool, cpu_count
+
+        self.extract_rooms_and_floors()
+        self.extract_devices()
+        self.extract_measurements()  # This still needs to happen first (parsing RDF)
+
+        def chunk_measurements(measurements: List[Measurement], num_chunks: int):
+            avg = len(measurements) // num_chunks
+            return [measurements[i * avg: (i + 1) * avg] for i in range(num_chunks)]
+
+        def process_chunk(chunk: List[Measurement]):
+            from collections import defaultdict
+            seqs = defaultdict(list)
+            for m in chunk:
+                if m.property_type:
+                    key = (m.device_uri, m.property_type)
+                    seqs[key].append(m)
+            for k in seqs:
+                seqs[k].sort(key=lambda m: m.timestamp)
+            return seqs
+
+        # Break all measurements into chunks
+        all_measurements = list(self.measurements.values())
+        chunks = chunk_measurements(all_measurements, num_workers)
+
+        with Pool(num_workers) as pool:
+            partial_results = pool.map(process_chunk, chunks)
+
+        # Merge results
+        from collections import defaultdict
+        merged = defaultdict(list)
+        for partial in partial_results:
+            for k, v in partial.items():
+                merged[k].extend(v)
+            for v in merged.values():
+                v.sort(key=lambda m: m.timestamp)
+
+        self.measurement_sequences = dict(merged)
         self.extract_property_type_mappings()

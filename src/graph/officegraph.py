@@ -15,9 +15,12 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
     """Class to represent and manipulate the IoT Office Graph."""
    
     def __init__(self, 
-                 base_dir = 'data', 
+                 base_dir: str = 'data', 
                  floors_to_load: Optional[List[int]] = None,
-                 auto_extract: bool = True):
+                 auto_extract: bool = True,
+                 parallel_extraction: bool = False,
+                 load_from_pickle: bool = False,
+                 pickle_path: Optional[str] = None):
         """
         Initialize the OfficeGraph object.
 
@@ -27,22 +30,42 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
                                                           Defaults to [7] if None.
             auto_extract (bool, optional): Whether to automatically extract entities after loading.
                                          Defaults to True.
+            parallel_extraction (bool, optional): Whether to use parallel processing for extraction.
+                                                 Defaults to False.
+            load_from_pickle (bool, optional): Whether to load from a saved pickle file.
+                                             Defaults to False.
+            pickle_path (Optional[str], optional): Path to the pickle file. If None, uses default path.
         """
         # Default to loading only the 7th floor
         if floors_to_load is None:
             floors_to_load = [7]
 
-        # Main RDF graph
-        self.graph = self.create_empty_graph_with_namespace_bindings()
         self.base_dir = base_dir
-       
-        # Collections to store entities
+        self.floors_to_load = floors_to_load
+        
+        # Initialize collections
         self._init_collections()
 
+        if load_from_pickle:
+            # Load from pickle file
+            if pickle_path is None:
+                pickle_path = os.path.join(base_dir, "processed", "officegraph_entities.pkl")
+            
+            self.load_from_pickle(pickle_path)
+            print(f"Loaded OfficeGraph entities from {pickle_path}")
+        else:
+            # Load from RDF data
+            self._load_from_rdf(floors_to_load, auto_extract, parallel_extraction)
+
+    def _load_from_rdf(self, floors_to_load: List[int], auto_extract: bool, parallel_extraction: bool):
+        """Load and process RDF data."""
+        # Main RDF graph - only created when loading from RDF
+        self.graph = self.create_empty_graph_with_namespace_bindings()
+
         # Load building topology for specified floors
-        builing_topology_graph = load_building_topology(self.base_dir, floors=floors_to_load)
-        self.graph += builing_topology_graph
-        print(f"Loaded building topology for floors {floors_to_load} ({len(builing_topology_graph)} triples).")
+        building_topology_graph = load_building_topology(self.base_dir, floors=floors_to_load)
+        self.graph += building_topology_graph
+        print(f"Loaded building topology for floors {floors_to_load} ({len(building_topology_graph)} triples).")
 
         # Load CSV enrichment
         csv_enrichment_graph = load_csv_enrichment(self.base_dir, floors=floors_to_load)
@@ -55,8 +78,14 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
         
         # Automatically extract entities if requested
         if auto_extract:
-            print("Extracting entities from the graph...")
-            self.extract_all()
+            if parallel_extraction:
+                import multiprocessing
+                num_workers = int(os.environ.get("SLURM_CPUS_PER_TASK", multiprocessing.cpu_count()))
+                print(f"Running in parallel mode with {num_workers} workers")
+                self.extract_all_parallel(num_workers=num_workers)
+            else:
+                print("Extracting entities from the graph...")
+                self.extract_all()
             print("Entity extraction complete.")
     
     def _init_collections(self):
@@ -72,7 +101,123 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
         
         # Measurement sequence links
         self.measurement_sequences: Dict[Tuple[URIRef, URIRef], List[Measurement]] = {}
+        
+        # Store metadata about what was loaded
+        self.metadata = {
+            'floors_loaded': [],
+            'total_devices': 0,
+            'total_measurements': 0,
+            'total_rooms': 0,
+            'total_floors': 0,
+            'extraction_timestamp': None
+        }
     
+    def save_entities_to_pickle(self, pickle_path: Optional[str] = None) -> str:
+        """
+        Save all extracted entities (excluding the RDF graph) to a pickle file.
+        
+        Args:
+            pickle_path (Optional[str]): Path where to save the pickle file.
+                                       If None, uses default path.
+        
+        Returns:
+            str: Path where the file was saved.
+        """
+        if pickle_path is None:
+            pickle_path = os.path.join(self.base_dir, "processed", "officegraph_entities.pkl")
+        
+        # Ensure directory exists
+        os.makedirs(os.path.dirname(pickle_path), exist_ok=True)
+        
+        # Prepare data to save (everything except the RDF graph)
+        entities_data = {
+            'devices': self.devices,
+            'measurements': self.measurements,
+            'rooms': self.rooms,
+            'floors': self.floors,
+            'building': self.building,
+            'property_type_mappings': self.property_type_mappings,
+            'measurement_sequences': self.measurement_sequences,
+            'base_dir': self.base_dir,
+            'floors_to_load': self.floors_to_load,
+            'metadata': self._update_metadata()
+        }
+        
+        try:
+            with open(pickle_path, "wb") as f:
+                pickle.dump(entities_data, f)
+            print(f"Successfully saved OfficeGraph entities to {pickle_path}")
+            print(f"Saved data: {len(self.devices)} devices, {len(self.measurements)} measurements, "
+                  f"{len(self.rooms)} rooms, {len(self.floors)} floors")
+            return pickle_path
+        except (OSError, pickle.PicklingError) as e:
+            logger.error("Failed to save OfficeGraph entities: %s", e)
+            raise
+    
+    def load_from_pickle(self, pickle_path: str) -> None:
+        """
+        Load all extracted entities from a pickle file.
+        
+        Args:
+            pickle_path (str): Path to the pickle file to load.
+        """
+        try:
+            with open(pickle_path, "rb") as f:
+                entities_data = pickle.load(f)
+            
+            # Restore all the entity collections
+            self.devices = entities_data['devices']
+            self.measurements = entities_data['measurements']
+            self.rooms = entities_data['rooms']
+            self.floors = entities_data['floors']
+            self.building = entities_data['building']
+            self.property_type_mappings = entities_data['property_type_mappings']
+            self.measurement_sequences = entities_data['measurement_sequences']
+            self.base_dir = entities_data['base_dir']
+            self.floors_to_load = entities_data['floors_to_load']
+            self.metadata = entities_data.get('metadata', {})
+            
+            print(f"Loaded data: {len(self.devices)} devices, {len(self.measurements)} measurements, "
+                  f"{len(self.rooms)} rooms, {len(self.floors)} floors")
+            
+        except (OSError, pickle.UnpicklingError) as e:
+            logger.error("Failed to load OfficeGraph entities from %s: %s", pickle_path, e)
+            raise
+        except FileNotFoundError:
+            logger.error("Pickle file not found: %s", pickle_path)
+            raise
+    
+    def _update_metadata(self) -> Dict:
+        """Update metadata with current state."""
+        import datetime
+        self.metadata.update({
+            'floors_loaded': self.floors_to_load,
+            'total_devices': len(self.devices),
+            'total_measurements': len(self.measurements),
+            'total_rooms': len(self.rooms),
+            'total_floors': len(self.floors),
+            'extraction_timestamp': datetime.datetime.now().isoformat()
+        })
+        return self.metadata
+    
+    @classmethod
+    def load_entities_from_pickle(cls, pickle_path: str) -> 'OfficeGraph':
+        """
+        Class method to create an OfficeGraph instance by loading from a pickle file.
+        
+        Args:
+            pickle_path (str): Path to the pickle file.
+            
+        Returns:
+            OfficeGraph: A new OfficeGraph instance with loaded entities.
+        """
+        return cls(load_from_pickle=True, pickle_path=pickle_path)
+    
+    def has_graph(self) -> bool:
+        """Check if the instance has an RDF graph loaded."""
+        return hasattr(self, 'graph') and self.graph is not None
+    
+    # All your existing methods remain the same...
     def load_devices_on_floors(self, floor_numbers: List[int]) -> None:
         """
         Load data for specified floor(s).
@@ -189,8 +334,7 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
         return sorted(measurements, key=lambda m: m.timestamp)
 
 
-if __name__ == "__main__":
-    
+def main():
     ### Arguments ###
     parser = argparse.ArgumentParser(description="Load and inspect the IoT Office Graph")
     parser.add_argument(
@@ -211,25 +355,48 @@ if __name__ == "__main__":
         action="store_true",
         help="Skip automatic entity extraction"
     )
+    parser.add_argument(
+        "--parallel",
+        action="store_true",
+        help="Utilize parallel processing for entity extraction (default: False)"
+    )
+    parser.add_argument(
+        "--load-from-pickle",
+        action="store_true",
+        help="Load from pickle file instead of processing RDF data"
+    )
+    parser.add_argument(
+        "--entities-pickle-path",
+        type=str,
+        default="data/processed/officegraph_entities.pkl",
+        help="Path for saving/loading entities pickle file"
+    )
+
     args = parser.parse_args()
 
     ### Running ###
-    print(f"Starting OfficeGraph with base directory '{args.base_dir}' and floors {args.floors}")
-    office_graph = OfficeGraph(
-        base_dir=args.base_dir, 
-        floors_to_load=args.floors,
-        auto_extract=not args.no_extract
-    )
-    total_triples = len(office_graph.graph)
-    print(f"Graph loaded successfully with {total_triples} triples.")
+    if args.load_from_pickle:
+        print(f"Loading OfficeGraph entities from {args.entities_pickle_path}")
+        office_graph = OfficeGraph.load_entities_from_pickle(args.entities_pickle_path)
+        print("OfficeGraph loaded successfully from pickle.")
+    else:
+        # Process from RDF data
+        print(f"Starting OfficeGraph with base directory '{args.base_dir}' and floors {args.floors}")
+        office_graph = OfficeGraph(
+            base_dir=args.base_dir, 
+            floors_to_load=args.floors,
+            auto_extract=not args.no_extract,
+            parallel_extraction=args.parallel,
+            load_from_pickle = False,
+            pickle_path = None
+        )
+        
+        if office_graph.has_graph():
+            total_triples = len(office_graph.graph)
+            print(f"Graph loaded successfully with {total_triples} triples.")
+        
+        # Save entities to pickle if requested
+        office_graph.save_entities_to_pickle(pickle_path=args.entities_pickle_path)
 
-    ### Saving ###
-    output_path = os.path.join(args.base_dir, "processed", "officegraph.pkl")
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-    try:
-        with open(output_path, "wb") as f:
-            pickle.dump(office_graph, f)
-        print(f"Successfully saved office graph to {output_path}")
-    except (OSError, pickle.PicklingError) as e:
-        logger.error("Failed to save office graph: %s", e)
-        sys.exit(1)
+if __name__ == "__main__":
+    main()

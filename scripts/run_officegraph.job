@@ -1,0 +1,63 @@
+#!/bin/bash
+#SBATCH --partition=cpu
+#SBATCH --job-name=officegraph_extraction
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=16
+#SBATCH --mem=128G
+#SBATCH --time=01:00:00
+#SBATCH --output=data/processed/logs/slurm_output_%A.out
+#SBATCH --error=data/processed/logs/slurm_error_%A.err
+
+export OUTPUT_DIR=data/processed/
+mkdir -p $OUTPUT_DIR
+
+# Load modules (CPU only)
+module purge
+module load 2023
+module load Python/3.11.3-GCCcore-12.3.0
+module load Python-bundle-PyPI/2023.06-GCCcore-12.3.0
+
+# Install missing packages if needed
+python -c "import rdflib" 2>/dev/null || pip install --user rdflib
+python -c "import shapely" 2>/dev/null || pip install --user shapely
+python -c "import tqdm" 2>/dev/null || pip install --user tqdm
+
+# Move into your project directory
+cd $HOME/eSTGNN
+
+# Create directories on scratch space
+mkdir -p $TMPDIR/data/enrichments
+mkdir -p $TMPDIR/data/topology
+
+# Copy data to scratch (maintaining proper directory structure)
+echo "Copying data to scratch space..."
+cp -r $HOME/data/devices $TMPDIR/data/
+cp $HOME/data/enrichments/devices_in_rooms_enrichment.ttl $TMPDIR/data/enrichments/
+cp -r $HOME/data/topology/TTLs $TMPDIR/data/topology/
+
+# Check if data copy succeeded
+if [ ! -d "$TMPDIR/data/devices" ]; then
+    echo "ERROR: Data directory not copied to scratch space"
+    exit 1
+fi
+
+# Set directories
+export DATA_DIR=$TMPDIR/data
+
+echo "Starting extraction with data from $DATA_DIR"
+echo "Results will be saved to $OUTPUT_DIR"
+
+# Run script pointing to scratch
+srun python -m src.graph.officegraph \
+    --base-dir $DATA_DIR \
+    --parallel \
+    --floors 1 2 3 4 5 6 7
+
+# Copy results from scratch to persistent storage
+echo "Copying results back to $OUTPUT_DIR..."
+cp $TMPDIR/data/processed/officegraph_entities.pkl $OUTPUT_DIR/
+
+echo "Cleaning up scratch space..."
+rm -rf $TMPDIR/data
+
+echo "Job completed successfully!"
