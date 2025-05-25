@@ -18,6 +18,9 @@ def parse_base_args(parser=None):
                       help='Task type')
     
     # Graph core
+    parser.add_argument('--graph_type', type=str, default='heterogeneous',
+                      choices=['heterogeneous', 'homogenous'], 
+                      help='Graph type')
     parser.add_argument('--gso_mode', type=str, default='dynamic',
                       choices=['static', 'dynamic'], 
                       help='Adjacency matrix type')
@@ -63,7 +66,7 @@ def parse_base_args(parser=None):
     # Common training parameters
     parser.add_argument('--enable_cuda', action='store_true', 
                       help='Enable CUDA')
-    parser.add_argument('--seed', type=int, default=42, 
+    parser.add_argument('--seed', type=int, default=2658918, 
                       help='Random seed')
     
     parser.add_argument('--batch_size', type=int, default=144, 

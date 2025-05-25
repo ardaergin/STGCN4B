@@ -1,3 +1,3 @@
-from .officegraph import *
-from .extraction import *
-from .builder import *
+from .officegraph import OfficeGraph
+from .extraction import OfficeGraphExtractor
+from .builder import OfficeGraphBuilder
