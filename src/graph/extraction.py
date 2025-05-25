@@ -1,8 +1,15 @@
 import logging
+import sys
 from collections import defaultdict
 from rdflib import URIRef
 from typing import Dict, Tuple, List
 
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 logger = logging.getLogger(__name__)
 
 from ..core import Device, Measurement, Room, Floor
@@ -326,7 +333,7 @@ class OfficeGraphExtractor:
         
         logger.info("Extracted mappings for %d property types", len(self.property_type_mappings))
         
-        # Optionally, print some stats about the mappings
+        # Optionally, log some stats about the mappings
         for type_name, properties in self.property_type_mappings.items():
             logger.info("  - %s: %d properties", type_name, len(properties))
     

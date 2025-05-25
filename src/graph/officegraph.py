@@ -1,7 +1,13 @@
 import os, sys, pickle, argparse
 from typing import Dict, List, Tuple, Optional, Set
 from rdflib import Graph, URIRef, RDF
+
 import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 logger = logging.getLogger(__name__)
 
 from ..config.namespaces import NamespaceMixin
@@ -52,7 +58,7 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
                 pickle_path = os.path.join(base_dir, "processed", "officegraph_entities.pkl")
             
             self.load_from_pickle(pickle_path)
-            print(f"Loaded OfficeGraph entities from {pickle_path}")
+            logger.info("Loaded OfficeGraph entities from %s", pickle_path)
         else:
             # Load from RDF data
             self._load_from_rdf(floors_to_load, auto_extract, parallel_extraction)
@@ -65,12 +71,12 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
         # Load building topology for specified floors
         building_topology_graph = load_building_topology(self.base_dir, floors=floors_to_load)
         self.graph += building_topology_graph
-        print(f"Loaded building topology for floors {floors_to_load} ({len(building_topology_graph)} triples).")
+        logger.info("Loaded building topology for floors %s (%d triples)", floors_to_load, len(building_topology_graph))
 
         # Load CSV enrichment
         csv_enrichment_graph = load_csv_enrichment(self.base_dir, floors=floors_to_load)
         self.graph += csv_enrichment_graph
-        print(f"Loaded CSV enrichment for floors {floors_to_load} ({len(csv_enrichment_graph)} triples).")
+        logger.info("Loaded CSV enrichment for floors %s (%d triples)", floors_to_load, len(csv_enrichment_graph))
 
         # Initialize retriever and load OfficeGraph
         self.retriever = FloorDeviceRetriever()
@@ -81,12 +87,12 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
             if parallel_extraction:
                 import multiprocessing
                 num_workers = int(os.environ.get("SLURM_CPUS_PER_TASK", multiprocessing.cpu_count()))
-                print(f"Running in parallel mode with {num_workers} workers")
+                logger.info("Running in parallel mode with %d workers", num_workers)
                 self.extract_all_parallel(num_workers=num_workers)
             else:
-                print("Extracting entities from the graph...")
+                logger.info("Extracting entities from the graph...")
                 self.extract_all()
-            print("Entity extraction complete.")
+            logger.info("Entity extraction complete")
     
     def _init_collections(self):
         """Initialize collections to store entities."""
@@ -146,9 +152,9 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
         try:
             with open(pickle_path, "wb") as f:
                 pickle.dump(entities_data, f)
-            print(f"Successfully saved OfficeGraph entities to {pickle_path}")
-            print(f"Saved data: {len(self.devices)} devices, {len(self.measurements)} measurements, "
-                  f"{len(self.rooms)} rooms, {len(self.floors)} floors")
+            logger.info("Successfully saved OfficeGraph entities to %s", pickle_path)
+            logger.info("Saved data: %d devices, %d measurements, %d rooms, %d floors", 
+                       len(self.devices), len(self.measurements), len(self.rooms), len(self.floors))
             return pickle_path
         except (OSError, pickle.PicklingError) as e:
             logger.error("Failed to save OfficeGraph entities: %s", e)
@@ -177,8 +183,8 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
             self.floors_to_load = entities_data['floors_to_load']
             self.metadata = entities_data.get('metadata', {})
             
-            print(f"Loaded data: {len(self.devices)} devices, {len(self.measurements)} measurements, "
-                  f"{len(self.rooms)} rooms, {len(self.floors)} floors")
+            logger.info("Loaded data: %d devices, %d measurements, %d rooms, %d floors", 
+                       len(self.devices), len(self.measurements), len(self.rooms), len(self.floors))
             
         except (OSError, pickle.UnpicklingError) as e:
             logger.error("Failed to load OfficeGraph entities from %s: %s", pickle_path, e)
@@ -225,7 +231,7 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
         Args:
             floor_numbers (List[int]): List of floor numbers to load
         """
-        print(f"Loading data for floors: {floor_numbers}")
+        logger.info("Loading data for floors: %s", floor_numbers)
         
         # Create a combined relationship graph for all floors
         all_floors_graph = Graph()
@@ -234,7 +240,7 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
         for floor_num in floor_numbers:
             # Get the relationship graph for this floor
             floor_graph = self.retriever.get_device_room_floor_graph(floor_num)
-            print(f"Retrieved relationship graph for floor {floor_num} with {len(floor_graph)} triples")
+            logger.info("Retrieved relationship graph for floor %d with %d triples", floor_num, len(floor_graph))
             
             # Add it to the combined graph
             all_floors_graph += floor_graph
@@ -242,21 +248,21 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
             # Get the device filenames for this floor
             file_paths = self.retriever.get_device_filenames_from_graph(floor_graph)
             all_file_paths.extend(file_paths)
-            print(f"Found {len(file_paths)} device files for floor {floor_num}")
+            logger.info("Found %d device files for floor %d", len(file_paths), floor_num)
         
         # Remove duplicate file paths
         all_file_paths = list(set(all_file_paths))
         
         # Load TTL files
         graph_with_devices = load_multiple_ttl_files(all_file_paths)
-        print(f"Loaded {len(all_file_paths)} device files.")
+        logger.info("Loaded %d device files", len(all_file_paths))
         graph_with_devices_cleaned = self._remove_duplicate_room_triples(graph_with_devices)
         
         # Add both graphs to the main graph
         self.graph += graph_with_devices_cleaned
-        print(f"Successfully added the data of {len(all_file_paths)} device(s) to the graph.")
+        logger.info("Successfully added the data of %d device(s) to the graph", len(all_file_paths))
         self.graph += all_floors_graph
-        print(f"Successfully added the data of {len(floor_numbers)} floor(s) to the graph.")
+        logger.info("Successfully added the data of %d floor(s) to the graph", len(floor_numbers))
 
     def _remove_duplicate_room_triples(self, input_graph: Graph) -> Graph:
         """
@@ -284,7 +290,7 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
         for triple in triples_to_remove:
             input_graph.remove(triple)
 
-        print(f"Removed {len(triples_to_remove)} unnecessary triples related to duplicate rooms.")
+        logger.info("Removed %d unnecessary triples related to duplicate rooms", len(triples_to_remove))
         return input_graph
     
     def get_devices_in_room(self, room_uri: URIRef) -> List[Device]:
@@ -376,12 +382,12 @@ def main():
 
     ### Running ###
     if args.load_from_pickle:
-        print(f"Loading OfficeGraph entities from {args.entities_pickle_path}")
+        logger.info("Loading OfficeGraph entities from %s", args.entities_pickle_path)
         office_graph = OfficeGraph.load_entities_from_pickle(args.entities_pickle_path)
-        print("OfficeGraph loaded successfully from pickle.")
+        logger.info("OfficeGraph loaded successfully from pickle")
     else:
         # Process from RDF data
-        print(f"Starting OfficeGraph with base directory '{args.base_dir}' and floors {args.floors}")
+        logger.info("Starting OfficeGraph with base directory '%s' and floors %s", args.base_dir, args.floors)
         office_graph = OfficeGraph(
             base_dir=args.base_dir, 
             floors_to_load=args.floors,
@@ -393,7 +399,7 @@ def main():
         
         if office_graph.has_graph():
             total_triples = len(office_graph.graph)
-            print(f"Graph loaded successfully with {total_triples} triples.")
+            logger.info("Graph loaded successfully with %d triples", total_triples)
         
         # Save entities to pickle if requested
         office_graph.save_entities_to_pickle(pickle_path=args.entities_pickle_path)
