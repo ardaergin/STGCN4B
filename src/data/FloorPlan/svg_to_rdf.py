@@ -295,7 +295,8 @@ class SvgToRdf(NamespaceMixin):
             self.graph.add((geo_geometry_uri, self.GEOSPARQL.asWKT, Literal(geo_wkt)))
             
             # Create WKT for the document polygon and add it to the graph
-            doc_wkt = polygon_utils.create_wkt_polygon(room_data.points, 0)  # Z-coordinate 0 for document coordinates
+            # Z-coordinate is the floor number for document coordinates
+            doc_wkt = polygon_utils.create_wkt_polygon(room_data.points, self.floor_number)
             self.graph.add((doc_geometry_uri, self.GEOSPARQL.asWKT, Literal(doc_wkt)))
 
     def _add_building_geometry(self, building_uri):
@@ -373,7 +374,7 @@ class SvgToRdf(NamespaceMixin):
     def save_to_file(self):
         """Save the RDF graph to a TTL file."""
         os.makedirs(self.output_dir, exist_ok=True)
-        output_path = os.path.join(self.output_dir, f"{self.building.name}_floor_{self.floor_number}.ttl")
+        output_path = os.path.join(self.output_dir, f"floor_{self.floor_number}_polygons.ttl")
         
         self.graph.serialize(destination=output_path, format="turtle")
         logger.info(f"Saved {len(self.graph)} triples to {output_path}")
@@ -390,14 +391,9 @@ class SvgToRdf(NamespaceMixin):
 
 if __name__ == "__main__":
     import argparse
-    
+
     parser = argparse.ArgumentParser(description="Convert SVG floor plans to RDF spatial topology")
-    parser.add_argument(
-        "--floor",
-        type=int,
-        default=7,
-        help="Floor number to extract (default: 7)"
-    )
+
     parser.add_argument(
         "--output-dir",
         type=str,
@@ -405,19 +401,37 @@ if __name__ == "__main__":
         help="Output directory for RDF files"
     )
     parser.add_argument(
-        "--regenerate",
+        "--all_floors",
         action="store_true",
-        help="Regenerate the topology even if it already exists"
+        help="If set, generate RDF for all floors 1 through 7"
     )
+    parser.add_argument(
+        "--floor",
+        type=int,
+        help="Single floor number to extract (required if --all_floors is not set)"
+    )
+
     args = parser.parse_args()
+
+    if not args.all_floors and args.floor is None:
+        parser.error("--floor is required if --all_floors is not set")
 
     # Initialize the Building class instance for VideoLab building
     videolab = Building(name="VideoLab")
 
-    # Initialize the converter and run
-    converter = SvgToRdf(
-        building=videolab,
-        floor_number=args.floor,
-        output_dir=args.output_dir
-    )
-    ttl_path = converter.run()
+    if args.all_floors:
+        for floor in range(1, 8):
+            print(f"Generating RDF for floor {floor}...")
+            converter = SvgToRdf(
+                building=videolab,
+                floor_number=floor,
+                output_dir=args.output_dir
+            )
+            ttl_path = converter.run()
+    else:
+        converter = SvgToRdf(
+            building=videolab,
+            floor_number=args.floor,
+            output_dir=args.output_dir
+        )
+        ttl_path = converter.run()

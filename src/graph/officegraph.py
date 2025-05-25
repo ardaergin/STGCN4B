@@ -7,7 +7,7 @@ logger = logging.getLogger(__name__)
 from ..config.namespaces import NamespaceMixin
 from ..core import Device, Measurement, Room, Floor, Building
 from ..data.OfficeGraph.device_loader import FloorDeviceRetriever
-from ..data.OfficeGraph.ttl_loader import load_multiple_ttl_files, load_VideoLab_topology, load_csv_enrichment
+from ..data.OfficeGraph.ttl_loader import load_multiple_ttl_files, load_building_topology, load_csv_enrichment
 
 from .extraction import OfficeGraphExtractor
 
@@ -31,10 +31,6 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
         # Default to loading only the 7th floor
         if floors_to_load is None:
             floors_to_load = [7]
-        if floors_to_load == [7]:
-            only_floor7 = True
-        else: 
-            only_floor7 = False
 
         # Main RDF graph
         self.graph = self.create_empty_graph_with_namespace_bindings()
@@ -43,15 +39,15 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
         # Collections to store entities
         self._init_collections()
 
-        # Load VideoLab topology
-        VideoLab_topology_graph = load_VideoLab_topology(self.base_dir, load_only_floor7=only_floor7)
-        self.graph += VideoLab_topology_graph
-        print(f"Loaded VideoLab topology ({len(VideoLab_topology_graph)} triples).")
+        # Load building topology for specified floors
+        builing_topology_graph = load_building_topology(self.base_dir, floors=floors_to_load)
+        self.graph += builing_topology_graph
+        print(f"Loaded building topology for floors {floors_to_load} ({len(builing_topology_graph)} triples).")
 
         # Load CSV enrichment
-        csv_enrichment_graph = load_csv_enrichment(self.base_dir)
+        csv_enrichment_graph = load_csv_enrichment(self.base_dir, floors=floors_to_load)
         self.graph += csv_enrichment_graph
-        print(f"Loaded CSV enrichment ({len(csv_enrichment_graph)} triples).")
+        print(f"Loaded CSV enrichment for floors {floors_to_load} ({len(csv_enrichment_graph)} triples).")
 
         # Initialize retriever and load OfficeGraph
         self.retriever = FloorDeviceRetriever()

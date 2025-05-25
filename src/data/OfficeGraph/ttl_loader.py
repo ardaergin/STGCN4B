@@ -1,7 +1,6 @@
-from typing import List, Dict, Union
+from typing import List, Union, Union, Sequence
 from pathlib import Path
 from rdflib import Graph
-
 
 def get_ttl_files(directory: Union[str, Path], recursive: bool = False) -> List[str]:
     """
@@ -156,35 +155,74 @@ def load_floor7_graph_learning_enrichments(base_dir: Union[str, Path]) -> Graph:
     
     return load_multiple_ttl_files(file_paths)
 
-def load_VideoLab_topology(base_dir: Union[str, Path], load_only_floor7: bool = True) -> Graph:
+def load_building_topology(
+    base_dir: Union[str, Path],
+    floors: Sequence[int] = None
+) -> Graph:
     """
-    Load building topology data from a TTL file.
-    
+    Load building topology data from TTL files.
+
     Args:
-        ttl_file_path (str): Path to the building topology TTL file
+        base_dir (Union[str, Path]): Base directory containing topology files.
+        floors (Sequence[int], optional): List of floor numbers to load. 
+            If None, loads all TTL files in the topology directory.
+
+    Returns:
+        RDFLib Graph with combined building topology data.
     """
+    # Floor check
+    if floors is None:
+        raise ValueError("No floors specified. Please provide a list of floor numbers to load.")
+
+    # Normalize base_dir
     if isinstance(base_dir, str):
         base_dir = Path(base_dir)
-    
-    if load_only_floor7:
-        topology_path = base_dir / 'topology' / 'TTLs' / 'VideoLab_floor_7.ttl'
-    else:
-        topology_path = base_dir / 'topology' / 'TTLs' / 'VideoLab.ttl'
 
-    if not topology_path.exists():
-        print("Warning: Topology enrichment file not found")
-        return Graph()
-    
-    return load_ttl_file(str(topology_path))
+    ttl_dir = base_dir / 'topology' / 'TTLs'
+    combined_graph = Graph()
 
-def load_csv_enrichment(base_dir: Union[str, Path]) -> Graph:
+    for floor in floors:
+        file_path = ttl_dir / f'floor_{floor}_polygons.ttl'
+        if not file_path.exists():
+            print(f"Warning: Topology file for floor {floor} not found at {file_path}")
+            continue
+        floor_graph = load_ttl_file(str(file_path))
+        combined_graph += floor_graph
+
+    return combined_graph
+
+def load_csv_enrichment(
+    base_dir: Union[str, Path],
+    floors: Sequence[int] = None
+) -> Graph:
+    """
+    Load CSV enrichment data from TTL files.
+
+    Args:
+        base_dir (Union[str, Path]): Base directory containing CSV enrichment files.
+        floors (Sequence[int], optional): List of floor numbers to load.
+            If None, loads all TTL files in the enrichment directory.
+
+    Returns:
+        RDFLib Graph with combined CSV enrichment data.
+    """
+    # Floor check
+    if floors is None:
+        raise ValueError("No floors specified. Please provide a list of floor numbers to load.")
+
+    # Normalize base_dir
     if isinstance(base_dir, str):
         base_dir = Path(base_dir)
-    
-    csv_enrichment_path = base_dir / 'topology' / 'VideoLab_floor7_csv_enrichment.ttl'
 
-    if not csv_enrichment_path.exists():
-        print("Warning: Topology enrichment file not found")
-        return Graph()
-    
-    return load_ttl_file(str(csv_enrichment_path))
+    csv_enrichment_dir = base_dir / 'topology' / 'TTLs'
+    combined_graph = Graph()
+
+    for floor in floors:
+        file_path = csv_enrichment_dir / f'floor_{floor}_enrichment.ttl'
+        if not file_path.exists():
+            print(f"Warning: Enrichment file for floor {floor} not found at {file_path}")
+            continue
+        floor_graph = load_ttl_file(str(file_path))
+        combined_graph += floor_graph
+
+    return combined_graph

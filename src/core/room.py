@@ -160,6 +160,7 @@ class Room(NamespaceMixin):
             'wkt': None,              # Original WKT string
             'points_2d': [],          # List of (x, y) tuples
             'points_3d': [],          # List of (x, y, z) tuples
+            # NOTE: Z-coordinate is the floor number for document coordinates
             'centroid': (None, None), # (x, y) of centroid
             'area': None,             # Area in square meters/units
             'perimeter': None,        # Perimeter in meters/units

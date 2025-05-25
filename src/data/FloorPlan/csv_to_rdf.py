@@ -1,7 +1,7 @@
-from rdflib import Graph, Namespace, URIRef, Literal, RDF
+from rdflib import URIRef, Literal, RDF
 from rdflib.namespace import RDFS, XSD
 import pandas as pd
-import math
+import os
 
 from ...config.namespaces import NamespaceMixin
 from ...core.building import Building
@@ -13,8 +13,13 @@ class RoomEnrichmentViaCSV(NamespaceMixin):
     """
     def __init__(self,
                  building: Building,
-                 csv_path: str = "data/topology/VideoLab_floor7.csv"):
-        self.csv_path = csv_path
+                 floor_number: int,
+                 csv_dir: str = "data/topology/CSVs",
+                 output_dir: str = "data/topology/TTLs"):
+        self.floor_number = floor_number
+        self.csv_dir = csv_dir
+        self.output_dir = output_dir
+        self.csv_path = os.path.join(csv_dir, f"floor_{floor_number}.csv")
         self.building = building
         self.graph = self.create_empty_graph_with_namespace_bindings()
         
@@ -30,6 +35,10 @@ class RoomEnrichmentViaCSV(NamespaceMixin):
         """
         Read the CSV file and return a pandas DataFrame with the required columns.
         """
+        # Check if CSV file exists
+        if not os.path.exists(self.csv_path):
+            raise FileNotFoundError(f"CSV file not found: {self.csv_path}")
+            
         # Read the CSV file
         df = pd.read_csv(self.csv_path)
         
@@ -103,23 +112,77 @@ class RoomEnrichmentViaCSV(NamespaceMixin):
         """
         Save the graph to a file in Turtle format.
         """
+        # Create output directory if it doesn't exist
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
         self.graph.serialize(destination=output_path, format='turtle')
     
-    def run(self, output_path="data/topology/VideoLab_floor7_csv_enrichment.ttl"):
+    def run(self):
         """
         Run the full process: read CSV, enrich RDF, and save to file.
         """
+        # Generate output path
+        output_filename = f"floor_{self.floor_number}_enrichment.ttl"
+        output_path = os.path.join(self.output_dir, output_filename)
+        
+        # Process the data
         self.enrich_rdf()
         self.save_rdf(output_path)
-        return self.graph
+        
+        print(f"Floor {self.floor_number}: Created RDF file with {len(self.graph)} triples at {output_path}")
+        return output_path
 
 if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Enrich RDF with room and window data from CSV files")
+    
+    parser.add_argument(
+        "--csv-dir",
+        type=str,
+        default="data/topology/CSVs",
+        help="Directory containing CSV files"
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=str,
+        default="data/topology/TTLs",
+        help="Output directory for RDF files"
+    )
+    parser.add_argument(
+        "--all_floors",
+        action="store_true",
+        help="If set, generate RDF for all floors 1 through 7"
+    )
+    parser.add_argument(
+        "--floor",
+        type=int,
+        help="Single floor number to extract (required if --all_floors is not set)"
+    )
+    
+    args = parser.parse_args()
+    
+    if not args.all_floors and args.floor is None:
+        parser.error("--floor is required if --all_floors is not set")
+    
     # Initialize the VideoLab building
     videolab = Building("VideoLab")
-
-    # Create an instance of the RoomEnrichmentViaCSV class
-    enrichment = RoomEnrichmentViaCSV(building=videolab)
-    graph = enrichment.run()
     
-    # Print some statistics
-    print(f"Enrichment complete. Created RDF file with {len(graph)} triples.")
+    if args.all_floors:
+        for floor in range(1, 8):
+            print(f"Generating RDF for floor {floor}...")
+            enrichment = RoomEnrichmentViaCSV(
+                building=videolab,
+                floor_number=floor,
+                csv_dir=args.csv_dir,
+                output_dir=args.output_dir
+            )
+            ttl_path = enrichment.run()
+    else:
+        enrichment = RoomEnrichmentViaCSV(
+            building=videolab,
+            floor_number=args.floor,
+            csv_dir=args.csv_dir,
+            output_dir=args.output_dir
+        )
+        ttl_path = enrichment.run()
