@@ -1,3 +1,1 @@
-from .officegraph import OfficeGraph
-from .extraction import OfficeGraphExtractor
-from .builder import OfficeGraphBuilder
+__all__ = ["officegraph", "extraction", "builder"]
