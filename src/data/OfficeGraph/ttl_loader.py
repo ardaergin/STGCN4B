@@ -1,6 +1,16 @@
-from typing import List, Union, Union, Sequence
+import sys
+import logging
+from typing import List, Union, Sequence
 from pathlib import Path
 from rdflib import Graph
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+logger = logging.getLogger(__name__)
 
 def get_ttl_files(directory: Union[str, Path], recursive: bool = False) -> List[str]:
     """
@@ -70,7 +80,7 @@ def load_multiple_ttl_files(file_paths: List[str]) -> Graph:
     """
     combined_graph = Graph()
     for i, file_path in enumerate(file_paths, start=1):
-        print(f"[{i}/{len(file_paths)}] Loading: {file_path}")
+        logger.info(f"[{i}/{len(file_paths)}] Loading: {file_path}")
         combined_graph.parse(file_path, format="turtle")
     return combined_graph
 
@@ -86,7 +96,7 @@ def load_device_files(base_dir: Union[str, Path]) -> Graph:
     """
     file_paths = get_device_files(base_dir)
     if not file_paths:
-        print("Warning: No device files found")
+        logger.warning("No device files found")
         return Graph()
     return load_multiple_ttl_files(file_paths)
 
@@ -105,7 +115,7 @@ def load_devices_in_rooms_enrichment(base_dir: Union[str, Path]) -> Graph:
         
     enrichment_path = base_dir / 'enrichments' / 'devices_in_rooms_enrichment.ttl'
     if not enrichment_path.exists():
-        print("Warning: Devices in rooms enrichment file not found")
+        logger.warning("Devices in rooms enrichment file not found")
         return Graph()
     
     return load_ttl_file(str(enrichment_path))
@@ -125,7 +135,7 @@ def load_wikidata_days_enrichment(base_dir: Union[str, Path]) -> Graph:
         
     enrichment_path = base_dir / 'enrichments' / 'wikidata_days_enrichment.ttl'
     if not enrichment_path.exists():
-        print("Warning: Wikidata days enrichment file not found")
+        logger.warning("Wikidata days enrichment file not found")
         return Graph()
     
     return load_ttl_file(str(enrichment_path))
@@ -145,12 +155,12 @@ def load_floor7_graph_learning_enrichments(base_dir: Union[str, Path]) -> Graph:
         
     gl_dir = base_dir / 'enrichments' / 'floor7_graph_learning_enrichment'
     if not gl_dir.exists() or not gl_dir.is_dir():
-        print("Warning: Floor7 graph learning enrichment directory not found")
+        logger.warning("Floor7 graph learning enrichment directory not found")
         return Graph()
     
     file_paths = [str(file_path) for file_path in gl_dir.glob('*.ttl')]
     if not file_paths:
-        print("Warning: No floor7 graph learning enrichment files found")
+        logger.warning("No floor7 graph learning enrichment files found")
         return Graph()
     
     return load_multiple_ttl_files(file_paths)
@@ -184,7 +194,7 @@ def load_building_topology(
     for floor in floors:
         file_path = ttl_dir / f'floor_{floor}_polygons.ttl'
         if not file_path.exists():
-            print(f"Warning: Topology file for floor {floor} not found at {file_path}")
+            logger.warning(f"Topology file for floor {floor} not found at {file_path}")
             continue
         floor_graph = load_ttl_file(str(file_path))
         combined_graph += floor_graph
@@ -220,7 +230,7 @@ def load_csv_enrichment(
     for floor in floors:
         file_path = csv_enrichment_dir / f'floor_{floor}_enrichment.ttl'
         if not file_path.exists():
-            print(f"Warning: Enrichment file for floor {floor} not found at {file_path}")
+            logger.warning(f"Enrichment file for floor {floor} not found at {file_path}")
             continue
         floor_graph = load_ttl_file(str(file_path))
         combined_graph += floor_graph
