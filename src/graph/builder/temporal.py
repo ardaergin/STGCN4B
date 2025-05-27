@@ -1,3 +1,4 @@
+import sys
 import numpy as np
 from typing import Dict
 from datetime import datetime
@@ -5,8 +6,13 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 import logging
 import matplotlib.pyplot as plt
-from IPython.display import display
 
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 logger = logging.getLogger(__name__)
 
 from ..officegraph import OfficeGraph
@@ -194,7 +200,6 @@ class TemporalBuilderMixin:
         Returns:
             X_transformed: Array of same shape as X.
         """
-        from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
         logger = logging.getLogger(__name__)
 
         valid = {'standard', 'robust', 'minmax'}

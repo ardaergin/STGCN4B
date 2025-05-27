@@ -1,11 +1,10 @@
 import logging
 import pandas as pd
 from shapely.geometry import Polygon
-import matplotlib.pyplot as plt
-from matplotlib.colors import Normalize
 import numpy as np
 from rdflib import URIRef
 from typing import Dict, Any, List
+from collections import defaultdict
 
 logger = logging.getLogger(__name__)
 
@@ -33,11 +32,43 @@ class SpatialBuilderMixin:
             simplify_epsilon (float): Epsilon value for polygon simplification. 
                                     0.0 means no simplification.
         """
-        self.room_polygons = {}
-        self.areas = {}  # Store room areas
-        self.polygon_type = polygon_type  # Store the polygon type for later reference
+
+        ###### Rooms ######
+
+        # Get all room URIs and create room names mapping
+        all_room_uris = list(self.office_graph.rooms.keys())
+        room_names_temp = {}
         
-        for room_uri, room in self.office_graph.rooms.items():
+        for room_uri in all_room_uris:
+            room = self.office_graph.rooms[room_uri]
+            room_number = room.room_number
+            room_names_temp[room_uri] = room_number
+        
+        # Create canonical ordering - simple string sort
+        self.room_uris = sorted(all_room_uris, key=lambda uri: room_names_temp[uri])
+        self.room_names = {uri: room_names_temp[uri] for uri in self.room_uris}
+
+        logger.info(f"Established canonical room ordering for {len(self.room_uris)} rooms")
+        logger.debug(f"First 5 rooms in order: {[self.room_names[uri] for uri in self.room_uris[:5]]}")
+        logger.debug(f"Last 5 rooms in order: {[self.room_names[uri] for uri in self.room_uris[-5:]]}")
+
+
+        ###### Polygons ######
+
+        # Store the polygon type for later reference
+        self.polygon_type = polygon_type  
+
+        self.polygons = defaultdict(dict)  # [floor_number][room_uri] = polygon
+        self.areas = defaultdict(dict)     # [floor_number][room_uri] = area
+        
+        # Store room floor mapping for multi-floor processing
+        self.room_to_floor = {}
+        self.floor_to_rooms = defaultdict(list)
+        
+        # Process rooms in canonical order
+        for room_uri in self.room_uris:
+            room = self.office_graph.rooms[room_uri]
+
             # Get the appropriate polygon data based on type
             if polygon_type == 'geo':
                 points_2d = room.polygons_geo.get('points_2d', [])
@@ -46,191 +77,148 @@ class SpatialBuilderMixin:
                 points_2d = room.polygons_doc.get('points_2d', [])
                 area = room.polygons_doc.get('area')
             else:
-                logger.warning(f"Invalid polygon_type: {polygon_type}. Using 'geo' as default.")
-                points_2d = room.polygons_geo.get('points_2d', [])
-                area = room.polygons_geo.get('area')
+                logger.warning(f"Invalid polygon_type: {polygon_type}. Using 'doc' as default.")
+                points_2d = room.polygons_doc.get('points_2d', [])
+                area = room.polygons_doc.get('area')
             
-            # Store area if available
+            # Floor data
+            if room.floor is not None:
+                # room.floor is a URIRef, need to get the actual Floor object
+                floor_obj = self.office_graph.floors.get(room.floor)
+                if floor_obj and floor_obj.floor_number is not None:
+                    floor_number = floor_obj.floor_number
+                else:
+                    # Fallback: extract floor number from URI
+                    try:
+                        floor_str = str(room.floor)
+                        if 'floor_' in floor_str:
+                            floor_number = int(floor_str.split('floor_')[-1])
+                        else:
+                            floor_number = int(floor_str.split('/')[-1])
+                    except:
+                        raise ValueError(f"Room {room_uri} has no valid floor information. Floor URI: {room.floor}")
+            else:
+                raise ValueError(f"Room {room_uri} has no associated floor information.")
+            
+            # Quick access dictionaries
+            self.room_to_floor[room_uri] = floor_number
+            self.floor_to_rooms[floor_number].append(room_uri)
+            
+            # Area data
             if area is not None:
-                self.areas[room_uri] = area
-            
+                self.areas[floor_number][room_uri] = area
+            else:
+                raise ValueError(f"Room {room_uri} has no area data.")
+
             # Check if we have valid polygon data
             if not points_2d or len(points_2d) < 3:
                 logger.warning(f"Room {room_uri} has no valid polygon data for type '{polygon_type}'.")
                 continue
             
-            # Create a shapely Polygon
-            polygon = Polygon(points_2d)
-            self.room_polygons[room_uri] = polygon
-            
-            # Simplify if requested
+            # Create a shapely Polygon (simplify if requested)
             if simplify_polygons:
                 simplified_coords = polygon_utils.simplify_polygon(points_2d, epsilon=simplify_epsilon)
-                simplified_polygon = Polygon(simplified_coords)
-                self.room_polygons[room_uri] = simplified_polygon
+                polygon = Polygon(simplified_coords)
                 logger.debug(f"Simplified room {room_uri} polygon from {len(points_2d)} to {len(simplified_coords)} vertices.")
             else:
-                self.room_polygons[room_uri] = polygon
+                polygon = Polygon(points_2d)
+            
+            self.polygons[floor_number][room_uri] = polygon
+
+        # Sort floor_to_rooms lists to maintain canonical ordering within floors
+        for floor_num in self.floor_to_rooms:
+            self.floor_to_rooms[floor_num].sort(key=lambda uri: self.room_names[uri])
+
+        # Calculate totals for proper logging
+        total_polygons = sum(len(floor_polys) for floor_polys in self.polygons.values())
+        total_areas = sum(len(floor_areas) for floor_areas in self.areas.values())
         
-        logger.info(f"Initialized {len(self.room_polygons)} room polygons using '{polygon_type}' data.")
-        logger.info(f"Extracted {len(self.areas)} room areas.")
+        logger.info(f"Initialized {total_polygons} room polygons using '{polygon_type}' data.")
+        logger.info(f"Extracted {total_areas} room areas.")
+        logger.info(f"Found rooms on {len(self.floor_to_rooms)} floors: {list(self.floor_to_rooms.keys())}")
+        
+        # Log floor-by-floor breakdown
+        for floor_num in sorted(self.polygons.keys()):
+            logger.info(f"  Floor {floor_num}: {len(self.polygons[floor_num])} rooms")
     
+
+
+    ##############################
+    # Normalization of Areas
+    ##############################
+
+
     def normalize_room_areas(self) -> None:
         """
         Calculate both min-max and proportion normalized room areas and store them 
         as class attributes. Uses the areas stored during initialize_room_polygons().
         
         This method populates:
-        - self.norm_areas_minmax: Dictionary mapping room URIs to min-max normalized areas (0-1 scale)
-        - self.norm_areas_prop: Dictionary mapping room URIs to proportion normalized areas (fraction of total)
+        - self.norm_areas_minmax: Hierarchical dictionary [floor_number][room_uri] = normalized_area (0-1 scale)
+        - self.norm_areas_prop: Hierarchical dictionary [floor_number][room_uri] = proportion (fraction of total)
         
         Returns:
-            tuple: (min_max_normalized_areas, proportion_normalized_areas) dictionaries
+            None
         """
-        # Initialize empty dictionaries for normalized areas
-        self.norm_areas_minmax = {}
-        self.norm_areas_prop = {}
+        # Initialize hierarchical dictionaries for normalized areas
+        self.norm_areas_minmax = defaultdict(dict)
+        self.norm_areas_prop = defaultdict(dict)
         
         if not hasattr(self, 'areas') or not self.areas:
             raise ValueError("No areas available for normalization. Call initialize_room_polygons first.")
         
+        # Flatten all areas across floors for global min/max/total calculations
+        all_areas = []
+        for floor_areas in self.areas.values():
+            all_areas.extend(floor_areas.values())
+        
+        if not all_areas:
+            raise ValueError("No area data found across all floors.")
+        
         # Get total area and min/max values for calculations
-        total_area = sum(self.areas.values())
-        min_area = min(self.areas.values())
-        max_area = max(self.areas.values())
+        total_area = sum(all_areas)
+        min_area = min(all_areas)
+        max_area = max(all_areas)
         
-        # Perform both normalizations at once
-        for uri, area in self.areas.items():
-            # Handle edge case where min and max are the same
-            if max_area == min_area:
-                self.norm_areas_minmax[uri] = 1.0
-            else:
-                # Min-max normalization: (value - min) / (max - min)
-                self.norm_areas_minmax[uri] = (area - min_area) / (max_area - min_area)
-            
-            # Proportion normalization
-            if total_area <= 0:
-                self.norm_areas_prop[uri] = 0.0
-            else:
-                self.norm_areas_prop[uri] = area / total_area
+        # Perform both normalizations for each floor
+        total_normalized = 0
+        for floor_number, floor_areas in self.areas.items():
+            for room_uri, area in floor_areas.items():
+                # Handle edge case where min and max are the same
+                if max_area == min_area:
+                    self.norm_areas_minmax[floor_number][room_uri] = 1.0
+                else:
+                    # Min-max normalization: (value - min) / (max - min)
+                    self.norm_areas_minmax[floor_number][room_uri] = (area - min_area) / (max_area - min_area)
+                
+                # Proportion normalization
+                if total_area <= 0:
+                    self.norm_areas_prop[floor_number][room_uri] = 0.0
+                else:
+                    self.norm_areas_prop[floor_number][room_uri] = area / total_area
+                
+                total_normalized += 1
         
-        logger.info(f"Calculated min-max and proportion normalizations for {len(self.areas)} room areas")
+        # Convert defaultdicts to regular dicts
+        self.norm_areas_minmax = dict(self.norm_areas_minmax)
+        self.norm_areas_prop = dict(self.norm_areas_prop)
+        
+        logger.info(f"Calculated min-max and proportion normalizations for {total_normalized} room areas across {len(self.areas)} floors")
+        
+        # Log floor-by-floor breakdown
+        for floor_num in sorted(self.norm_areas_minmax.keys()):
+            logger.info(f"  Floor {floor_num}: normalized {len(self.norm_areas_minmax[floor_num])} rooms")
 
-    def plot_floor_plan(self, 
-                    normalization='min_max',
-                    show_room_ids=True,
-                    figsize=(12, 10), 
-                    colormap='turbo'):
-        """
-        Plot the floor plan with rooms colored according to their normalized areas.
-        
-        Args:
-            normalization (str): Which normalization to use - 'min_max' or 'proportion'
-            show_room_ids (bool): Whether to show room IDs in the plot
-            figsize (tuple): Figure size
-            colormap (str): Matplotlib colormap name for coloring rooms
-            
-        Returns:
-            matplotlib.figure.Figure: The figure object
-        """
-        
-        # Check if we have the required data
-        if not hasattr(self, 'room_polygons') or not self.room_polygons:
-            logger.error("No polygons available for plotting. Call initialize_room_polygons first.")
-            return None
-            
-        # Check if normalized areas are calculated
-        if not hasattr(self, 'norm_areas_minmax') or not self.norm_areas_minmax:
-            logger.info("Calculating area normalizations...")
-            self.normalize_room_areas()
-        
-        # Create figure and axis
-        fig, ax = plt.subplots(figsize=figsize)
-        
-        # Get the color map
-        cmap = plt.get_cmap(colormap)
-        
-        # Determine which normalization to use
-        if normalization == 'min_max':
-            normalized_areas = self.norm_areas_minmax
-        elif normalization == 'proportion':
-            normalized_areas = self.norm_areas_prop
-        else:
-            logger.warning(f"Unknown normalization type: {normalization}. Using 'min_max'.")
-            normalized_areas = self.norm_areas_minmax
-        
-        # Plot each room
-        room_ids = []
-        values = []
-        
-        for room_uri, polygon in self.room_polygons.items():
-            # Get room color based on normalized area (default to 0.5 if missing)
-            norm_value = normalized_areas.get(room_uri, 0.5)
-            values.append(norm_value)
-            
-            # Get room ID for display
-            if hasattr(self.office_graph, 'rooms') and room_uri in self.office_graph.rooms:
-                room = self.office_graph.rooms[room_uri]
-                display_id = room.room_number or str(room_uri).split('/')[-1]
-                room_ids.append(display_id)
-            else:
-                # Extract just the room number part if it's prefixed
-                display_id = str(room_uri).split('/')[-1]
-                if 'roomname_' in display_id:
-                    display_id = display_id.split('roomname_')[-1]
-                room_ids.append(display_id)
-            
-            # Plot the polygon
-            color = cmap(norm_value)
-            x, y = polygon.exterior.xy
-            ax.fill(x, y, alpha=0.7, fc=color, ec='black')
-            
-            # Show room ID if requested
-            if show_room_ids:
-                centroid = polygon.centroid
-                ax.text(centroid.x, centroid.y, display_id,
-                    ha='center', va='center', fontsize=8, 
-                    color='black', fontweight='bold')
-        
-        # Set aspect equal to preserve shape
-        ax.set_aspect('equal')
-        
-        # Get axis limits
-        min_x = min(polygon.bounds[0] for polygon in self.room_polygons.values())
-        max_x = max(polygon.bounds[2] for polygon in self.room_polygons.values())
-        min_y = min(polygon.bounds[1] for polygon in self.room_polygons.values())
-        max_y = max(polygon.bounds[3] for polygon in self.room_polygons.values())
-        
-        # Add some padding
-        padding = 0.05 * max(max_x - min_x, max_y - min_y)
-        ax.set_xlim(min_x - padding, max_x + padding)
-        ax.set_ylim(min_y - padding, max_y + padding)
-        
-        # Set title
-        plt.title(f"Floor Plan with {normalization.replace('_', '-')} Normalized Areas")
-        
-        # Add color bar to show area scale
-        sm = plt.cm.ScalarMappable(
-            cmap=cmap,
-            norm=Normalize(vmin=0, vmax=1)
-        )
-        sm.set_array([])  
-        cbar = plt.colorbar(sm, ax=ax)
-        cbar.set_label(f'{normalization.capitalize()} Normalized Room Area')
-        
-        # Add axes labels based on polygon type
-        coord_type = "Geographic" if self.polygon_type == "geo" else "Document"
-        ax.set_xlabel(f"{coord_type} X Coordinate")
-        ax.set_ylabel(f"{coord_type} Y Coordinate")
-        
-        plt.tight_layout()
+
 
     #############################
-    # Adj Matrix
+    # Horizontal Adjacency
     #############################
+
 
     def calculate_binary_adjacency(
         self,
+        floor_number,
         distance_threshold: float = 5.0
         ) -> pd.DataFrame:
         """
@@ -238,33 +226,40 @@ class SpatialBuilderMixin:
         Two rooms are considered adjacent if their polygons are within distance_threshold.
         
         Args:
+            floor_number (int): Floor number to calculate adjacency for
             distance_threshold (float): Maximum distance (in meters) for rooms to be considered adjacent
             
         Returns:
             DataFrame: Adjacency matrix as a pandas DataFrame
         """
-        if not self.room_polygons:
-            raise ValueError("No room polygons found. Make sure to call initialize_room_polygons().")
+        # Get room polygons for the specified floor
+        if not hasattr(self, 'polygons') or floor_number not in self.polygons:
+            raise ValueError(f"Floor {floor_number} not found. Available floors: {list(self.polygons.keys()) if hasattr(self, 'polygons') else []}")
+        
+        room_polygons = self.polygons[floor_number]
+        
+        if not room_polygons:
+            raise ValueError(f"No room polygons found for floor {floor_number}")
         
         # Get list of room URIs as strings (to be used as DataFrame indices)
-        room_uris_str = [str(uri) for uri in self.room_polygons.keys()]
+        room_uris_str = [str(uri) for uri in room_polygons.keys()]
         # Store mapping from string URI to original URI object for later use
-        self.uri_str_to_obj = {str(uri): uri for uri in self.room_polygons.keys()}
+        uri_str_to_obj = {str(uri): uri for uri in room_polygons.keys()}
         
         # Initialize adjacency matrix with zeros
         adj_df = pd.DataFrame(0, index=room_uris_str, columns=room_uris_str)
         
         # Fill adjacency matrix
         for i, room1_id in enumerate(room_uris_str):
-            room1_uri = self.uri_str_to_obj[room1_id]
-            room1_poly = self.room_polygons.get(room1_uri)
+            room1_uri = uri_str_to_obj[room1_id]
+            room1_poly = room_polygons.get(room1_uri)
             
             if room1_poly is None:
                 continue
                 
             for j, room2_id in enumerate(room_uris_str[i+1:], i+1):
-                room2_uri = self.uri_str_to_obj[room2_id]
-                room2_poly = self.room_polygons.get(room2_uri)
+                room2_uri = uri_str_to_obj[room2_id]
+                room2_poly = room_polygons.get(room2_uri)
                 
                 if room2_poly is None:
                     continue
@@ -278,9 +273,10 @@ class SpatialBuilderMixin:
                     adj_df.at[room2_id, room1_id] = 1  # Symmetric
 
         return adj_df
-    
+
     def calculate_proportional_boundary_adjacency(
         self,
+        floor_number,
         distance_threshold: float = 5.0,
         min_shared_length: float = 0.01,
         min_weight: float = 0.0
@@ -291,18 +287,26 @@ class SpatialBuilderMixin:
         but only if the two rooms are considered adjacent in the binary adjacency matrix.
         
         Args:
+            floor_number (int): Floor number to calculate adjacency for
             distance_threshold: max distance (in meters) to consider adjacency
+            min_shared_length: minimum shared boundary length to consider
             min_weight: minimum weight to assign when binary adjacency exists but 
                         no significant boundary is shared (default: 0.001)
             
         Returns:
             DataFrame: adjacency matrix A (rows i to j)
         """
-        if not self.room_polygons:
-            raise ValueError("No room polygons found. Make sure to call initialize_room_polygons().")
+        # Get room polygons for the specified floor
+        if not hasattr(self, 'polygons') or floor_number not in self.polygons:
+            raise ValueError(f"Floor {floor_number} not found. Available floors: {list(self.polygons.keys()) if hasattr(self, 'polygons') else []}")
         
-        # Get binary adjacency
-        binary_adj_df = self.calculate_binary_adjacency(distance_threshold=distance_threshold)
+        room_polygons = self.polygons[floor_number]
+        
+        if not room_polygons:
+            raise ValueError(f"No room polygons found for floor {floor_number}")
+        
+        # Get binary adjacency for this floor
+        binary_adj_df = self.calculate_binary_adjacency(floor_number=floor_number, distance_threshold=distance_threshold)
             
         # Reuse the room_ids from binary adjacency for consistency
         room_ids = binary_adj_df.index.tolist()
@@ -310,19 +314,22 @@ class SpatialBuilderMixin:
         # Prepare DataFrame
         adj_df = pd.DataFrame(0.0, index=room_ids, columns=room_ids)
         
+        # Create URI mapping for this floor
+        uri_str_to_obj = {str(uri): uri for uri in room_polygons.keys()}
+        
         # Precompute perimeters
         perimeters = {}
         for rid in room_ids:
-            uri = self.uri_str_to_obj[rid]
-            if uri in self.room_polygons:
-                perimeters[rid] = self.room_polygons[uri].length
+            uri = uri_str_to_obj[rid]
+            if uri in room_polygons:
+                perimeters[rid] = room_polygons[uri].length
             else:
                 perimeters[rid] = 0.0
         
         # Process only room pairs that are adjacent according to binary adjacency
         for i, r1 in enumerate(room_ids):
-            uri1 = self.uri_str_to_obj[r1]
-            poly1 = self.room_polygons.get(uri1)
+            uri1 = uri_str_to_obj[r1]
+            poly1 = room_polygons.get(uri1)
             if poly1 is None:
                 continue
                 
@@ -338,8 +345,8 @@ class SpatialBuilderMixin:
                 if binary_adj_df.at[r1, r2] <= 0:
                     continue
                 
-                uri2 = self.uri_str_to_obj[r2]
-                poly2 = self.room_polygons.get(uri2)
+                uri2 = uri_str_to_obj[r2]
+                poly2 = room_polygons.get(uri2)
                 if poly2 is None:
                     continue
                 
@@ -370,11 +377,11 @@ class SpatialBuilderMixin:
         
         return adj_df
 
-    def build_room_to_room_adjacency(self, 
+    def build_horizontal_adjacency(self, 
                                     matrix_type="binary", 
-                                    distance_threshold=5.0):
+                                    distance_threshold=5.0) -> None:
         """
-        Build the room-to-room adjacency matrix and store it in class attributes.
+        Build horizontal room-to-room adjacency matrices for all floors and store them in class attributes.
         
         Args:
             matrix_type: Kind of adjacency. Options:
@@ -383,590 +390,416 @@ class SpatialBuilderMixin:
             distance_threshold: Maximum distance for considering rooms adjacent (in meters)
             
         Returns:
-            tuple: (adjacency_matrix, room_uris)
+            None
         """
-        if not self.room_polygons:
+        if not hasattr(self, 'polygons') or not self.polygons:
             raise ValueError("No room polygons found. Make sure to call initialize_room_polygons().")
         
+        # Initialize the horizontal adjacency storage
+        self.horizontal_adj = {}
+        self.horizontal_adj_type = matrix_type
+
+        # Select the appropriate adjacency function
         if matrix_type == "binary":
-            # Get binary adjacency
-            adj_df = self.calculate_binary_adjacency(distance_threshold=distance_threshold)
-            self.adjacency_type = "binary"
-            
+            adj_func = self.calculate_binary_adjacency
         elif matrix_type == "weighted":
-            adj_df = self.calculate_proportional_boundary_adjacency(distance_threshold=distance_threshold)
-            self.adjacency_type = "weighted"
-        
+            adj_func = self.calculate_proportional_boundary_adjacency
         else:
             raise ValueError(f"Unknown adjacency kind: {matrix_type}. Use 'binary' or 'weighted'.")
         
-        # Store both the DataFrame and the numpy array
-        self.adjacency_matrix_df = adj_df
-        self.room_to_room_adj_matrix = adj_df.values
+        logger.info(f"Building {matrix_type} horizontal adjacency for {len(self.polygons)} floors...")
         
-        # Store the room URIs in the same order as in the adjacency matrix
-        self.adj_matrix_room_uris = [self.uri_str_to_obj[uri_str] for uri_str in adj_df.index]
-        
-        logger.info(f"Built room-to-room adjacency matrix with shape {self.room_to_room_adj_matrix.shape}")
-        return adj_df, self.adj_matrix_room_uris
-
-    def plot_adjacency_matrix(self, figsize=(10, 8), title=None, show_room_ids=True, cmap='Blues'):
-        """
-        Plot the room-to-room adjacency matrix as a heatmap.
-        
-        Args:
-            figsize (tuple): Figure size
-            title (str, optional): Plot title. If None, a default title is used
-            show_room_ids (bool): Whether to show room IDs on axes
-            cmap (str): Matplotlib colormap name
+        for floor_number in sorted(self.polygons.keys()):
+            logger.info(f"Processing floor {floor_number}...")
             
-        Returns:
-            matplotlib.figure.Figure: The figure object
+            # Calculate adjacency for this floor
+            adj_df = adj_func(floor_number=floor_number, distance_threshold=distance_threshold)
+            
+            # Create URI mapping for this floor
+            uri_str_to_obj = {str(uri): uri for uri in self.polygons[floor_number].keys()}
+            
+            # Store the results for this floor
+            self.horizontal_adj[floor_number] = {
+                "df": adj_df,
+                "matrix": adj_df.values,
+                "room_uris": [uri_str_to_obj[uri_str] for uri_str in adj_df.index],
+                "uri_str_to_obj": uri_str_to_obj
+            }
+            
+            non_zero_connections = (adj_df > 0).sum().sum()
+            logger.info(f"  Floor {floor_number}: {adj_df.shape} matrix with {non_zero_connections} connections")
+        
+        logger.info(f"Completed horizontal adjacency calculation for {len(self.horizontal_adj)} floors")
+
+    def combine_horizontal_adjacencies(self) -> None:
         """
+        Combine per-floor horizontal adjacency matrices into one large matrix.
+        Uses canonical room ordering established during initialization.
         
-        if not hasattr(self, 'room_to_room_adj_matrix') or self.room_to_room_adj_matrix is None:
-            raise ValueError("No room-to-room adjacency matrix found. Make sure to call build_room_to_room_adjacency().")
+        Returns:
+            None (stores results in self.combined_horizontal_adj_df and related attributes)
+        """
+        if not hasattr(self, 'horizontal_adj') or not self.horizontal_adj:
+            raise ValueError("No horizontal adjacency matrices found. Call build_horizontal_adjacency() first.")
         
-        if not hasattr(self, 'adj_matrix_room_uris') or self.adj_matrix_room_uris is None:
-            raise ValueError("Room URIs in adjacency matrix order not found. Make sure to call build_room_to_room_adjacency().")
+        # Get all room URIs in canonical order that appear in adjacency matrices
+        rooms_in_adj_matrices = set()
+        for floor_data in self.horizontal_adj.values():
+            rooms_in_adj_matrices.update(floor_data["df"].index)
         
-        fig = plt.figure(figsize=figsize)
-        plt.imshow(self.room_to_room_adj_matrix, cmap=cmap)
+        # Keep canonical order but only for rooms that have adjacency data
+        all_room_uris_str = [str(uri) for uri in self.room_uris if str(uri) in rooms_in_adj_matrices]
         
-        # Add colorbar with label based on adjacency type
-        if hasattr(self, 'adjacency_type') and self.adjacency_type == 'weighted':
-            plt.colorbar(label='Proportion of shared boundary')
-        else:
-            plt.colorbar(label='Connection strength')
+        logger.info(f"Creating combined matrix with {len(all_room_uris_str)} rooms in canonical order")
         
-        # Use pre-stored room names for labels
-        if show_room_ids and len(self.adj_matrix_room_uris) <= 50:  # Only show labels if not too many rooms
-            labels = [self.room_names.get(uri, str(uri)) for uri in self.adj_matrix_room_uris]
-            plt.xticks(range(len(self.adj_matrix_room_uris)), labels, rotation=90)
-            plt.yticks(range(len(self.adj_matrix_room_uris)), labels)
-        elif not show_room_ids:
-            plt.xticks([])
-            plt.yticks([])
-        else:
-            # Too many rooms, just show indices
-            plt.xticks(range(0, len(self.adj_matrix_room_uris), 5))
-            plt.yticks(range(0, len(self.adj_matrix_room_uris), 5))
+        # Create combined matrix
+        self.combined_horizontal_adj_df = pd.DataFrame(0.0, index=all_room_uris_str, columns=all_room_uris_str)
         
-        # Set title
-        if title is None:
-            if hasattr(self, 'adjacency_type'):
-                title = f"Room Adjacency Matrix ({self.adjacency_type})"
-            else:
-                title = "Room Adjacency Matrix"
-        plt.title(title)
+        # Fill in the floor-specific adjacencies
+        for floor_num, floor_data in self.horizontal_adj.items():
+            floor_df = floor_data["df"]
+            floor_rooms = list(floor_df.index)
+            
+            # Copy the floor adjacency into the appropriate block of the combined matrix
+            for i, room1 in enumerate(floor_rooms):
+                for j, room2 in enumerate(floor_rooms):
+                    self.combined_horizontal_adj_df.at[room1, room2] = floor_df.at[room1, room2]
         
-        # Add axis labels
-        plt.xlabel("Room")
-        plt.ylabel("Room")
+        # Store combined results
+        self.horizontal_adjacency_matrix_df = self.combined_horizontal_adj_df
+        self.horizontal_adj_matrix = self.combined_horizontal_adj_df.values
         
-        plt.tight_layout()
+        # Create URI mapping in canonical order
+        self.uri_str_to_obj = {str(uri): uri for uri in self.room_uris}
+        
+        # Room URIs in the same order as the combined matrix (canonical order)
+        self.adj_matrix_room_uris = [self.uri_str_to_obj[uri_str] for uri_str in self.combined_horizontal_adj_df.index]
+        
+        total_connections = (self.combined_horizontal_adj_df > 0).sum().sum()
+        logger.info(f"Combined horizontal adjacencies into {self.combined_horizontal_adj_df.shape} matrix with {total_connections} total connections")
+        
+        # Log ordering verification
+        logger.info("Room ordering verification:")
+        for floor_num in sorted(self.polygons.keys()):
+            floor_rooms_in_matrix = [self.room_names[uri] for uri in self.adj_matrix_room_uris 
+                                   if self.room_to_floor.get(uri) == floor_num]
+            if floor_rooms_in_matrix:
+                logger.info(f"  Floor {floor_num}: {floor_rooms_in_matrix[:3]}...{floor_rooms_in_matrix[-3:]} ({len(floor_rooms_in_matrix)} total)")
+
+
+
+    #############################
+    # Vertical Adjacency
+    #############################
+
+
+    def calculate_proportional_vertical_adjacency_full(
+        self,
+        min_overlap_area: float = 0.0,
+        min_weight: float = 0.0
+    ) -> pd.DataFrame:
+        """
+        Build a full-building vertical adjacency matrix:
+        A[i,j] = overlap_area(poly_i, poly_j) / area(poly_i)
+        only if rooms are on floors f and f+1 (adjacent).
+        Otherwise 0.
+        """
+        # Prepare index/columns in canonical order
+        room_strs = [str(uri) for uri in self.room_uris]
+        uri_str_to_obj = {str(uri): uri for uri in self.room_uris}
+        # Initialize empty adjacency
+        adj_df = pd.DataFrame(0.0, index=room_strs, columns=room_strs)
+
+        for i, uri1 in enumerate(self.room_uris):
+            f1 = self.room_to_floor[uri1]
+            poly1 = self.polygons.get(f1, {}).get(uri1)
+            if poly1 is None or poly1.area == 0:
+                continue
+            area1 = poly1.area
+
+            # Only consider rooms on floor f1+1 and f1-1
+            for delta in (-1, 1):
+                f2 = f1 + delta
+                if f2 not in self.polygons:
+                    continue
+
+                for uri2 in self.floor_to_rooms[f2]:
+                    poly2 = self.polygons[f2].get(uri2)
+                    if poly2 is None:
+                        continue
+
+                    # compute overlap area
+                    try:
+                        overlap = poly1.intersection(poly2).area
+                    except Exception as e:
+                        logger.warning(f"Vertical overlap error {uri1}-{uri2}: {e}")
+                        overlap = 0.0
+
+                    # assign weight
+                    if overlap > min_overlap_area:
+                        weight = overlap / area1
+                    else:
+                        weight = min_weight
+
+                    adj_df.at[str(uri1), str(uri2)] = weight
+
+        return adj_df
+
+    def build_vertical_adjacency(
+        self,
+        min_overlap_area: float = 0.05,
+        min_weight: float = 0.0
+    ) -> None:
+        """
+        Build and store the combined vertical adjacency matrix for the entire building.
+        Stores:
+          - self.combined_vertical_adj_df
+          - self.vertical_adj_matrix  (NumPy array)
+          - self.adj_matrix_room_uris      (list of URIRefs)
+        """
+        logger.info("Building vertical adjacency for entire building...")
+        # Calculate full-building vertical adjacency
+        v_df = self.calculate_proportional_vertical_adjacency_full(
+            min_overlap_area=min_overlap_area,
+            min_weight=min_weight
+        )
+
+        # Store
+        self.combined_vertical_adj_df = v_df
+        self.vertical_adj_matrix = v_df.values
+        # room_uris in the same canonical order
+        self.adj_matrix_room_uris = list(self.room_uris)
+
+        total_connections = (v_df > 0).sum().sum()
+        logger.info(
+            f"Built vertical adjacency matrix {v_df.shape} with "
+            f"{int(total_connections)} non-zero connections"
+        )
+
+
+
+    #############################
+    # Information propagation
+    #############################
+
 
     def calculate_information_propagation_masks(self):
         """
         Calculate a series of masking matrices representing information propagation
-        from rooms with devices to other rooms in the building.
-        
-        The function continues calculating propagation steps until equilibrium is reached
-        (no new rooms can receive information).
+        from rooms with devices to other rooms in the building, using BOTH
+        horizontal and vertical adjacency.
+
+        Step 0: only rooms with devices can pass info.
+        Step k: rooms reachable in k hops (horizonal or vertical).
+        Continues until no new rooms are added.
         
         Returns:
-            Dictionary mapping step indices (starting from 0) to masking matrices (numpy arrays)
-            where 1 indicates a room can pass information and 0 indicates it is masked
+            Dict[int, np.ndarray]: step → mask matrix (1 = can pass, 0 = masked)
         """
-        if not hasattr(self, 'adjacency_matrix_df') or self.adjacency_matrix_df is None:
-            raise ValueError("Room adjacency matrix not found. Run build_room_to_room_adjacency first.")
+        # --- ensure both adjacencies exist ---
+        if not hasattr(self, 'horizontal_adj_matrix') or self.horizontal_adj_matrix is None:
+            raise ValueError("Horizontal adjacency matrix not found. Run build_horizontal_adjacency() first.")
+        if not hasattr(self, 'vertical_adj_matrix') or self.vertical_adj_matrix is None:
+            raise ValueError("Vertical adjacency matrix not found. Run build_vertical_adjacency() first.")
         
-        # Get device presence information
-        room_has_device = np.zeros(len(self.adj_matrix_room_uris), dtype=bool)
-        for i, room_uri in enumerate(self.adj_matrix_room_uris):
-            if room_uri in self.office_graph.rooms:
-                room = self.office_graph.rooms[room_uri]
-                if room.devices:  # Room has at least one device
-                    room_has_device[i] = True
+        # --- combine adjacency --- 
+        # any positive weight (horizontal or vertical) counts as a connection
+        horizontal = self.horizontal_adj_matrix
+        vertical   = self.vertical_adj_matrix
+        adjacency = horizontal + vertical
         
-        logger.info(f"Found {room_has_device.sum()} rooms with devices out of {len(room_has_device)} total rooms")
+        # --- find which rooms start with devices ---
+        n_rooms = len(self.adj_matrix_room_uris)
+        room_has_device = np.zeros(n_rooms, dtype=bool)
+        for i, uri in enumerate(self.adj_matrix_room_uris):
+            room = self.office_graph.rooms.get(uri)
+            if room and getattr(room, "devices", None):
+                room_has_device[i] = True
         
-        # Get adjacency matrix as numpy array
-        adjacency = self.room_to_room_adj_matrix.copy()
+        logger.info(f"{room_has_device.sum()} rooms have devices / {n_rooms} total")
         
-        # Initialize masks dictionary
+        # --- propagation masks ---
         masks = {}
+        # step 0: only device rooms can PASS
+        can_pass = room_has_device.copy()
+        mask0 = np.zeros_like(adjacency)
+        mask0[can_pass, :] = 1
+        masks[0] = mask0
         
-        # Step 0: Only rooms with devices can pass information
-        can_pass_info = room_has_device.copy()
-        
-        # Create initial mask matrix
-        mask_matrix = np.zeros_like(adjacency)
-        for i in range(len(can_pass_info)):
-            if can_pass_info[i]:
-                mask_matrix[i, :] = 1  # Room can pass information to others
-        
-        masks[0] = mask_matrix
-        
-        # Continue propagation until equilibrium (no new rooms activated)
         step = 1
         while True:
-            # Identify newly activated rooms (those that receive information in this step)
-            newly_activated = np.zeros_like(can_pass_info)
+            # who newly gets reachability this round?
+            newly = np.zeros_like(can_pass)
+            for tgt in range(n_rooms):
+                if not can_pass[tgt]:
+                    # any neighbor j that can_pass and adjacency[j,tgt]>0?
+                    if np.any(can_pass & (adjacency[:, tgt] > 0)):
+                        newly[tgt] = True
             
-            for i in range(len(can_pass_info)):
-                if not can_pass_info[i]:  # Room doesn't have information yet
-                    # Check if it receives info from any room that can pass info
-                    for j in range(len(can_pass_info)):
-                        if can_pass_info[j] and adjacency[j, i] > 0:
-                            newly_activated[i] = True
-                            break
-            
-            # If no new rooms were activated, we've reached equilibrium
-            if not np.any(newly_activated):
-                logger.info(f"Information propagation reached equilibrium after {step} steps")
+            if not newly.any():
+                logger.info(f"Reached equilibrium after {step} steps")
                 break
-                
-            # Update the can_pass_info array
-            can_pass_info = np.logical_or(can_pass_info, newly_activated)
             
-            # Create new mask matrix
-            mask_matrix = np.zeros_like(adjacency)
-            for i in range(len(can_pass_info)):
-                if can_pass_info[i]:
-                    mask_matrix[i, :] = 1  # Room can pass information to others
+            can_pass = can_pass | newly
+            mask = np.zeros_like(adjacency)
+            mask[can_pass, :] = 1
+            masks[step] = mask
             
-            masks[step] = mask_matrix
-            logger.info(f"Step {step}: {newly_activated.sum()} new rooms can pass information")
-            
+            logger.info(f"Step {step}: +{newly.sum()} newly active rooms")
             step += 1
-            
-            # Safety check to prevent infinite loops
-            if step > len(can_pass_info):
-                logger.warning(f"Stopping propagation after {step} steps (exceeded number of rooms)")
+            if step > n_rooms:
+                logger.warning("Stopping early to avoid infinite loop")
                 break
         
-        # Log summary
-        active_rooms = [np.sum(masks[step].sum(axis=1) > 0) for step in masks]
-        logger.info(f"Created {len(masks)} information propagation masks")
-        logger.info(f"Rooms that can pass information at each step: {active_rooms}")
-        
+        logger.info(f"Generated {len(masks)} propagation masks")
         return masks
 
     def apply_masks_to_adjacency(self, masks=None):
         """
-        Apply information propagation masks to the adjacency matrix 
-        to create multiple adjacency matrices representing the progressive flow
-        of information through the building.
+        Using the propagation masks (horizontal+vertical), produce a series of
+        masked adjacency matrices showing the network at each step.
         
         Args:
-            masks: Dictionary mapping step indices to masking matrices.
-                If None, calls calculate_information_propagation_masks
+            masks (dict): step→mask from calculate_information_propagation_masks.
+                          If None, that method will be called.
         
         Returns:
-            Dictionary mapping step indices to masked adjacency matrices
+            Dict[int, np.ndarray]: step→(adjacency * mask)
         """
-        if not hasattr(self, 'room_to_room_adj_matrix') or self.room_to_room_adj_matrix is None:
-            raise ValueError("Room adjacency matrix not found. Run build_room_to_room_adjacency first.")
+        # ensure adjacency exists
+        if not hasattr(self, 'horizontal_adj_matrix') or self.horizontal_adj_matrix is None:
+            raise ValueError("Adjacency matrix not found. Run both build_*_adjacency() first.")
         
-        # Calculate masks if not provided
         if masks is None:
             masks = self.calculate_information_propagation_masks()
         
-        # Get adjacency matrix as numpy array
-        adjacency = self.room_to_room_adj_matrix.copy()
+        adjacency = self.horizontal_adj_matrix + self.vertical_adj_matrix
+        self.masked_adjacencies = {
+            step: adjacency * mask
+            for step, mask in masks.items()
+        }
         
-        # Apply masks to create multiple adjacency matrices
-        masked_adjacencies = {}
-        
-        for step, mask in masks.items():
-            # Element-wise multiplication of mask and adjacency
-            masked_adj = adjacency * mask
-            masked_adjacencies[step] = masked_adj
-        
-        self.masked_adjacencies = masked_adjacencies
-        logger.info(f"Created {len(masked_adjacencies)} masked adjacency matrices")
-        
-        return masked_adjacencies
-    
-    def create_interactive_plotly_visualization(self, output_file='output/builder/propagation_visualization.html'):
-        """
-        Create an interactive Plotly visualization of information propagation
-        and export it to a standalone HTML file.
-        
-        Device rooms are colored green at Step 0, and subsequent information propagation
-        is shown in shades of blue.
-        
-        Args:
-            output_file: Path to save the HTML output file
-            
-        Returns:
-            Plotly figure object
-        """
-        import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
-        import numpy as np
-        
-        if not hasattr(self, 'masked_adjacencies') or not self.masked_adjacencies:
-            raise ValueError("Masked adjacency matrices not found. Run apply_masks_to_adjacency first.")
-            
-        if not hasattr(self, 'room_polygons') or not self.room_polygons:
-            raise ValueError("Room polygons not found. Run initialize_room_polygons first.")
-        
-        # Define the number of steps
-        n_steps = len(self.masked_adjacencies)
-        
-        # Extract information about which rooms can pass info at each step
-        room_info_by_step = {}
-        for step in range(n_steps):
-            mask = self.masked_adjacencies[step]
-            can_pass_info = mask.sum(axis=1) > 0  # Rooms that can pass info
-            room_info_by_step[step] = can_pass_info
-        
-        # Define colors
-        device_color = '#2ca02c'  # Forest green for device rooms
-        inactive_color = '#f0f0f0'  # Light gray for inactive rooms
-        # Shades of blue for rooms activated in steps 1-N
-        propagation_colors = ['#c6dbef', '#6baed6', '#2171b5', '#08306b']
-        
-        # Create a plotly figure with steps as frames
-        fig = go.Figure()
-        
-        # Add frames for each step
-        frames = []
-        for step in range(n_steps):
-            frame_data = []
-            
-            # For each room polygon
-            for i, room_uri in enumerate(self.adj_matrix_room_uris):
-                if room_uri in self.room_polygons:
-                    polygon = self.room_polygons[room_uri]
-                    
-                    # Extract polygon coordinates
-                    x, y = polygon.exterior.xy
-                    
-                    # Check if this is a device room (active at step 0)
-                    is_device_room = room_info_by_step[0][i]
-                    
-                    # Determine when this room gets activated
-                    activation_step = n_steps  # Default: not activated
-                    for s in range(n_steps):
-                        if room_info_by_step[s][i]:
-                            activation_step = s
-                            break
-                    
-                    # Determine color based on activation status for this step
-                    if activation_step <= step:
-                        # Room is active at this step
-                        if is_device_room:
-                            # Device rooms always show in green
-                            color = device_color
-                        else:
-                            # Non-device rooms show in blue based on when they were activated
-                            blue_idx = min(activation_step - 1, len(propagation_colors) - 1)
-                            color = propagation_colors[blue_idx]
-                    else:
-                        # Not yet activated
-                        color = inactive_color
-                    
-                    # Create room label
-                    room_id = self.room_names.get(room_uri, str(room_uri).split('/')[-1])
-                    if is_device_room:
-                        room_id = f"{room_id}*"  # Mark device rooms
-                    
-                    # Create a polygon for this room
-                    room_trace = go.Scatter(
-                        x=list(x) + [x[0]],  # Close the polygon
-                        y=list(y) + [y[0]],
-                        fill='toself',
-                        fillcolor=color,
-                        line=dict(color='black', width=1),
-                        text=room_id,
-                        hoverinfo='text',
-                        showlegend=False
-                    )
-                    
-                    frame_data.append(room_trace)
-            
-            # Create frame for this step
-            frame = go.Frame(
-                data=frame_data,
-                name=f"Step {step}",
-                layout=go.Layout(
-                    title=f"Information Propagation - Step {step}: "
-                        f"{np.sum(room_info_by_step[step])}/{len(self.adj_matrix_room_uris)} rooms can pass information"
-                )
-            )
-            frames.append(frame)
-        
-        # Add the initial data (step 0)
-        fig.add_traces(frames[0].data)
-        fig.frames = frames
-        
-        # Set up slider control
-        sliders = [{
-            'steps': [
-                {
-                    'method': 'animate',
-                    'args': [
-                        [f"Step {i}"],
-                        {
-                            'frame': {'duration': 300, 'redraw': True},
-                            'mode': 'immediate',
-                            'transition': {'duration': 300}
-                        }
-                    ],
-                    'label': f"Step {i}"
-                } for i in range(n_steps)
-            ],
-            'active': 0,
-            'yanchor': 'top',
-            'xanchor': 'left',
-            'currentvalue': {
-                'font': {'size': 16},
-                'prefix': 'Step: ',
-                'visible': True,
-                'xanchor': 'right'
-            },
-            'transition': {'duration': 300, 'easing': 'cubic-in-out'},
-            'pad': {'b': 10, 't': 50},
-            'len': 0.9,
-            'x': 0.1,
-            'y': 0
-        }]
-        
-        # Play and pause buttons
-        updatemenus = [{
-            'type': 'buttons',
-            'showactive': False,
-            'buttons': [
-                {
-                    'label': 'Play',
-                    'method': 'animate',
-                    'args': [
-                        None,
-                        {
-                            'frame': {'duration': 500, 'redraw': True},
-                            'fromcurrent': True,
-                            'transition': {'duration': 300, 'easing': 'quadratic-in-out'}
-                        }
-                    ]
-                },
-                {
-                    'label': 'Pause',
-                    'method': 'animate',
-                    'args': [
-                        [None],
-                        {
-                            'frame': {'duration': 0, 'redraw': False},
-                            'mode': 'immediate',
-                            'transition': {'duration': 0}
-                        }
-                    ]
-                }
-            ],
-            'direction': 'left',
-            'pad': {'r': 10, 't': 87},
-            'type': 'buttons',
-            'x': 0.1,
-            'y': 0,
-            'xanchor': 'right',
-            'yanchor': 'top'
-        }]
-        
-        # Update figure layout
-        fig.update_layout(
-            title="Information Propagation Through Building",
-            autosize=True,
-            width=900,
-            height=700,
-            margin=dict(l=50, r=50, t=100, b=100),
-            sliders=sliders,
-            updatemenus=updatemenus
-        )
-        
-        # Set axes properties
-        fig.update_layout(
-            title="Information Propagation Through Building",
-            autosize=True,
-            width=900,
-            height=700,
-            margin=dict(l=50, r=50, t=100, b=100),
-            sliders=sliders,
-            updatemenus=updatemenus,
-            xaxis=dict(visible=False),
-            yaxis=dict(visible=False, scaleanchor="x", scaleratio=1),
-        )
-        
-        # Add legend
-        legend_traces = [
-            go.Scatter(
-                x=[None], y=[None], mode='markers',
-                marker=dict(size=15, color=device_color),
-                name='Device Rooms',
-                showlegend=True
-            ),
-            go.Scatter(
-                x=[None], y=[None], mode='markers',
-                marker=dict(size=15, color=propagation_colors[0]),
-                name='First Propagation',
-                showlegend=True
-            ),
-            go.Scatter(
-                x=[None], y=[None], mode='markers',
-                marker=dict(size=15, color=propagation_colors[1]),
-                name='Second Propagation',
-                showlegend=True
-            ),
-            go.Scatter(
-                x=[None], y=[None], mode='markers',
-                marker=dict(size=15, color=propagation_colors[2]),
-                name='Third Propagation',
-                showlegend=True
-            ),
-            go.Scatter(
-                x=[None], y=[None], mode='markers',
-                marker=dict(size=15, color=inactive_color),
-                name='Inactive Rooms',
-                showlegend=True
-            )
-        ]
-        
-        for trace in legend_traces:
-            fig.add_trace(trace)
-                
-        # Save as HTML
-        if output_file:
-            fig.write_html(output_file)
-            logger.info(f"Interactive visualization saved to {output_file}")
-        
-        return fig
+        logger.info(f"Created {len(self.masked_adjacencies)} masked adjacency matrices")
+        return self.masked_adjacencies
+
+
 
     #############################
     # Outside Adjacency
     #############################
 
-    def calculate_outside_adjacency(self, mode: str = "weighted"):
+
+    def calculate_outside_adjacency(self, floor_number: int, mode: str = "weighted") -> np.ndarray:
         """
-        Compute the outside‐to‐room adjacency vector.
+        Compute the outside‐to‐room adjacency vector **for one floor**.
 
         Args:
+            floor_number: which floor to process
             mode: "binary" or "weighted"
-                - "binary": simply 1 for every room with hasWindows == True, else 0
-                - "weighted": for rooms with windows, 
-                  weight = max(0, 1 – sum(weighted adjacencies to other rooms));
-                  rooms without windows get 0.
-            distance_threshold: passed to build weighted adjacency if needed.
+              - "binary": 1 for rooms with hasWindows, else 0
+              - "weighted": for windowed rooms, weight = max(0, 1 – sum(horizontal adj));
+                            non-windowed rooms get 0
 
         Returns:
-            np.ndarray of length N_rooms, ordered the same as self.adj_matrix_room_uris
+            np.ndarray of length = rooms on that floor (in the same order as self.horizontal_adj[floor_number]['room_uris'])
         """
-        # Make sure we have everything we need
-        if not hasattr(self, 'adjacency_matrix_df') or self.adjacency_matrix_df is None:
-            raise ValueError("Room adjacency matrix not found. Run build_room_to_room_adjacency first.")
-        if not hasattr(self, 'adj_matrix_room_uris') or self.adj_matrix_room_uris is None:
-            raise ValueError("Room URIs in adjacency matrix order not found. Run build_room_to_room_adjacency first.")
+        # Ensure horizontal adjacency is built
+        if not hasattr(self, 'horizontal_adj') or floor_number not in self.horizontal_adj:
+            raise ValueError(f"No horizontal adjacency for floor {floor_number}. Run build_horizontal_adjacency() first.")
 
-        # Binary case: just hasWindows
+        floor_data = self.horizontal_adj[floor_number]
+        df = floor_data['df']                  # pandas DataFrame of horizontal adj for this floor
+        room_uris = floor_data['room_uris']    # List[URIRef] in the same order
+
         if mode == "binary":
-            outside = np.array([
-                1.0 if self.office_graph.rooms[URIRef(uri)].hasWindows else 0.0
-                for uri in self.adj_matrix_room_uris
+            vec = np.array([
+                1.0 if self.office_graph.rooms[uri].hasWindows else 0.0
+                for uri in room_uris
             ], dtype=float)
 
-        # Weighted case: leftover from perimeter‐based adjacency
         elif mode == "weighted":
-
-            # Sum each row of the weighted adjacency DataFrame
-            row_sums = self.adjacency_matrix_df.sum(axis=1)
-
-            outside_weights = []
-            for uri, row_sum in zip(self.adjacency_matrix_df.index, row_sums):
-                room = self.office_graph.rooms[URIRef(uri)]
+            # sum of each row = total horizontal weight per room
+            row_sums = df.sum(axis=1)
+            weights = []
+            for uri in room_uris:
+                room = self.office_graph.rooms[uri]
                 if room.hasWindows:
-                    # leftover up to a max of 1.0
-                    w = max(0.0, 1.0 - row_sum)
+                    # leftover up to 1.0
+                    w = max(0.0, 1.0 - row_sums[str(uri)])
                 else:
                     w = 0.0
-                outside_weights.append(w)
-
-            outside = np.array(outside_weights, dtype=float)
+                weights.append(w)
+            vec = np.array(weights, dtype=float)
 
         else:
             raise ValueError(f"Unknown mode '{mode}'. Use 'binary' or 'weighted'.")
 
-        self.room_to_outside_adjacency = outside
+        return vec
 
-    def plot_outside_adjacency(self,
-                               show_room_ids: bool = True,
-                               figsize: tuple = (12, 10),
-                               colormap: str = "turbo"):
+
+    def build_outside_adjacency(self, mode: str = "weighted") -> None:
         """
-        Plot the floor plan with rooms colored according to their outside-adjacency.
-        
-        Args:
-            mode (str): "binary" or "weighted" — passed to calculate_outside_adjacency()
-            show_room_ids (bool): Whether to annotate each room with its ID
-            figsize (tuple): Figure size
-            colormap (str): Matplotlib colormap name for coloring rooms
-            
-        Returns:
-            matplotlib.figure.Figure
+        Build per‐floor outside adjacency vectors and store in self.outside_adj.
+
+        After calling this, you’ll have:
+          self.outside_adj[floor_number] = {
+             "vector": np.ndarray,
+             "room_uris": [...URIRefs in floor order...]
+          }
         """
-        # Ensure polygons are initialized
-        if not hasattr(self, "room_polygons") or not self.room_polygons:
-            raise ValueError("No polygons available for plotting. Call initialize_room_polygons() first.")
+        self.outside_adj = {}
+        self.outside_adj_mode = mode
 
-        if not hasattr(self, "room_to_outside_adjacency") or self.room_to_outside_adjacency is None:
-            raise ValueError("No outside adjacency available for plotting. Call calculate_outside_adjacency() first.")
+        for floor_number in sorted(self.polygons.keys()):
+            vec = self.calculate_outside_adjacency(floor_number, mode=mode)
+            room_uris = self.horizontal_adj[floor_number]['room_uris']
+            self.outside_adj[floor_number] = {
+                "vector": vec,
+                "room_uris": room_uris
+            }
+            logger.info(f"  Floor {floor_number}: outside vector ({mode}) length={len(vec)}")
 
-        # Build a mapping from room_uri → outside weight
-        # Assumes calculate_outside_adjacency returns in same order as adj_matrix_room_uris
-        uri_list = self.adj_matrix_room_uris
-        outside_map = {uri: w for uri, w in zip(uri_list, self.room_to_outside_adjacency)}
+        logger.info(f"Built outside adjacency on {len(self.outside_adj)} floors (mode={mode})")
 
-        # Set up plot
-        fig, ax = plt.subplots(figsize=figsize)
-        cmap = plt.get_cmap(colormap)
 
-        # Plot each room
-        for uri, poly in self.room_polygons.items():
-            w = outside_map.get(uri, 0.0)
-            color = cmap(w)
-            x, y = poly.exterior.xy
-            ax.fill(x, y, alpha=0.7, fc=color, ec="black")
+    def combine_outside_adjacencies(self) -> None:
+        """
+        Combine all per‐floor outside adjacency vectors into one building‐wide vector
+        in your canonical self.room_uris order.
 
-            if show_room_ids:
-                # derive display id
-                room = self.office_graph.rooms.get(uri, None)
-                if room:
-                    disp = room.room_number or str(uri).split("/")[-1]
-                else:
-                    disp = str(uri).split("/")[-1]
-                centroid = poly.centroid
-                ax.text(centroid.x, centroid.y, disp,
-                        ha="center", va="center", fontsize=8,
-                        color="black", fontweight="bold")
+        Stores:
+          - self.combined_outside_adj: numpy array, length = total rooms
+          - self.combined_outside_adj_series: pandas.Series indexed by str(uri)
+          - self.room_to_outside_adjacency: same numpy array (back‐compat)
+        """
 
-        # equal aspect
-        ax.set_aspect("equal")
+        if not hasattr(self, 'outside_adj') or not self.outside_adj:
+            raise ValueError("No outside adjacency found. Run build_outside_adjacency() first.")
 
-        # axis limits + padding
-        mins = np.array([poly.bounds[:2] for poly in self.room_polygons.values()]).min(axis=0)
-        maxs = np.array([poly.bounds[2:] for poly in self.room_polygons.values()]).max(axis=0)
-        dx, dy = maxs - mins
-        pad = 0.05 * max(dx, dy)
-        ax.set_xlim(mins[0] - pad, maxs[0] + pad)
-        ax.set_ylim(mins[1] - pad, maxs[1] + pad)
+        combined = []
+        index = []
+        for uri in self.room_uris:
+            floor = self.room_to_floor[uri]
+            floor_data = self.outside_adj.get(floor)
+            if floor_data is None:
+                combined.append(0.0)
+            else:
+                try:
+                    idx = floor_data["room_uris"].index(uri)
+                    combined.append(float(floor_data["vector"][idx]))
+                except ValueError:
+                    combined.append(0.0)
+            index.append(str(uri))
 
-        # title & colorbar
-        plt.title(f"Floor Plan Colored by Outside Adjacency")
-        sm = plt.cm.ScalarMappable(cmap=cmap, norm=Normalize(vmin=0, vmax=1))
-        sm.set_array([])
-        cbar = plt.colorbar(sm, ax=ax)
-        cbar.set_label("Outside Adjacency Weight")
+        arr = np.array(combined, dtype=float)
+        series = pd.Series(arr, index=index)
 
-        ax.set_xlabel("X")
-        ax.set_ylabel("Y")
-        plt.tight_layout()
-        return fig
+        # store
+        self.combined_outside_adj = arr
+        self.combined_outside_adj_series = series
+        self.room_to_outside_adjacency = arr  # for backward compatibility
+
+        logger.info(
+            f"Combined outside adjacency into length-{len(arr)} vector; "
+            f"total weight={series.sum():.3f}"
+        )

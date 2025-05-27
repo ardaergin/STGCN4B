@@ -1,13 +1,19 @@
+import sys
 import logging
 import numpy as np
 import torch
 from torch_geometric.data import HeteroData
-from typing import Dict, List, Tuple, Set, Any, Optional
+from typing import Dict, List, Any, Optional
 from rdflib import URIRef
 from datetime import datetime
-from tqdm import tqdm
 import math
 
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 logger = logging.getLogger(__name__)
 
 class HeteroGraphBuilderMixin:
@@ -22,7 +28,8 @@ class HeteroGraphBuilderMixin:
     - 'general': Single general information node (time features)
     
     Edge types:
-    - ('room', 'adjacent_to', 'room'): Room-to-room adjacency (directed)
+    - ('room', 'adjacent_horizontal', 'room'): Horizontal room-to-room adjacency (same floor, directed)
+    - ('room', 'adjacent_vertical', 'room'): Vertical room-to-room adjacency (between floors, directed)
     - ('room', 'contains', 'device'): Room-to-device connections
     - ('device', 'contained_in', 'room'): Device-to-room connections (reverse)
     - ('device', 'measures', 'property'): Device-to-property connections
@@ -50,12 +57,12 @@ class HeteroGraphBuilderMixin:
             HeteroData: Base heterogeneous graph
         """
         # Ensure required components are available
-        if not hasattr(self, 'room_to_room_adj_matrix') or self.room_to_room_adj_matrix is None:
-            raise ValueError("Room adjacency matrix not found. Run build_room_to_room_adjacency first.")
-            
+        if not hasattr(self, 'horizontal_adj_matrix') or self.horizontal_adj_matrix is None:
+            raise ValueError("Room adjacency matrix not found. Run build_horizontal_adjacency first.")
+        if not hasattr(self, 'vertical_adj_matrix') or self.vertical_adj_matrix is None:
+            raise ValueError("Vertical adjacency matrix not found. Run build_vertical_adjacency first.")
         if not hasattr(self, 'full_feature_df'):
             raise ValueError("Full feature DataFrame not found. Run build_full_feature_df first.")
-            
         if not hasattr(self, 'static_room_attributes') or not self.static_room_attributes:
             logger.warning("No static room attributes defined. Using default attributes.")
             self.static_room_attributes = ['isProperRoom', 'norm_area_minmax']
@@ -72,7 +79,8 @@ class HeteroGraphBuilderMixin:
         self._add_general_node(hetero_data)
         
         # Build edges
-        self._add_room_to_room_edges(hetero_data)
+        self._add_horizontal_room_edges(hetero_data)
+        self._add_vertical_room_edges(hetero_data)
         self._add_room_device_edges(hetero_data)
         self._add_device_property_edges(hetero_data)
         self._add_outside_room_edges(hetero_data)
@@ -177,11 +185,17 @@ class HeteroGraphBuilderMixin:
             for feat_idx, feat_name in enumerate(self.static_room_attributes):
                 # Handle special normalized area attributes
                 if feat_name == 'norm_area_minmax':
-                    if hasattr(self, 'norm_areas_minmax') and room_uri in self.norm_areas_minmax:
-                        room_features[room_idx, feat_idx] = self.norm_areas_minmax[room_uri]
+                    # Find the floor and get the normalized area
+                    floor_num = self.room_to_floor.get(room_uri)
+                    if floor_num is not None and floor_num in self.norm_areas_minmax:
+                        if room_uri in self.norm_areas_minmax[floor_num]:
+                            room_features[room_idx, feat_idx] = self.norm_areas_minmax[floor_num][room_uri]
                 elif feat_name == 'norm_area_prop':
-                    if hasattr(self, 'norm_areas_prop') and room_uri in self.norm_areas_prop:
-                        room_features[room_idx, feat_idx] = self.norm_areas_prop[room_uri]
+                    # Find the floor and get the proportional area
+                    floor_num = self.room_to_floor.get(room_uri)
+                    if floor_num is not None and floor_num in self.norm_areas_prop:
+                        if room_uri in self.norm_areas_prop[floor_num]:
+                            room_features[room_idx, feat_idx] = self.norm_areas_prop[floor_num][room_uri]
                 # Handle nested attributes
                 elif '.' in feat_name:
                     parts = feat_name.split('.')
@@ -281,7 +295,9 @@ class HeteroGraphBuilderMixin:
         # Initialize with placeholder for weather features
         # Will be filled with actual weather data per time bucket
 
-        # after get_weather_data has run
+        if not hasattr(self, 'weather_features_norm_') and self.weather_features_norm_:
+            raise ValueError("Weather features unavailable.")
+        
         sample = next(iter(self.weather_features_norm_.values()))
         num_weather_feats = len(sample)  # number of keys in this dict
 
@@ -308,15 +324,15 @@ class HeteroGraphBuilderMixin:
     # Edges
     #############################
 
-    def _add_room_to_room_edges(self, hetero_data: HeteroData):
-        """Add directed room-to-room edges based on adjacency matrix."""
-        # Get edges from adjacency matrix (directed, non-symmetric)
+    def _add_horizontal_room_edges(self, hetero_data: HeteroData):
+        """Add directed horizontal room-to-room edges based on horizontal adjacency matrix."""
+        # Get edges from horizontal adjacency matrix (directed, non-symmetric)
         edge_indices = []
         edge_weights = []
         
-        for i in range(self.room_to_room_adj_matrix.shape[0]):
-            for j in range(self.room_to_room_adj_matrix.shape[1]):
-                weight = self.room_to_room_adj_matrix[i, j]
+        for i in range(self.horizontal_adj_matrix.shape[0]):
+            for j in range(self.horizontal_adj_matrix.shape[1]):
+                weight = self.horizontal_adj_matrix[i, j]
                 if weight > 0:
                     edge_indices.append([i, j])
                     edge_weights.append(weight)
@@ -325,12 +341,36 @@ class HeteroGraphBuilderMixin:
             edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
             edge_attr = torch.tensor(edge_weights, dtype=torch.float32).unsqueeze(1)
             
-            hetero_data['room', 'adjacent_to', 'room'].edge_index = edge_index
-            hetero_data['room', 'adjacent_to', 'room'].edge_attr = edge_attr
+            hetero_data['room', 'adjacent_horizontal', 'room'].edge_index = edge_index
+            hetero_data['room', 'adjacent_horizontal', 'room'].edge_attr = edge_attr
             
-            logger.info(f"Added {len(edge_indices)} room-to-room edges")
+            logger.info(f"Added {len(edge_indices)} horizontal room-to-room edges")
         else:
-            logger.warning("No room-to-room edges found")
+            logger.warning("No horizontal room-to-room edges found")
+    
+    def _add_vertical_room_edges(self, hetero_data: HeteroData):
+        """Add directed vertical room-to-room edges based on vertical adjacency matrix."""
+        # Get edges from vertical adjacency matrix (directed, non-symmetric)
+        edge_indices = []
+        edge_weights = []
+        
+        for i in range(self.vertical_adj_matrix.shape[0]):
+            for j in range(self.vertical_adj_matrix.shape[1]):
+                weight = self.vertical_adj_matrix[i, j]
+                if weight > 0:
+                    edge_indices.append([i, j])
+                    edge_weights.append(weight)
+        
+        if edge_indices:
+            edge_index = torch.tensor(edge_indices, dtype=torch.long).t().contiguous()
+            edge_attr = torch.tensor(edge_weights, dtype=torch.float32).unsqueeze(1)
+            
+            hetero_data['room', 'adjacent_vertical', 'room'].edge_index = edge_index
+            hetero_data['room', 'adjacent_vertical', 'room'].edge_attr = edge_attr
+            
+            logger.info(f"Added {len(edge_indices)} vertical room-to-room edges")
+        else:
+            logger.warning("No vertical room-to-room edges found")
     
     def _add_room_device_edges(self, hetero_data: HeteroData):
         """Add bidirectional edges between rooms and devices."""
@@ -385,9 +425,8 @@ class HeteroGraphBuilderMixin:
     def _add_outside_room_edges(self, hetero_data: HeteroData):
         """Add weighted edges from outside node to rooms (no reverse edges)."""
         # Check if outside adjacency has been calculated
-        if not hasattr(self, 'room_to_outside_adjacency') or self.room_to_outside_adjacency is None:
-            logger.info("Calculating outside adjacency...")
-            self.calculate_outside_adjacency(mode="weighted")
+        if not hasattr(self, 'combined_outside_adj') or self.combined_outside_adj is None:
+            raise ValueError("Outside adjacency not found. Run build_outside_adjacency first.")
         
         outside_to_room_edges = []
         edge_weights = []
@@ -398,7 +437,7 @@ class HeteroGraphBuilderMixin:
         for room_uri, room_idx in self.node_mappings['room'].items():
             # Find the corresponding index in the adjacency matrix order
             adj_matrix_idx = self.adj_matrix_room_uris.index(room_uri)
-            weight = self.room_to_outside_adjacency[adj_matrix_idx]
+            weight = self.combined_outside_adj[adj_matrix_idx]
             
             if weight > 0:  # Only add edges with positive weights
                 outside_to_room_edges.append([outside_idx, room_idx])
@@ -473,29 +512,29 @@ class HeteroGraphBuilderMixin:
         
         hetero_temporal_graphs = {}
         
-        # Create iterator with progress bar
-        time_bucket_iter = tqdm(
-            enumerate(self.time_buckets),
-            total=len(self.time_buckets),
-            desc="Building hetero temporal graphs",
-            unit="bucket"
-        )
-        
-        for bucket_idx, (bucket_start, bucket_end) in time_bucket_iter:
+        total_buckets = len(self.time_buckets)
+        log_interval = max(1, total_buckets // 20)
+
+        hetero_temporal_graphs = {}
+
+        for bucket_idx, (bucket_start, bucket_end) in enumerate(self.time_buckets):
+            if bucket_idx % log_interval == 0 or bucket_idx == total_buckets - 1:
+                logger.info(f"Building temporal graph {bucket_idx + 1}/{total_buckets}")
+            
             # Create a deep copy of the base graph
             time_graph = self._copy_hetero_graph(self.base_hetero_graph)
-            
+
             # Update property nodes with temporal measurements from the DataFrame
             self._update_property_nodes_from_df(time_graph, bucket_idx, df, feature_cols)
-            
+
             # Update outside node with weather data
             self._update_outside_node_temporal(time_graph, bucket_idx)
-            
+
             # Update general node with temporal features
             self._update_general_node_temporal(time_graph, bucket_start, bucket_end)
-            
+
             hetero_temporal_graphs[bucket_idx] = time_graph
-        
+
         self.hetero_temporal_graphs = hetero_temporal_graphs
         logger.info(f"Built {len(hetero_temporal_graphs)} temporal heterogeneous graphs")
         
@@ -541,7 +580,7 @@ class HeteroGraphBuilderMixin:
         """Update outside node with weather data for this time bucket."""
         # Must have preloaded & normalized weather
         if not hasattr(self, 'weather_features_norm_') or not self.weather_features_norm_:
-            raise ValueError("Must call get_weather_data() before building the temporal graphs")
+            raise ValueError("Weather features unavailable.")
 
         # Define the base weather features (same order used in _add_outside_node)
         weather_feature_names = [
@@ -557,7 +596,7 @@ class HeteroGraphBuilderMixin:
             'wind_direction_80m_cos'
         ]
 
-        # Include any one-hot weather_code columns
+        # Include any one-hot weather_code columns --> not doing this
         sample = next(iter(self.weather_features_norm_.values()))
         # wc_features = sorted([k for k in sample.keys() if k.startswith('wc_')])
         # all_feature_names = weather_feature_names + wc_features
@@ -655,8 +694,10 @@ class HeteroGraphBuilderMixin:
         
         # Package everything into a dictionary
         hetero_stgcn_input = {
-            # For room-to-room adjacencies:
-            "adjacency_matrix": self.room_to_room_adj_matrix,
+            # For room-to-room adjacencies (separated by type):
+            "horizontal_adjacency_matrix": self.horizontal_adj_matrix,
+            "vertical_adj_matrix": self.vertical_adj_matrix,
+            "combined_adjacency_matrix": self.horizontal_adj_matrix + self.vertical_adj_matrix,
             "dynamic_adjacencies": self.masked_adjacencies,
             # Hetero graph:
             "base_graph": self.base_hetero_graph,
@@ -674,7 +715,7 @@ class HeteroGraphBuilderMixin:
             "consumption_values": self.get_forecasting_values()
         }
         
-        logger.info("Heterogeneous STGCN input preparation complete")
+        logger.info("Heterogeneous STGCN input preparation complete with horizontal and vertical adjacencies")
         return hetero_stgcn_input
     
     def convert_hetero_to_torch_tensors(self, hetero_input: Dict[str, Any], device: str = "cpu") -> Dict[str, Any]:
@@ -691,9 +732,17 @@ class HeteroGraphBuilderMixin:
         torch_input = {}
         
         # Adjacency matrices
-        torch_input["adjacency_matrix"] = torch.tensor(hetero_input["adjacency_matrix"], 
-                                                     dtype=torch.float32, 
-                                                     device=device)
+        torch_input["horizontal_adjacency_matrix"] = torch.tensor(hetero_input["horizontal_adjacency_matrix"], 
+                                                                dtype=torch.float32, 
+                                                                device=device)
+        
+        torch_input["vertical_adj_matrix"] = torch.tensor(hetero_input["vertical_adj_matrix"], 
+                                                              dtype=torch.float32, 
+                                                              device=device)
+        
+        torch_input["combined_adjacency_matrix"] = torch.tensor(hetero_input["combined_adjacency_matrix"], 
+                                                              dtype=torch.float32, 
+                                                              device=device)
         
         torch_input["dynamic_adjacencies"] = {}
         for step, masked_adj in hetero_input["dynamic_adjacencies"].items():
@@ -790,7 +839,12 @@ class HeteroGraphBuilderMixin:
             src, rel, dst = edge_type
             if hasattr(self.base_hetero_graph[edge_type], 'edge_index'):
                 n_edges = self.base_hetero_graph[edge_type].edge_index.shape[1]
-                schema.append(f"  {src:8} --{rel:>15}--> {dst:8} : {n_edges:4} edges")
+                # Special formatting for room adjacencies:
+                if rel in ['adjacent_horizontal', 'adjacent_vertical']:
+                    rel_display = f"{rel:>18}"
+                else:
+                    rel_display = f"{rel:>15}"
+                schema.append(f"  {src:8} --{rel_display}--> {dst:8} : {n_edges:4} edges")
         schema.append("")
         
         # Feature descriptions
@@ -801,6 +855,13 @@ class HeteroGraphBuilderMixin:
         schema.append("  property features: Property type encoding + temporal measurements")
         schema.append("  outside features : Weather data (normalized)")
         schema.append("  general features : Temporal info (day_of_week, hour, is_weekend, is_workday)")
+        schema.append("")
+        
+        # Adjacency info
+        schema.append("ADJACENCY INFORMATION:")
+        schema.append("-" * 30)
+        schema.append("  horizontal : Same-floor room connections")
+        schema.append("  vertical   : Inter-floor room connections (overlapping spaces)")
         schema.append("")
         
         # Additional info
@@ -815,3 +876,81 @@ class HeteroGraphBuilderMixin:
             logger.info(f"Saved graph schema to {save_path}")
         
         return schema_str
+    
+    def get_adjacency_statistics(self) -> Dict[str, Any]:
+        """
+        Get statistics about the adjacency matrices for analysis and debugging.
+        
+        Returns:
+            Dictionary containing adjacency statistics
+        """
+        stats = {}
+        
+        # Horizontal adjacency stats
+        if hasattr(self, 'horizontal_adj_matrix') and self.horizontal_adj_matrix is not None:
+            h_adj = self.horizontal_adj_matrix
+            stats['horizontal'] = {
+                'shape': h_adj.shape,
+                'total_edges': int((h_adj > 0).sum()),
+                'density': float((h_adj > 0).sum()) / (h_adj.shape[0] * h_adj.shape[1]),
+                'mean_weight': float(h_adj[h_adj > 0].mean()) if (h_adj > 0).any() else 0.0,
+                'max_weight': float(h_adj.max()),
+                'min_positive_weight': float(h_adj[h_adj > 0].min()) if (h_adj > 0).any() else 0.0
+            }
+        
+        # Vertical adjacency stats
+        if hasattr(self, 'vertical_adj_matrix') and self.vertical_adj_matrix is not None:
+            v_adj = self.vertical_adj_matrix
+            stats['vertical'] = {
+                'shape': v_adj.shape,
+                'total_edges': int((v_adj > 0).sum()),
+                'density': float((v_adj > 0).sum()) / (v_adj.shape[0] * v_adj.shape[1]),
+                'mean_weight': float(v_adj[v_adj > 0].mean()) if (v_adj > 0).any() else 0.0,
+                'max_weight': float(v_adj.max()),
+                'min_positive_weight': float(v_adj[v_adj > 0].min()) if (v_adj > 0).any() else 0.0
+            }
+        
+        # Combined stats
+        if (hasattr(self, 'horizontal_adj_matrix') and self.horizontal_adj_matrix is not None and
+            hasattr(self, 'vertical_adj_matrix') and self.vertical_adj_matrix is not None):
+            combined = self.horizontal_adj_matrix + self.vertical_adj_matrix
+            stats['combined'] = {
+                'shape': combined.shape,
+                'total_edges': int((combined > 0).sum()),
+                'density': float((combined > 0).sum()) / (combined.shape[0] * combined.shape[1]),
+                'mean_weight': float(combined[combined > 0].mean()) if (combined > 0).any() else 0.0,
+                'max_weight': float(combined.max()),
+                'overlap_edges': int(((self.horizontal_adj_matrix > 0) & (self.vertical_adj_matrix > 0)).sum())
+            }
+        
+        # Floor distribution if available
+        if hasattr(self, 'room_to_floor') and hasattr(self, 'floor_to_rooms'):
+            floor_stats = {}
+            for floor_num, room_list in self.floor_to_rooms.items():
+                floor_stats[floor_num] = len(room_list)
+            stats['floor_distribution'] = floor_stats
+        
+        return stats
+
+    def log_adjacency_statistics(self):
+        """Log adjacency statistics for debugging and analysis."""
+        stats = self.get_adjacency_statistics()
+        
+        logger.info("=" * 50)
+        logger.info("ADJACENCY MATRIX STATISTICS")
+        logger.info("=" * 50)
+        
+        for adj_type, adj_stats in stats.items():
+            if adj_type == 'floor_distribution':
+                logger.info(f"\nFloor Distribution:")
+                for floor, count in adj_stats.items():
+                    logger.info(f"  Floor {floor}: {count} rooms")
+            else:
+                logger.info(f"\n{adj_type.upper()} Adjacency:")
+                for key, value in adj_stats.items():
+                    if isinstance(value, float):
+                        logger.info(f"  {key}: {value:.4f}")
+                    else:
+                        logger.info(f"  {key}: {value}")
+        
+        logger.info("=" * 50)
