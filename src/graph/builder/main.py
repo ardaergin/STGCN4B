@@ -81,12 +81,16 @@ class OfficeGraphBuilder(
         # Spatial Builder
         self.initialize_room_polygons()
         self.normalize_room_areas()
+
         self.build_horizontal_adjacency()
         self.combine_horizontal_adjacencies()
+
         self.build_vertical_adjacency()
+
         self.apply_masks_to_adjacency()
+
         self.build_outside_adjacency()
-        self.calculate_information_propagation_masks()
+        self.combine_outside_adjacencies()
         
         # Heterogenous Graph Builder
         if graph_type == "heterogenous":
@@ -111,7 +115,7 @@ class OfficeGraphBuilder(
 
 def main():
     from ..officegraph import OfficeGraph
-    office_graph = OfficeGraph.from_pickles(floors_to_load = [1,2,3,4,5,6,7])
+    office_graph = OfficeGraph.from_pickles(floors_to_load = [4,5,6,7])
     builder = OfficeGraphBuilder(office_graph)
     builder.quick_build_with_default_parameters()
 
