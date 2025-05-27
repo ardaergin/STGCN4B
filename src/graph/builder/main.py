@@ -115,7 +115,7 @@ class OfficeGraphBuilder(
 
 def main():
     from ..officegraph import OfficeGraph
-    office_graph = OfficeGraph.from_pickles(floors_to_load = [4,5,6,7])
+    office_graph = OfficeGraph.from_pickles(floors_to_load = [1,2,3,4,5,6,7])
     builder = OfficeGraphBuilder(office_graph)
     builder.quick_build_with_default_parameters()
 
