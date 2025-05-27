@@ -85,7 +85,7 @@ class OfficeGraphBuilder(
         self.combine_horizontal_adjacencies()
         self.build_vertical_adjacency()
         self.apply_masks_to_adjacency()
-        self.calculate_outside_adjacency()
+        self.build_outside_adjacency()
         self.calculate_information_propagation_masks()
         
         # Heterogenous Graph Builder
