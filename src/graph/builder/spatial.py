@@ -208,7 +208,8 @@ class SpatialBuilderMixin:
         # Log floor-by-floor breakdown
         for floor_num in sorted(self.norm_areas_minmax.keys()):
             logger.info(f"  Floor {floor_num}: normalized {len(self.norm_areas_minmax[floor_num])} rooms")
-
+        
+        return None
 
 
     #############################
@@ -430,6 +431,8 @@ class SpatialBuilderMixin:
             logger.info(f"  Floor {floor_number}: {adj_df.shape} matrix with {non_zero_connections} connections")
         
         logger.info(f"Completed horizontal adjacency calculation for {len(self.horizontal_adj)} floors")
+        
+        return None
 
     def combine_horizontal_adjacencies(self) -> None:
         """
@@ -486,6 +489,7 @@ class SpatialBuilderMixin:
             if floor_rooms_in_matrix:
                 logger.info(f"  Floor {floor_num}: {floor_rooms_in_matrix[:3]}...{floor_rooms_in_matrix[-3:]} ({len(floor_rooms_in_matrix)} total)")
 
+        return None
 
 
     #############################
@@ -493,7 +497,7 @@ class SpatialBuilderMixin:
     #############################
 
 
-    def calculate_proportional_vertical_adjacency_full(
+    def calculate_proportional_vertical_adjacency(
         self,
         min_overlap_area: float = 0.0,
         min_weight: float = 0.0
@@ -559,7 +563,7 @@ class SpatialBuilderMixin:
         """
         logger.info("Building vertical adjacency for entire building...")
         # Calculate full-building vertical adjacency
-        v_df = self.calculate_proportional_vertical_adjacency_full(
+        v_df = self.calculate_proportional_vertical_adjacency(
             min_overlap_area=min_overlap_area,
             min_weight=min_weight
         )
@@ -575,6 +579,44 @@ class SpatialBuilderMixin:
             f"Built vertical adjacency matrix {v_df.shape} with "
             f"{int(total_connections)} non-zero connections"
         )
+        return None
+
+
+
+    #############################
+    # Combined Adjacency
+    #############################
+
+
+    def build_combined_room_to_room_adjacency(self) -> None:
+        """
+        Combines the horizontal and vertical adjacency matrices.
+        The result is stored in self.room_to_room_adj_matrix.
+        
+        Raises:
+            ValueError: If horizontal or vertical adjacency matrices are not yet computed.
+        """
+        if not hasattr(self, 'horizontal_adj_matrix') or self.horizontal_adj_matrix is None:
+            raise ValueError(
+                "Horizontal adjacency matrix not found. "
+                "Run build_horizontal_adjacency() and combine_horizontal_adjacencies() first."
+            )
+        if not hasattr(self, 'vertical_adj_matrix') or self.vertical_adj_matrix is None:
+            raise ValueError(
+                "Vertical adjacency matrix not found. "
+                "Run build_vertical_adjacency() first."
+            )
+
+        horizontal = self.horizontal_adj_matrix
+        vertical = self.vertical_adj_matrix
+        
+        self.room_to_room_adj_matrix = horizontal + vertical
+        
+        logger.info(
+            f"Successfully combined horizontal and vertical adjacency matrices. "
+            f"Shape: {self.room_to_room_adj_matrix.shape}"
+        )
+        return None
 
 
 
@@ -602,11 +644,12 @@ class SpatialBuilderMixin:
         if not hasattr(self, 'vertical_adj_matrix') or self.vertical_adj_matrix is None:
             raise ValueError("Vertical adjacency matrix not found. Run build_vertical_adjacency() first.")
         
-        # --- combine adjacency --- 
-        # any positive weight (horizontal or vertical) counts as a connection
-        horizontal = self.horizontal_adj_matrix
-        vertical   = self.vertical_adj_matrix
-        adjacency = horizontal + vertical
+        # --- Use or build combined adjacency ---
+        if not hasattr(self, 'room_to_room_adj_matrix') or self.room_to_room_adj_matrix is None:
+            logger.info("Combined adjacency matrix not found for propagation masks. Building it now.")
+            self.build_combined_room_to_room_adjacency()
+        
+        adjacency = self.room_to_room_adj_matrix
         
         # --- find which rooms start with devices ---
         n_rooms = len(self.adj_matrix_room_uris)
@@ -654,7 +697,7 @@ class SpatialBuilderMixin:
         logger.info(f"Generated {len(masks)} propagation masks")
         return masks
 
-    def apply_masks_to_adjacency(self, masks=None):
+    def build_masked_adjacencies(self, masks=None) -> None:
         """
         Using the propagation masks (horizontal+vertical), produce a series of
         masked adjacency matrices showing the network at each step.
@@ -673,14 +716,14 @@ class SpatialBuilderMixin:
         if masks is None:
             masks = self.calculate_information_propagation_masks()
         
-        adjacency = self.horizontal_adj_matrix + self.vertical_adj_matrix
+        adjacency = self.room_to_room_adj_matrix
         self.masked_adjacencies = {
             step: adjacency * mask
             for step, mask in masks.items()
         }
         
         logger.info(f"Created {len(self.masked_adjacencies)} masked adjacency matrices")
-        return self.masked_adjacencies
+        return None
 
 
 
@@ -760,7 +803,8 @@ class SpatialBuilderMixin:
             logger.info(f"  Floor {floor_number}: outside vector ({mode}) length={len(vec)}")
 
         logger.info(f"Built outside adjacency on {len(self.outside_adj)} floors (mode={mode})")
-
+        
+        return None
 
     def combine_outside_adjacencies(self) -> None:
         """
@@ -803,3 +847,4 @@ class SpatialBuilderMixin:
             f"Combined outside adjacency into length-{len(arr)} vector; "
             f"total weight={series.sum():.3f}"
         )
+        return None
