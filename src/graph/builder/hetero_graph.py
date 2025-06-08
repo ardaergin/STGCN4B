@@ -697,7 +697,7 @@ class HeteroGraphBuilderMixin:
             # For room-to-room adjacencies (separated by type):
             "horizontal_adjacency_matrix": self.horizontal_adj_matrix,
             "vertical_adj_matrix": self.vertical_adj_matrix,
-            "combined_adjacency_matrix": self.horizontal_adj_matrix + self.vertical_adj_matrix,
+            "room_to_room_adj_matrix": self.room_to_room_adj_matrix,
             "dynamic_adjacencies": self.masked_adjacencies,
             # Hetero graph:
             "base_graph": self.base_hetero_graph,
@@ -710,6 +710,7 @@ class HeteroGraphBuilderMixin:
             "train_idx": self.train_indices,
             "val_idx": self.val_indices,
             "test_idx": self.test_indices,
+            "blocks": self.blocks,
             # Labels and values (y):
             "workhour_labels": self.get_classification_labels(),
             "consumption_values": self.get_forecasting_values()
@@ -740,7 +741,7 @@ class HeteroGraphBuilderMixin:
                                                               dtype=torch.float32, 
                                                               device=device)
         
-        torch_input["combined_adjacency_matrix"] = torch.tensor(hetero_input["combined_adjacency_matrix"], 
+        torch_input["room_to_room_adj_matrix"] = torch.tensor(hetero_input["room_to_room_adj_matrix"], 
                                                               dtype=torch.float32, 
                                                               device=device)
         
@@ -782,6 +783,7 @@ class HeteroGraphBuilderMixin:
         torch_input["train_idx"] = hetero_input["train_idx"]
         torch_input["val_idx"] = hetero_input["val_idx"]
         torch_input["test_idx"] = hetero_input["test_idx"]
+        torch_input["blocks"] = hetero_input["blocks"]
         
         logger.info(f"Converted heterogeneous data to PyTorch tensors on device: {device}")
         return torch_input

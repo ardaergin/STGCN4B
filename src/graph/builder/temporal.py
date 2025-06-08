@@ -6,6 +6,7 @@ import pandas as pd
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 import logging
 import matplotlib.pyplot as plt
+from rdflib import URIRef
 
 import logging
 logging.basicConfig(
@@ -26,7 +27,7 @@ class TemporalBuilderMixin:
                                   end_time: str = "2023-01-29 00:00:00", # 01-29, Sunday
                                   # The data ends at 01-31 (Tuesday), but we end at 01-29 (Monday 00:00)
                                   interval: str   = "1h",
-                                  use_sundays: bool = False):
+                                  use_sundays: bool = False) -> None:
         """
         Initialize time-related parameters and create time buckets.
         
@@ -57,12 +58,13 @@ class TemporalBuilderMixin:
         ]
         
         logger.info(f"Created {len(self.time_buckets)} buckets at frequency {self.interval}")
+        return None
     
     def split_time_buckets(self,
                         train_blocks=3,
                         val_blocks=1,
                         test_blocks=1,
-                        seed=2658918):
+                        seed=2658918) -> None:
         """
         Split time buckets into train, validation, and test sets using block-wise sampling.
         Takes the direct number of blocks for each split and requires that the total requested
@@ -78,104 +80,139 @@ class TemporalBuilderMixin:
             ValueError: If the number of available blocks is not divisible by the 
                         total requested blocks
         """
+        # -------------------------------------------------------------------------
+        # 1) Initialization check and seed
+        # -------------------------------------------------------------------------
         if not self.time_buckets:
             raise ValueError("Time buckets not initialized. Call initialize_time_parameters first.")
         if seed is not None:
             np.random.seed(seed)
-
-        # Get all time indices
-        time_indices = list(range(len(self.time_buckets)))
         
-        # Compute how many buckets per day, then per week (or 6-day)
+        # -------------------------------------------------------------------------
+        # 2) Computing how many buckets per block
+        # -------------------------------------------------------------------------
+        time_indices = list(range(len(self.time_buckets)))
+
+        # First computing how many buckets per day, then per week (or 6-day)
         # (so 96/day for 15min, 48/day for 30T, 24/day for 1H, etc.)
         offset = pd.Timedelta(self.interval)
         buckets_per_day = int(pd.Timedelta("1D") / offset)
+
+        # Then per week (6-day if sundays excluded, 7-day if included)
         days_per_block = 7 if self.use_sundays else 6
         block_size = buckets_per_day * days_per_block
+
         logger.info(f"Using {days_per_block}-day blocks, {block_size} buckets at {self.interval} each.")
 
-        # Create blocks of contiguous time points
-        blocks = []
+        # -------------------------------------------------------------------------
+        # 3) Building the list of blocks (each block is a list of bucket‐indices)
+        # -------------------------------------------------------------------------
+        initial_blocks = []
         for i in range(0, len(time_indices), block_size):
-            # Take up to block_size indices (last block might be smaller)
-            block = time_indices[i:i+block_size]
-            blocks.append(block)
-        
-        n_blocks = len(blocks)
-        logger.info(f"Created {n_blocks} blocks of data (each 1 week)")
-        
-        # Calculate total requested blocks
+            block = time_indices[i : i + block_size] # Taking up to block_size indices (last block might be smaller)
+            initial_blocks.append(block)
+
+        n_blocks = len(initial_blocks)
+        block_types = [None] * n_blocks  # will hold "train"/"val"/"test" for each block_id
+
+        logger.info(f"Created {n_blocks} blocks of data (each {days_per_block} days)")
+                
+        # -------------------------------------------------------------------------
+        # 4) Deciding how many blocks to assign to train/val/test
+        # -------------------------------------------------------------------------
         total_requested_blocks = train_blocks + val_blocks + test_blocks
-        
-        # Check if the requested blocks divide evenly into available blocks
+
+        # If n_blocks is not divisible by total_requested, mark some extra as train
         n_extra_blocks = n_blocks % total_requested_blocks
         if n_extra_blocks != 0:
-            logger.warning(f"The week block number ({n_blocks}) is not divisible by the "
-                        f"requested block counts ({total_requested_blocks}). "
-                        f"There are {n_extra_blocks} extra blocks. "
-                        f"So, {n_extra_blocks} randomly chosen blocks will be assigned to train.")
-            
-            # Randomly select n_extra_blocks indices
-            extra_block_indices = np.random.choice(range(n_blocks), n_extra_blocks, replace=False)
-            
-            # Initialize train_indices list for extra blocks
-            train_indices = []
-            
-            # Add the selected blocks to training and remove them from blocks
-            # We need to process in reverse order to avoid index shifting during removal
-            for idx in sorted(extra_block_indices, reverse=True):
-                train_indices.extend(blocks[idx])
-                blocks.pop(idx)
-            
-            # Update n_blocks after removal
-            n_blocks = len(blocks)
+            logger.warning(
+                f"The number of blocks ({n_blocks}) is not divisible by "
+                f"train+val+test=({total_requested_blocks}). "
+                f"So, {n_extra_blocks} extra block(s) will be randomly chosen,"
+                f"and will be forcibly assigned to train."
+            )
+            # Randomly choosing which blocks become “extra train”
+            extra_block_ids = np.random.choice(np.arange(n_blocks), size=n_extra_blocks, replace=False)
+            for block in extra_block_ids:
+                block_types[block] = "train"
+            # the remaining blocks (n_blocks - n_extra) will be split evenly among train/val/test
+            remaining_block_ids = [block for block in range(n_blocks) if block not in set(extra_block_ids)]
         else:
-            # Initialize empty train_indices if no extra blocks
-            train_indices = []
-        
-        # Initialize rest of the indices
+            # no extras: everything gets assigned exactly in the next step
+            remaining_block_ids = list(range(n_blocks))
+
+        # -------------------------------------------------------------------------
+        # 5) Build the repeated pattern for the remaining blocks
+        # -------------------------------------------------------------------------
+
+        # How many blocks remain to assign in (train, val, test) pattern?
+        n_remain = len(remaining_block_ids)
+        # Each “chunk” of (train_blocks, val_blocks, test_blocks) is total_requested
+        repeat_factor = n_remain // total_requested_blocks
+
+        basic_pattern = ["train"] * train_blocks + ["val"] * val_blocks + ["test"] * test_blocks
+        sampling_pattern = basic_pattern * repeat_factor
+        np.random.shuffle(sampling_pattern)
+
+        # Assign each of the remaining blocks to a split, in randomized order
+        for idx_in_list, block_id in enumerate(remaining_block_ids):
+            block_types[block_id] = sampling_pattern[idx_in_list]
+
+        # -------------------------------------------------------------------------
+        # 6) Now collect bucket‐indices per split, and build self.blocks dict
+        # -------------------------------------------------------------------------
+        train_indices = []
         val_indices = []
         test_indices = []
 
-        # Calculate the repeat factor - how many times to repeat the pattern
-        repeat_factor = n_blocks // total_requested_blocks
-        
-        # Define the basic pattern
-        basic_pattern = ["train"] * train_blocks + ["val"] * val_blocks + ["test"] * test_blocks
-        
-        # Repeat the pattern the necessary number of times
-        sampling_pattern = basic_pattern * repeat_factor        
-        
-        # Shuffle the sampling pattern
-        np.random.shuffle(sampling_pattern)
-        
-        # Assign blocks to splits
-        for i, block in enumerate(blocks):
-            split_type = sampling_pattern[i]
-            
-            # Assign the block to the corresponding split
-            if split_type == "train":
-                train_indices.extend(block)
-            elif split_type == "val":
-                val_indices.extend(block)
+        # Build the final self.blocks mapping
+        self.blocks = {}
+        for block_id, bucket_list in enumerate(initial_blocks):
+            btype = block_types[block_id]  # "train"/"val"/"test"
+            # Guard against any block_type being None (shouldn't happen unless mis‐count)
+            if btype is None:
+                raise RuntimeError(f"Block {block_id} was never assigned a type.")
+
+            # Add its bucket indices to the right global‐indices list
+            if btype == "train":
+                train_indices.extend(bucket_list)
+            elif btype == "val":
+                val_indices.extend(bucket_list)
             else:  # "test"
-                test_indices.extend(block)
-        
-        # Sort indices within each split to maintain temporal order
+                test_indices.extend(bucket_list)
+
+            # Populate self.blocks[block_id]
+            self.blocks[block_id] = {
+                "block_type": btype,
+                "bucket_indices": list(bucket_list),  # copy to avoid aliasing
+            }
+
+        # -------------------------------------------------------------------------
+        # 7) Sort each global list so that train/val/test indices are in ascending order
+        # -------------------------------------------------------------------------
         train_indices.sort()
         val_indices.sort()
         test_indices.sort()
-        
-        # Store the indices in the class
+
+        # Save them on the instance
         self.train_indices = train_indices
         self.val_indices = val_indices
         self.test_indices = test_indices
-        
-        logger.info(f"Data split: Train={len(train_indices)} samples ({(train_blocks * repeat_factor)+n_extra_blocks} blocks), "
-                    f"Val={len(val_indices)} samples ({val_blocks * repeat_factor} blocks), "
-                    f"Test={len(test_indices)} samples ({test_blocks * repeat_factor} blocks)")
-        logger.info(f"Pattern [{','.join([str(b) for b in basic_pattern])}] repeated {repeat_factor} times")
-    
+
+        # Logging summary
+        # Count how many blocks ended up in each split:
+        n_train_blocks = sum(1 for t in block_types if t == "train")
+        n_val_blocks   = sum(1 for t in block_types if t == "val")
+        n_test_blocks  = sum(1 for t in block_types if t == "test")
+        logger.info(
+            f"Data split: "
+            f"Train={len(train_indices)} buckets ({n_train_blocks} blocks), "
+            f"Val={len(val_indices)} buckets ({n_val_blocks} blocks), "
+            f"Test={len(test_indices)} buckets ({n_test_blocks} blocks)"
+        )
+        logger.info(f"Pattern of train/val/test per block: {block_types}")
+        return None
+
     #############################
     # Normalization Helper
     #############################
@@ -436,7 +473,7 @@ class TemporalBuilderMixin:
     # Measurement bucketing
     #############################
 
-    def bucket_measurements_by_device_property(self, drop_sum: bool = True) -> pd.DataFrame:
+    def bucket_measurements_by_device_property(self, drop_sum: bool = True) -> None:
         """
         Bucket measurements by device and property according to time buckets,
         using a single pass and pandas groupby for speed.
@@ -554,7 +591,7 @@ class TemporalBuilderMixin:
         logger.info(f"Sample row: {sample}")
 
         logger.info("-" * 40)
-        return
+        return None
     
     def visualize_bucket_distributions(self):
         """
@@ -597,7 +634,7 @@ class TemporalBuilderMixin:
     # Normalization of Bucketed Measurements
     #############################
 
-    def normalize_bucketed_measurements(self, drop_sum: bool = True, scaler: str = "robust") -> pd.DataFrame:
+    def normalize_bucketed_measurements(self, drop_sum: bool = True, scaler: str = "robust") -> None:
         """
         Normalize bucketed measurements per property type.
 
@@ -656,13 +693,13 @@ class TemporalBuilderMixin:
         unique_buckets = normalized_df['bucket_idx'].nunique()
         logger.info(f"Normalized measurements: {total_rows} rows across {unique_buckets} unique buckets")
         logger.info(f"Total training buckets used across all properties: {total_train_used}")
-        return 
+        return None
         
     #############################
     # Adding back the empty buckets
     #############################
 
-    def build_full_feature_df(self) -> pd.DataFrame:
+    def build_full_feature_df(self) -> None:
         """
         Re-index the normalized measurements so you get one row per
         (device_uri, property_type, bucket_idx), filling missing stats with 0,
@@ -701,11 +738,8 @@ class TemporalBuilderMixin:
         )
 
         # 4) Choose features and zero-fill stats for the missing bucket-device-property combinations
-        # if drop_sum:
-        #     feature_cols = ['mean', 'std', 'max', 'min', 'count']
-        # else:
-        #     feature_cols = ['mean', 'std', 'max', 'min', 'sum', 'count']
-        # full_df[feature_cols] = full_df[feature_cols].fillna(0.0)
+        feature_cols = ['mean', 'std', 'max', 'min', 'count']
+        full_df[feature_cols] = full_df[feature_cols].fillna(0.0)
         ### (!) Took out the part above (!)
         ### Because I will do his later in the HeteroGraphBuilderMixin and not in TabularBuilderMixin
 
@@ -737,4 +771,4 @@ class TemporalBuilderMixin:
         logger.info("=" * 40)
 
         self.full_feature_df = full_df
-        return 
+        return None
