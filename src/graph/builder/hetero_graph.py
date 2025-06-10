@@ -1,6 +1,5 @@
 import sys
 import logging
-import numpy as np
 import torch
 from torch_geometric.data import HeteroData
 from typing import Dict, List, Any, Optional
@@ -295,10 +294,10 @@ class HeteroGraphBuilderMixin:
         # Initialize with placeholder for weather features
         # Will be filled with actual weather data per time bucket
 
-        if not hasattr(self, 'weather_features_norm_') and self.weather_features_norm_:
+        if not hasattr(self, 'weather_data_dict') and self.weather_data_dict:
             raise ValueError("Weather features unavailable.")
         
-        sample = next(iter(self.weather_features_norm_.values()))
+        sample = next(iter(self.weather_data_dict.values()))
         num_weather_feats = len(sample)  # number of keys in this dict
 
         outside_features = torch.zeros(1, num_weather_feats, dtype=torch.float32)
@@ -579,7 +578,7 @@ class HeteroGraphBuilderMixin:
     def _update_outside_node_temporal(self, hetero_graph: HeteroData, bucket_idx: int):
         """Update outside node with weather data for this time bucket."""
         # Must have preloaded & normalized weather
-        if not hasattr(self, 'weather_features_norm_') or not self.weather_features_norm_:
+        if not hasattr(self, 'weather_data_dict') or not self.weather_data_dict:
             raise ValueError("Weather features unavailable.")
 
         # Define the base weather features (same order used in _add_outside_node)
@@ -597,13 +596,13 @@ class HeteroGraphBuilderMixin:
         ]
 
         # Include any one-hot weather_code columns --> not doing this
-        sample = next(iter(self.weather_features_norm_.values()))
+        sample = next(iter(self.weather_data_dict.values()))
         # wc_features = sorted([k for k in sample.keys() if k.startswith('wc_')])
         # all_feature_names = weather_feature_names + wc_features
         all_feature_names = weather_feature_names
 
-        if bucket_idx in self.weather_features_norm_:
-            weather_data = self.weather_features_norm_[bucket_idx]
+        if bucket_idx in self.weather_data_dict:
+            weather_data = self.weather_data_dict[bucket_idx]
             # Build the feature vector in the consistent order
             weather_features = [weather_data.get(name, 0.0) for name in all_feature_names]
             hetero_graph['outside'].x = torch.tensor([weather_features], dtype=torch.float32)
@@ -712,8 +711,8 @@ class HeteroGraphBuilderMixin:
             "test_idx": self.test_indices,
             "blocks": self.blocks,
             # Labels and values (y):
-            "workhour_labels": self.get_classification_labels(),
-            "consumption_values": self.get_forecasting_values()
+            "workhour_labels": self.workhour_labels,
+            "consumption_values": self.consumption_values
         }
         
         logger.info("Heterogeneous STGCN input preparation complete with horizontal and vertical adjacencies")
@@ -766,14 +765,9 @@ class HeteroGraphBuilderMixin:
         torch_input["workhour_labels"] = torch.tensor(hetero_input["workhour_labels"], 
                                                     dtype=torch.long,
                                                     device=device)
-        
-        # Convert consumption values
-        consumption = np.zeros(len(hetero_input["time_indices"]))
-        for idx, value in hetero_input["consumption_values"].items():
-            consumption[idx] = value
-        torch_input["consumption_values"] = torch.tensor(consumption,
-                                                       dtype=torch.float32,
-                                                       device=device)
+        torch_input["consumption_values"] = torch.tensor(hetero_input["consumption_values"],
+                                                        dtype=torch.float32,
+                                                        device=device)
         
         # Copy non-tensor data
         torch_input["node_mappings"] = hetero_input["node_mappings"]

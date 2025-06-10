@@ -1,18 +1,23 @@
-import logging
 import pandas as pd
 from shapely.geometry import Polygon
 import numpy as np
-from rdflib import URIRef
 from typing import Dict, Any, List
 from collections import defaultdict
 
+# Logging setup
+import logging, sys
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 logger = logging.getLogger(__name__)
 
 from ...data.FloorPlan import polygon_utils
 
-from ..officegraph import OfficeGraph
 
 class SpatialBuilderMixin:
+    from ..officegraph import OfficeGraph
     office_graph: OfficeGraph
     room_uris: List[Any]
     room_names: Dict[Any, str]
@@ -379,13 +384,13 @@ class SpatialBuilderMixin:
         return adj_df
 
     def build_horizontal_adjacency(self, 
-                                    matrix_type="binary", 
-                                    distance_threshold=5.0) -> None:
+                                   mode="weighted", 
+                                   distance_threshold=5.0) -> None:
         """
         Build horizontal room-to-room adjacency matrices for all floors and store them in class attributes.
         
         Args:
-            matrix_type: Kind of adjacency. Options:
+            mode: Kind of adjacency. Options:
                 - 'binary': Basic binary adjacency based on proximity
                 - 'weighted': Weighted adjacency where each room's influence is proportional to target's perimeter
             distance_threshold: Maximum distance for considering rooms adjacent (in meters)
@@ -398,17 +403,17 @@ class SpatialBuilderMixin:
         
         # Initialize the horizontal adjacency storage
         self.horizontal_adj = {}
-        self.horizontal_adj_type = matrix_type
+        self.horizontal_adj_type = mode
 
         # Select the appropriate adjacency function
-        if matrix_type == "binary":
+        if mode == "binary":
             adj_func = self.calculate_binary_adjacency
-        elif matrix_type == "weighted":
+        elif mode == "weighted":
             adj_func = self.calculate_proportional_boundary_adjacency
         else:
-            raise ValueError(f"Unknown adjacency kind: {matrix_type}. Use 'binary' or 'weighted'.")
+            raise ValueError(f"Unknown adjacency kind: {mode}. Use 'binary' or 'weighted'.")
         
-        logger.info(f"Building {matrix_type} horizontal adjacency for {len(self.polygons)} floors...")
+        logger.info(f"Building {mode} horizontal adjacency for {len(self.polygons)} floors...")
         
         for floor_number in sorted(self.polygons.keys()):
             logger.info(f"Processing floor {floor_number}...")
@@ -431,10 +436,13 @@ class SpatialBuilderMixin:
             logger.info(f"  Floor {floor_number}: {adj_df.shape} matrix with {non_zero_connections} connections")
         
         logger.info(f"Completed horizontal adjacency calculation for {len(self.horizontal_adj)} floors")
+
+        # Combine per-floor horizontal adjacency matrices into one large matrix
+        self._combine_horizontal_adjacencies()
         
         return None
 
-    def combine_horizontal_adjacencies(self) -> None:
+    def _combine_horizontal_adjacencies(self) -> None:
         """
         Combine per-floor horizontal adjacency matrices into one large matrix.
         Uses canonical room ordering established during initialization.
@@ -625,7 +633,7 @@ class SpatialBuilderMixin:
     #############################
 
 
-    def calculate_information_propagation_masks(self):
+    def calculate_information_propagation_masks(self) -> Dict[int, np.ndarray]:
         """
         Calculate a series of masking matrices representing information propagation
         from rooms with devices to other rooms in the building, using BOTH
@@ -697,7 +705,7 @@ class SpatialBuilderMixin:
         logger.info(f"Generated {len(masks)} propagation masks")
         return masks
 
-    def build_masked_adjacencies(self, masks=None) -> None:
+    def build_masked_adjacencies(self) -> None:
         """
         Using the propagation masks (horizontal+vertical), produce a series of
         masked adjacency matrices showing the network at each step.
@@ -711,10 +719,11 @@ class SpatialBuilderMixin:
         """
         # ensure adjacency exists
         if not hasattr(self, 'horizontal_adj_matrix') or self.horizontal_adj_matrix is None:
-            raise ValueError("Adjacency matrix not found. Run both build_*_adjacency() first.")
+            raise ValueError("Horizontal adjacency matrix not found. Run both build_horizontal_adjacency() first.")
+        if not hasattr(self, 'vertical_adj_matrix') or self.vertical_adj_matrix is None:
+            raise ValueError("Vertical adjacency matrix not found. Run both build_vertical_adjacency() first.")
         
-        if masks is None:
-            masks = self.calculate_information_propagation_masks()
+        masks = self.calculate_information_propagation_masks()
         
         adjacency = self.room_to_room_adj_matrix
         self.masked_adjacencies = {
@@ -784,7 +793,7 @@ class SpatialBuilderMixin:
         """
         Build per‐floor outside adjacency vectors and store in self.outside_adj.
 
-        After calling this, you’ll have:
+        After calling this, we have:
           self.outside_adj[floor_number] = {
              "vector": np.ndarray,
              "room_uris": [...URIRefs in floor order...]
@@ -804,12 +813,15 @@ class SpatialBuilderMixin:
 
         logger.info(f"Built outside adjacency on {len(self.outside_adj)} floors (mode={mode})")
         
+        # Combine all per‐floor outside adjacency vectors into one building‐wide vector
+        self._combine_outside_adjacencies()
+
         return None
 
-    def combine_outside_adjacencies(self) -> None:
+    def _combine_outside_adjacencies(self) -> None:
         """
         Combine all per‐floor outside adjacency vectors into one building‐wide vector
-        in your canonical self.room_uris order.
+        in the canonical self.room_uris order.
 
         Stores:
           - self.combined_outside_adj: numpy array, length = total rooms

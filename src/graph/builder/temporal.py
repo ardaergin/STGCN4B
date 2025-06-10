@@ -1,14 +1,12 @@
-import sys
 import numpy as np
-from typing import Dict
 from datetime import datetime
 import pandas as pd
 from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler
 import logging
 import matplotlib.pyplot as plt
-from rdflib import URIRef
 
-import logging
+# Logging setup
+import logging, sys
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -16,9 +14,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from ..officegraph import OfficeGraph
 
 class TemporalBuilderMixin:
+    from ..officegraph import OfficeGraph
     office_graph: OfficeGraph
 
     def initialize_time_parameters(self, 
@@ -281,8 +279,9 @@ class TemporalBuilderMixin:
     def get_weather_data(self,
                         weather_csv_path: str = "data/weather/hourly_weather_2022_2023.csv",
                         normalize: bool = True,
-                        scaler: str = "robust"
-                        ) -> Dict[int, Dict[str, float]]:
+                        scaler: str = "robust",
+                        add_weather_code_onehot_features: bool = False
+                        ) -> None:
         """
         Load, aggregate, feature-engineer, and optionally normalize
         weather data for forecasting.
@@ -333,7 +332,7 @@ class TemporalBuilderMixin:
 
         # 4) Early return of raw features
         if not normalize:
-            # keep for later if you want
+            # keep for later if wanted
             self.weather_features_ = weather_df
             return weather_df.to_dict(orient="index")
 
@@ -363,23 +362,29 @@ class TemporalBuilderMixin:
             index=weather_df.index,
             columns=numeric_cols
         )
-        # bring in the unscaled angle and categorical columns
-        for col in angle_cols + cat_cols:
-            scaled_df[col] = weather_df[col]
+        if add_weather_code_onehot_features:
+            # bring in the unscaled angle and categorical columns
+            for col in angle_cols + cat_cols:
+                scaled_df[col] = weather_df[col]
+        else:
+            for col in angle_cols:
+                scaled_df[col] = weather_df[col]
 
-        # 3) Build your final dict
+        # 3) Build the final dict
         normed = {
             idx: scaled_df.iloc[idx].to_dict()
             for idx in range(len(scaled_df))
         }
-        self.weather_features_norm_ = normed
-        return normed
+        self.weather_data_dict = normed
+        logger.info("Weather data is saved to 'self.weather_data_dict'.")
+
+        return None
     
     #############################
     # Task-Specific (Target) Data
     #############################
     
-    def get_classification_labels(self, country_code: str = 'NL') -> np.ndarray:
+    def get_classification_labels(self, country_code: str = 'NL') -> None:
         """
         Generate work hour classification labels for each time bucket.
         
@@ -387,7 +392,7 @@ class TemporalBuilderMixin:
             country_code: Country code for holidays
             
         Returns:
-            Binary labels for each time bucket (1 for work hour, 0 for non-work hour)
+            Binary labels for each time bucket (1 for work hour, 0 for non-work hour), as np.ndarray.
         """
         # Check if time buckets are available
         if not self.time_buckets:
@@ -406,16 +411,18 @@ class TemporalBuilderMixin:
         
         # Convert to numpy array
         labels = np.array(labels_list, dtype=int)
-        
+        self.workhour_labels = labels
+
         logger.info(f"Generated {len(labels)} classification labels")
         logger.info(f"Work hours: {labels.sum()} ({labels.sum()/len(labels):.1%} of time buckets)")
-        
-        return labels
+        logger.info("Workhour labels are saved as an array to 'self.workhour_labels'.")
+
+        return None
     
     def get_forecasting_values(self,
                             consumption_dir: str = "data/consumption",
                             normalize: bool = True,
-                            scaler: str = "robust") -> Dict[int, float]:
+                            scaler: str = "robust") -> None:
         """
         Load, aggregate (to time buckets), and optionally normalize
         consumption data for forecasting using scikit-learn scalers.
@@ -427,7 +434,7 @@ class TemporalBuilderMixin:
             scaler: Type of scaler to use ("standard", "robust", "minmax")
 
         Returns:
-            Dictionary mapping time bucket index to consumption value
+            NumPy array of consumption values, one per time bucket,
             (normalized if normalize=True).
         """
         if not hasattr(self, "train_indices"):
@@ -454,21 +461,25 @@ class TemporalBuilderMixin:
         )
         # now bucket_consumption: { idx: raw_value }
 
-        # 2) If asked for raw, just return the dict
-        if not normalize:
-            logger.info(f"Returning raw consumption for {len(bucket_consumption)} buckets")
-            return bucket_consumption
-        # Else, we normalize the data...
-
-        # 3) Convert to array format for scikit-learn
+        # 2) Convert to array format
         T = len(self.time_buckets)
         consumption_array = np.array([bucket_consumption[i] for i in range(T)], dtype=float).reshape(-1, 1)
 
-        # 4) Normalize
-        X_norm = self._fit_and_apply_scaler(consumption_array, 'consumption', scaler)
-        normed = {i: float(X_norm[i, 0]) for i in range(T)}
-        return normed
+        # 3) Normalize if requested
+        if normalize:
+            X_norm = self._fit_and_apply_scaler(consumption_array, 'consumption', scaler)
+            final_consumption_array = X_norm.flatten() # Ensure 1D
+            logger.info(f"Normalized consumption for {len(final_consumption_array)} buckets using {scaler} scaler.")
+        else:
+            final_consumption_array = consumption_array.flatten() # Ensure 1D
+            logger.info(f"Did not normalize consumption values.")
 
+        # Store as a class attribute (as an array)
+        self.consumption_values = final_consumption_array
+        logger.info("Consumption values are saved as an array to 'self.consumption_values'.")
+
+        return None
+        
     #############################
     # Measurement bucketing
     #############################
@@ -701,7 +712,7 @@ class TemporalBuilderMixin:
 
     def build_full_feature_df(self) -> None:
         """
-        Re-index the normalized measurements so you get one row per
+        Re-index the normalized measurements so we get one row per
         (device_uri, property_type, bucket_idx), filling missing stats with 0,
         and adding a binary 'has_measurement' indicator.
         
@@ -739,13 +750,14 @@ class TemporalBuilderMixin:
 
         # 4) Choose features and zero-fill stats for the missing bucket-device-property combinations
         feature_cols = ['mean', 'std', 'max', 'min', 'count']
-        full_df[feature_cols] = full_df[feature_cols].fillna(0.0)
-        ### (!) Took out the part above (!)
-        ### Because I will do his later in the HeteroGraphBuilderMixin and not in TabularBuilderMixin
+        # NOTE: DO NOT FILL IN NA VALUES WITH 0.0 HERE
+        # Because I will do his later in the Graph Builders and not in Tabular Builder
 
         # 5) Fill NaNs with 0.0 for the 'has_measurement', 
         # since the rows we just added are not measured anyways
         full_df['has_measurement'] = full_df['has_measurement'].fillna(0.0)
+        # Same goes for count!
+        full_df['count'] = full_df['count'].fillna(0.0)
 
         # --- Sanity logging ---
         logger.info("=" * 40)

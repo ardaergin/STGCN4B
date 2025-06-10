@@ -1,33 +1,170 @@
-#!/usr/bin/env python
-# -*- coding: utf-8 -*-
-
 import os
 import argparse
 
-def parse_base_args(parser=None):
-    """Parse common data and training arguments."""
-    if parser is None:
-        parser = argparse.ArgumentParser(description='OfficeGraph Analysis')
+def add_OfficeGraph_args(parser):
+    """
+    Parse OfficeGraph arguments.
     
-    # Task-related arguments
-    parser.add_argument('--model', type=str, default='stgcn',
-                      choices=['stgcn', 'astgcn'], 
-                      help='Model type')
-    parser.add_argument('--task_type', type=str, default='classification',
-                      choices=['classification', 'forecasting'], 
-                      help='Task type')
+    Related with the code of the following classes:
+        - OfficeGraph, with following mixins:
+            - OfficeGraphExtractor
+        - OfficeGraphBuilder, with following mixins:
+            - TemporalBuilderMixin
+            - SpatialBuilderMixin
+            - HomoGraphBuilderMixin
+            - HeteroGraphBuilderMixin
+            - TabularBuilderMixin
+    """    
+    ##############################
+    #  Seed
+    ##############################
+    parser.add_argument('--seed', type=int, default=2658918, 
+                      help='Random seed')
+
+    ##############################
+    #  Base data arguments
+    ##############################
+    parser.add_argument('--data_dir', type=str, 
+                        default='data', 
+                        help='Path to OfficeGraph data directory')
+    parser.add_argument('--output_dir', type=str, 
+                        default='./output', 
+                        help='Directory to save outputs')
+
+    ##############################
+    #  Extraction arguments
+    ##############################
+    parser.add_argument("--floors", type=int, nargs="+",
+                        default=[7],
+                        help="List of floor numbers to load (default: 7)")
+    parser.add_argument("--no-extract",
+                        action="store_true",
+                        help="Skip automatic entity extraction")
+    parser.add_argument("--no-save-pickle",
+                        action="store_true",
+                        help="Skip saving extracted entities to pickle file")
+
+    ##############################
+    #  Builder base arguments
+    ##############################
+    ##### Base #####
+    parser.add_argument('--make_and_save_plots', action='store_true',
+                        help='Do the plotting and save the plots (default: False)')
+    parser.add_argument('--builder_plots_dir', type=str,
+                        default='output/builder',
+                        help='Directory to save plot images from the builder')
+
+    ##############################
+    #  Temporal Builder
+    ##############################
+    # Time-related
+    parser.add_argument('--start_time', type=str, 
+                        default='2022-03-07 00:00:00', 
+                        help='Start time for data')
+    parser.add_argument('--end_time', type=str, 
+                        default='2023-01-29 00:00:00', 
+                        help='End time for data')
+    parser.add_argument('--interval', type=str, 
+                        default="1h",
+                        help='Frequency of time buckets as a pandas offset string e.g., ("15min", "30min", "1h", "2h")')
+    parser.add_argument('--use_sundays', action='store_true',
+                        help='Include Sundays in the time blocks (default: False)')
+
+    # Data splitting
+    parser.add_argument("--split", type=int, nargs=3,
+                        metavar=("TRAIN", "VAL", "TEST"),
+                        default=[3, 1, 1],
+                        help="train/val/test split in number of blocks (default: 3 1 1)")
+
+    # Classification arguments
+    parser.add_argument('--country_code', type=str,
+                        default='NL',
+                        help='Country code for work hour classification')
+
+    # Consumption data arguments
+    parser.add_argument('--consumption_dir', type=str, 
+                        default='data/consumption',
+                        help='Directory containing consumption data (for forecasting)')
     
-    # Graph core
-    parser.add_argument('--graph_type', type=str, default='heterogeneous',
-                      choices=['heterogeneous', 'homogenous'], 
-                      help='Graph type')
-    parser.add_argument('--gso_mode', type=str, default='dynamic',
-                      choices=['static', 'dynamic'], 
-                      help='Adjacency matrix type')
+    parser.add_argument('--consumption_scaler', type=str,
+                        choices=['standard', 'robust', 'minmax'],
+                        default='robust',
+                        help='Scaler type for consumption data normalization')
+
+    # Weather data arguments
+    parser.add_argument('--weather_csv_path', type=str,
+                        default="data/weather/hourly_weather_2022_2023.csv",
+                        help='Path to weather data CSV file')
+    
+    parser.add_argument('--weather_scaler', type=str,
+                        choices=['standard', 'robust', 'minmax'],
+                        default='robust',
+                        help='Scaler type for weather data normalization')
+    
+    # Measurement processing arguments
+    parser.add_argument('--measurement_scaler', type=str,
+                        choices=['standard', 'robust', 'minmax'],
+                        default='robust',
+                        help='Scaler type for measurement normalization')
+    parser.add_argument('--drop_sum', action='store_true',
+                        help='Drop sum feature from measurements')
+    
+    ##############################
+    #  Spatial Builder
+    ##############################
+    # Static room attributes
+    parser.add_argument('--static_attr_preset', type=str,
+                    choices=['minimal', 'standard', 'all'],
+                    default='standard',
+                    help='Preset for static room attributes: minimal, standard, or all')
+
+    # Polygon-related arguments
+    parser.add_argument('--polygon_type', type=str,
+                        choices=['geo', 'doc'],
+                        default='doc',
+                        help='Type of polygon data to use: geo or doc')
+    
+    parser.add_argument('--simplify_polygons', action='store_true',
+                        dest='simplify_polygons',
+                        help='Polygon simplification (off by default)')
+    
+    parser.add_argument('--simplify_epsilon', type=float,
+                        default=0.1,
+                        help='Epsilon value for polygon simplification (higher = more simplification)')
+
+    # Adjacency-related arguments
     parser.add_argument('--adjacency_type', type=str,
                         choices=['binary', 'weighted'],
                         default='weighted',
-                        help='Type of adjacency that was used: binary or weighted')
+                        help='Type of adjacency: binary or weighted')
+
+    parser.add_argument('--distance_threshold', type=float,
+                        default=5.0,
+                        help='Distance threshold for room adjacency')
+
+    ##############################
+    #  Graph
+    ##############################
+    parser.add_argument('--data_to_build', type=str, default='graph',
+                    choices=['graph', 'tabular'],
+                    help='Graph type')
+
+    parser.add_argument('--graph_type', type=str, default='homogeneous',
+                      choices=['heterogeneous', 'homogeneous'],
+                      help='Graph type')
+    
+    parser.add_argument('--skip_incorporating_weather', 
+                        action='store_true',
+                        help='Do not add the weather info to the homogeneous graph (default: False)')
+
+    ##############################
+    #  GSO (later on in the pipeline)
+    ##############################
+
+    parser.add_argument('--gso_mode', type=str, default='dynamic',
+                      choices=['static', 'dynamic'], 
+                      help='Adjacency matrix type')
+    
     parser.add_argument('--gso_type', type=str, default='rw_norm_adj',
         choices=[
             'sym_norm_adj',  'sym_renorm_adj',  'sym_norm_lap',  'sym_renorm_lap',
@@ -45,36 +182,32 @@ def parse_base_args(parser=None):
             "  • rw_renorm_lap  : I - D^{-1}(A+I)"
         )
     )
-    parser.add_argument('--interval', type=str, 
-                        default="1h",
-                        help='Frequency of time buckets as a pandas offset string e.g., ("15min", "30min", "1h", "2h")')
 
-    # Data parameters
-    parser.add_argument('--data_dir', type=str, default='data', 
-                      help='Path to OfficeGraph data directory')
-    parser.add_argument('--start_time', type=str, default='2022-03-01 00:00:00', 
-                      help='Start time for analysis')
-    parser.add_argument('--end_time', type=str, default='2023-01-30 00:00:00', 
-                      help='End time for analysis')
-    parser.add_argument('--interval_hours', type=int, default=1, 
-                      help='Size of time buckets in hours')
-    parser.add_argument('--output_dir', type=str, default='./output', 
-                      help='Directory to save results')
-    parser.add_argument('--include_sundays', action='store_true',
-                      help='Include Sundays in the time blocks (default: False)')
+
+def add_base_modelling_args(parser):
+    """Parse common data and training arguments."""
     
-    # Common training parameters
+    # Task-related arguments
+    parser.add_argument('--model', type=str, default='stgcn',
+                      choices=['stgcn', 'astgcn'], 
+                      help='Model type')
+    parser.add_argument('--task_type', type=str, default='classification',
+                      choices=['classification', 'forecasting'], 
+                      help='Task type')
+        
+    # Device specification
+    parser.add_argument('--device', type=str,
+                        default='cpu',
+                        help='PyTorch device for tensor operations (cpu, cuda, etc.)')
     parser.add_argument('--enable_cuda', action='store_true', 
                       help='Enable CUDA')
-    parser.add_argument('--seed', type=int, default=2658918, 
-                      help='Random seed')
     
+    # Common training arguments
     parser.add_argument('--batch_size', type=int, default=144, 
                       help='Batch size')
     parser.add_argument('--epochs', type=int, default=100, 
                       help='Number of epochs')
-        
-    return parser
+
 
 def add_stgcn_args(parser):
     """
@@ -107,7 +240,9 @@ def add_stgcn_args(parser):
                       help='Step size for learning rate scheduler')
     parser.add_argument('--gamma', type=float, default=0.9, 
                       help='Gamma for learning rate scheduler')
-    parser.add_argument('--enable_bias', type=bool, default=True, help='default as True')
+    parser.add_argument('--enable-bias', dest='enable_bias', action='store_true', help='Enable bias in layers.')
+    parser.add_argument('--disable-bias', dest='enable_bias', action='store_false', help='Disable bias in layers.')
+    parser.set_defaults(enable_bias=True)
     parser.add_argument('--weight_decay_rate', type=float, default=0.001, help='weight decay (L2 penalty)')
     parser.add_argument('--patience', type=int, default=10, help='early stopping patience')
 
@@ -117,34 +252,46 @@ def add_stgcn_args(parser):
     parser.add_argument('--lr', type=float, default=0.0001, 
                       help='Learning rate')
 
-    return parser
 
-def add_astgcn_args(parser):
-    """
-    ASTGCN-specific arguments.
+def add_tabular_args(parser):
+    # Tabular baseline arguments
+    parser.add_argument('--build_tabular', action='store_false',
+                        help='Build tabular baseline inputs (homogeneous graph method)')
     
-    ASTGCN: Attention-based spatial-temporal graph convolutional network.
-    (Guo et al., 2019)
-    """
-    # Not implemented yet.
-    pass
+    parser.add_argument('--build_advanced_tabular', action='store_false',
+                        help='Build advanced tabular dataset with feature engineering')
+    
+    parser.add_argument('--include_datetime_features', action='store_false',
+                        help='Include cyclical datetime features in advanced tabular')
+    
+    parser.add_argument('--include_sensor_aggregates', action='store_false',
+                        help='Include sensor aggregate features in advanced tabular')
+    
+    parser.add_argument('--lag_steps', type=int, nargs='+',
+                        default=[1, 2, 3],
+                        help='Lag steps for time series features')
+    
+    parser.add_argument('--rolling_windows', type=int, nargs='+',
+                        default=[3, 6, 12],
+                        help='Rolling window sizes for time series features')
 
 def parse_args():
     """Parse command-line arguments with model-specific parameters."""
     # Create the parser
-    parser = argparse.ArgumentParser(description='OfficeGraph Analysis')
+    parser = argparse.ArgumentParser(description='OfficeGraph argument parser')
         
-    # Add all base arguments
-    parser = parse_base_args(parser)
-    
-    # Parse just to get the model type
-    temp_args, _ = parser.parse_known_args()
+    # Add OfficeGraph arguments
+    add_OfficeGraph_args(parser)
+
+    # Parsing base modelling arguments
+    add_base_modelling_args(parser)
     
     # Add model-specific arguments based on the model type
+    temp_args, _ = parser.parse_known_args()
     if temp_args.model == 'stgcn':
-        parser = add_stgcn_args(parser)
-    elif temp_args.model == 'astgcn':
-        parser = add_astgcn_args(parser)
+        add_stgcn_args(parser)
+    elif temp_args.model == 'tabular':
+        add_tabular_args(parser)
     
     # Parse all arguments
     args = parser.parse_args()
