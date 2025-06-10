@@ -21,14 +21,14 @@ from .extraction import OfficeGraphExtractor
 class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
     """Class to represent and manipulate the IoT Office Graph."""
    
-    def __init__(self, base_data_dir: str = 'data'):
+    def __init__(self, data_dir: str = 'data'):
         """
         Initialize the OfficeGraph object.
 
         Args:
             base_dir (str, optional): Base directory for data files. Defaults to 'data'.
         """
-        self.base_dir = base_data_dir
+        self.base_dir = data_dir
         self._init_collections()
 
     def _init_collections(self):
@@ -88,7 +88,7 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
     
 
     @classmethod
-    def from_rdf(cls, floors_to_load: List[int], base_data_dir: str = 'data', auto_extract: bool = True):
+    def from_rdf(cls, floors_to_load: List[int], data_dir: str = 'data', auto_extract: bool = True):
         """
         Create an OfficeGraph instance by loading RDF data and extracting entities.
         For now, only one floor can be loaded at a time due to memory constraints.
@@ -96,17 +96,17 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
         if len(floors_to_load) > 1:
             raise ValueError("Currently, due to memory constraints, just a single floor can be loaded.")
 
-        instance = cls(base_data_dir=base_data_dir)
+        instance = cls(data_dir=data_dir)
         instance.floors_to_load = floors_to_load
         instance.graph = instance.create_empty_graph_with_namespace_bindings()
 
         # Load building topology for specified floors
-        building_topology_graph = load_building_topology(base_data_dir, floors=floors_to_load)
+        building_topology_graph = load_building_topology(data_dir, floors=floors_to_load)
         instance.graph += building_topology_graph
         logger.info("Loaded building topology for floors %s (%d triples)", floors_to_load, len(building_topology_graph))
 
         # Load CSV enrichment
-        csv_enrichment_graph = load_csv_enrichment(base_data_dir, floors=floors_to_load)
+        csv_enrichment_graph = load_csv_enrichment(data_dir, floors=floors_to_load)
         instance.graph += csv_enrichment_graph
         logger.info("Loaded CSV enrichment for floors %s (%d triples)", floors_to_load, len(csv_enrichment_graph))
 
@@ -201,20 +201,20 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
 
 
     @classmethod
-    def from_pickles(cls, floors_to_load: List[int], base_data_dir: str = 'data'):
+    def from_pickles(cls, floors_to_load: List[int], data_dir: str = 'data'):
         """
         Create an OfficeGraph instance by loading extracted entity data from one or more pickle files.
         Each floor must have a corresponding file called "officegraph_entities_floor_{floor}.pkl" 
-        under the {base_data_dir}/processed/.
+        under the {data_dir}/interim/.
         """
 
-        instance = cls(base_data_dir=base_data_dir)
+        instance = cls(data_dir=data_dir)
         instance.floors_to_load = floors_to_load
         instance.graph = instance.create_empty_graph_with_namespace_bindings()
 
         for floor in floors_to_load:
             fname = f"officegraph_entities_floor_{floor}.pkl"
-            pickle_path = os.path.join(base_data_dir, "processed", fname)
+            pickle_path = os.path.join(data_dir, "interim", fname)
             try:
                 with open(pickle_path, "rb") as f:
                     data = pickle.load(f)
@@ -272,7 +272,7 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
             floors_str = "_".join(str(f) for f in self.floors_to_load) # turn [7] into "7", or [1,2] into "1_2", etc.
             filename = f"officegraph_entities_floor_{floors_str}.pkl"
         
-        pickle_path = os.path.join(self.base_dir, "processed", filename)
+        pickle_path = os.path.join(self.base_dir, "interim", filename)
 
         # Ensure directory exists
         os.makedirs(os.path.dirname(pickle_path), exist_ok=True)
@@ -328,40 +328,16 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
 
 def main():
     ### Arguments ###
-    parser = argparse.ArgumentParser(description="Load and extract entities from the IoT Office Graph")
-    parser.add_argument(
-        "--base-data-dir", 
-        type=str,
-        default="data",
-        help="Base directory for TTL data files (default: data)"
-    )
-    parser.add_argument(
-        "--floors", 
-        type=int,
-        nargs="+",
-        default=[7],
-        help="List of floor numbers to load (default: 7)"
-    )
-    parser.add_argument(
-        "--no-extract",
-        action="store_true",
-        help="Skip automatic entity extraction"
-    )
-    parser.add_argument(
-        "--no-save-pickle",
-        action="store_true",
-        help="Skip saving extracted entities to pickle file"
-    )
-
-    args = parser.parse_args()
+    from ..config.args import parse_args
+    args = parse_args()
 
     ### Running ###
-    logger.info("Starting OfficeGraph with base directory '%s' and floors %s", args.base_data_dir, args.floors)
+    logger.info("Starting OfficeGraph with base directory '%s' and floors %s", args.data_dir, args.floors)
     
     # Create from RDF
     office_graph = OfficeGraph.from_rdf(
         floors_to_load=args.floors,
-        base_data_dir=args.base_data_dir,
+        data_dir=args.data_dir,
         auto_extract=not args.no_extract
     )
     
