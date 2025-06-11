@@ -188,8 +188,8 @@ def add_base_modelling_args(parser):
     """Parse common data and training arguments."""
     
     # Task-related arguments
-    parser.add_argument('--model', type=str, default='stgcn',
-                      choices=['stgcn', 'astgcn'], 
+    parser.add_argument('--model', type=str, default='STGCN',
+                      choices=['STGCN', 'LightGBM'], 
                       help='Model type')
     parser.add_argument('--task_type', type=str, default='classification',
                       choices=['classification', 'forecasting'], 
@@ -209,7 +209,7 @@ def add_base_modelling_args(parser):
                       help='Number of epochs')
 
 
-def add_stgcn_args(parser):
+def add_STGCN_args(parser):
     """
     STGCN-specific arguments.
     
@@ -253,27 +253,27 @@ def add_stgcn_args(parser):
                       help='Learning rate')
 
 
-def add_tabular_args(parser):
-    # Tabular baseline arguments
-    parser.add_argument('--build_tabular', action='store_false',
-                        help='Build tabular baseline inputs (homogeneous graph method)')
-    
-    parser.add_argument('--build_advanced_tabular', action='store_false',
-                        help='Build advanced tabular dataset with feature engineering')
-    
-    parser.add_argument('--include_datetime_features', action='store_false',
-                        help='Include cyclical datetime features in advanced tabular')
-    
-    parser.add_argument('--include_sensor_aggregates', action='store_false',
-                        help='Include sensor aggregate features in advanced tabular')
-    
-    parser.add_argument('--lag_steps', type=int, nargs='+',
-                        default=[1, 2, 3],
-                        help='Lag steps for time series features')
-    
-    parser.add_argument('--rolling_windows', type=int, nargs='+',
-                        default=[3, 6, 12],
-                        help='Rolling window sizes for time series features')
+def add_LightGBM_args(parser):
+    """
+    Tabular‐specific arguments for LightGBM training/evaluation.
+    """
+    parser.add_argument(
+        '--verbose',
+        action='store_true',
+        help='Enable verbose LightGBM output (shows eval logs)'
+    )
+    parser.add_argument(
+        '--n_estimators',
+        type=int,
+        default=1000,
+        help='Number of boosting rounds'
+    )
+    parser.add_argument(
+        '--early_stopping_rounds',
+        type=int,
+        default=50,
+        help='Rounds of early stopping'
+    )
 
 def parse_args():
     """Parse command-line arguments with model-specific parameters."""
@@ -288,10 +288,10 @@ def parse_args():
     
     # Add model-specific arguments based on the model type
     temp_args, _ = parser.parse_known_args()
-    if temp_args.model == 'stgcn':
-        add_stgcn_args(parser)
-    elif temp_args.model == 'tabular':
-        add_tabular_args(parser)
+    if temp_args.model == 'STGCN':
+        add_STGCN_args(parser)
+    elif temp_args.model == 'LightGBM':
+        add_LightGBM_args(parser)
     
     # Parse all arguments
     args = parser.parse_args()

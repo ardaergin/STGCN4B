@@ -26,7 +26,6 @@ plotly==6.1.0
 
 # Machine learning
 scikit-learn==1.6.1
-lightgbm==4.6.0
 
 # Data specific utilities
 holidays==0.72 # timeseries-related
@@ -34,3 +33,9 @@ shapely==2.1.0 # working with polygons
 pyproj==3.7.1 # Polygons + Geo-coordinates
 ### NOTE: For pyproj, add to .venv/bin/activate:
 ### export PROJ_DATA="/usr/local/share/proj"
+
+# Tabular ML
+lightgbm==4.6.0
+
+# Hyperparameter tuning
+optuna==4.3.0
