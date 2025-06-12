@@ -52,37 +52,79 @@ class LGBMWrapper(BaseEstimator, RegressorMixin, ClassifierMixin):
 
     def __init__(
         self,
+
+        # Core LightGBM parameters
         objective: str = "regression",  # "regression" or "binary"
         metric: str = "mae",            # e.g. "mae", "rmse", "binary_logloss", "auc"
         boosting_type: str = "gbdt",
-        num_leaves: int = 31,
-        learning_rate: float = 0.05,
-        feature_fraction: float = 0.9,
-        bagging_fraction: float = 0.8,
-        bagging_freq: int = 5,
-        random_state: int = 42,
-        verbosity: int = 1,
         n_estimators: int = 1000,
+        random_state: int = 2658918,
+        verbosity: int = 1,
+
+        # Early stopping
         early_stopping_rounds: Optional[int] = 50,
+
+        # Tree structure
+        num_leaves: int = 31,
+        max_depth: int = -1,
+        min_child_samples: int = 20,
+        min_child_weight: float = 1e-3,
+        min_split_gain: float = 0.0,
+
+        # Regularization
+        lambda_l1: float = 0.0,
+        lambda_l2: float = 0.0,
+
+        # Sampling & feature selection
+        feature_fraction: float = 0.9, # or "colsample_bytree"
+        bagging_fraction: float = 0.8, # or "subsample"
+        bagging_freq: int = 5,
+
+        # Learning control
+        learning_rate: float = 0.05,
+        boost_from_average: bool = True,
+        
+        # Optional for Classification
+        is_unbalance: Optional[bool] = True,
+
+        # Extra kwargs
         **kwargs: Any,
     ):
         # Core LightGBM parameters
         self.objective = objective
         self.metric = metric
         self.boosting_type = boosting_type
-        self.num_leaves = num_leaves
-        self.learning_rate = learning_rate
-        self.feature_fraction = feature_fraction
-        self.bagging_fraction = bagging_fraction
-        self.bagging_freq = bagging_freq
+        self.n_estimators = n_estimators
         self.random_state = random_state
         self.verbosity = verbosity
 
-        # Train-time parameters
-        self.n_estimators = n_estimators
+        # Early stopping
         self.early_stopping_rounds = early_stopping_rounds
 
-        # Any extra LightGBM params
+        # Tree structure
+        self.num_leaves = num_leaves
+        self.max_depth = max_depth
+        self.min_child_samples = min_child_samples
+        self.min_child_weight = min_child_weight
+        self.min_split_gain = min_split_gain
+
+        # Regularization
+        self.lambda_l1 = lambda_l1
+        self.lambda_l2 = lambda_l2
+
+        # Sampling & feature selection
+        self.feature_fraction = feature_fraction
+        self.bagging_fraction = bagging_fraction
+        self.bagging_freq = bagging_freq
+
+        # Learning control
+        self.learning_rate = learning_rate
+        self.boost_from_average = boost_from_average
+
+        # Optional for Classification
+        self.is_unbalance = is_unbalance
+
+        # Extra kwargs
         self.kwargs = kwargs
 
         # Attributes set at fit time
@@ -129,20 +171,37 @@ class LGBMWrapper(BaseEstimator, RegressorMixin, ClassifierMixin):
 
         # Common params dict
         params = {
+            # Core task settings
             "objective": self.objective,
             "metric": self.metric,
             "boosting_type": self.boosting_type,
+            "n_estimators": self.n_estimators,
+            "random_state": self.random_state,
+            "verbosity": self.verbosity,
+
+            # Tree structure
             "num_leaves": self.num_leaves,
-            "learning_rate": self.learning_rate,
+            "max_depth": self.max_depth,
+            "min_child_samples": self.min_child_samples,
+            "min_child_weight": self.min_child_weight,
+            "min_split_gain": self.min_split_gain,
+
+            # Regularization
+            "lambda_l1": self.lambda_l1,
+            "lambda_l2": self.lambda_l2,
+
+            # Sampling & feature selection
             "feature_fraction": self.feature_fraction,
             "bagging_fraction": self.bagging_fraction,
             "bagging_freq": self.bagging_freq,
-            "random_state": self.random_state,
-            "verbosity": self.verbosity,
-            "n_estimators": self.n_estimators,
+
+            # Learning control
+            "learning_rate": self.learning_rate,
+            "boost_from_average": self.boost_from_average,
+
             **self.kwargs,
         }
-        
+
         # Add early_stopping_rounds to params if provided
         if self.early_stopping_rounds is not None:
             params["early_stopping_rounds"] = self.early_stopping_rounds
@@ -150,6 +209,7 @@ class LGBMWrapper(BaseEstimator, RegressorMixin, ClassifierMixin):
         # Choose appropriate LGBM class
         if self.objective.startswith("binary") or self.objective in ("binary",):
             ModelClass = LGBMClassifier
+            params["is_unbalance"] = self.is_unbalance
         else:
             ModelClass = LGBMRegressor
         self.model_ = ModelClass(**params)
@@ -368,7 +428,7 @@ class LightGBMTuner:
     def __init__(
         self,
         dataset: TabularDataset,
-        random_state: int = 42,
+        random_state: int = 2658918,
     ):
         if not hasattr(dataset, "task"):
             raise ValueError("Call dataset.set_mode(...) before tuning")
@@ -383,30 +443,51 @@ class LightGBMTuner:
         self.study: Optional[optuna.Study] = None
 
     def _objective(self, trial: optuna.Trial) -> float:
-        # sample hyperparameters
+        # Sample hyperparameters
         params = {
+            # Core task settings
+            "objective": None,
+            "metric": None,
+            "boosting_type": "gbdt",
+            "n_estimators": trial.suggest_int("n_estimators", 100, 2000),
+            "random_state": self.random_state,
+            "verbosity": -1,
+
+            # Tree structure
             "num_leaves": trial.suggest_int("num_leaves", 20, 200),
-            "learning_rate": trial.suggest_loguniform("learning_rate", 1e-3, 1e-1),
+            "max_depth": trial.suggest_int("max_depth", 3, 16),
+            "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
+            "min_child_weight": trial.suggest_float("min_child_weight", 1e-3, 10.0),
+            "min_split_gain": trial.suggest_float("min_split_gain", 0.0, 1.0),
+
+            # Regularization
+            "lambda_l1": trial.suggest_float("lambda_l1", 0.0, 10.0),
+            "lambda_l2": trial.suggest_float("lambda_l2", 0.0, 10.0),
+
+            # Sampling & feature selection
             "feature_fraction": trial.suggest_float("feature_fraction", 0.5, 1.0),
             "bagging_fraction": trial.suggest_float("bagging_fraction", 0.5, 1.0),
             "bagging_freq": trial.suggest_int("bagging_freq", 0, 10),
-            "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
-            "random_state": self.random_state,
-            "verbosity": -1,  # Keep quiet during tuning
+
+            # Learning control
+            "learning_rate": trial.suggest_float("learning_rate", 1e-3, 1e-1, log=True),
+            "boost_from_average": True,
         }
+
         # choose objective & metric
         if self.task == "classification":
             params["objective"] = "binary"
             params["metric"] = "binary_logloss"
+            params["is_unbalance"] = "is_unbalance"
         else:
             params["objective"] = "regression"
             params["metric"] = "mae"
 
         # split
-        X_train = self.X.iloc[self.train_idx]
-        y_train = self.y[self.train_idx]
-        X_val = self.X.iloc[self.val_idx]
-        y_val = self.y[self.val_idx]
+        X_train = self.dataset.X_train
+        y_train = self.dataset.y_train
+        X_val = self.dataset.X_val
+        y_val = self.dataset.y_val
 
         # train
         model = LGBMWrapper(**params)
@@ -415,7 +496,6 @@ class LightGBMTuner:
         # evaluate
         preds = model.predict(X_val)
         if self.task == "classification":
-            # use logloss as objective to minimize?
             probs = model.predict_proba(X_val)
             return log_loss(y_val, probs)
         else:
