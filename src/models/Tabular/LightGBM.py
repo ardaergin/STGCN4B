@@ -18,7 +18,8 @@ from sklearn.metrics import (
 # Regression Metrics
 from sklearn.metrics import (
     mean_absolute_error,
-    root_mean_squared_error)
+    root_mean_squared_error,
+    r2_score)
 import optuna
 from sklearn.metrics import log_loss
 
@@ -329,8 +330,13 @@ class LightGBMTrainer:
             # regression metrics
             rmse = root_mean_squared_error(y_test, preds)
             mae  = mean_absolute_error(y_test, preds)
-            logger.info(f"[Trainer] Eval (reg) -- rmse={rmse:.4f}, mae={mae:.4f}")
-            return {"rmse": rmse, "mae": mae}
+            r2   = r2_score(y_test, preds)
+            logger.info(f"[Trainer] Eval (reg) -- rmse={rmse:.4f}, mae={mae:.4f}, r2={r2:.4f}")
+            return {
+                "rmse": rmse,
+                "mae":  mae,
+                "r2":   r2,
+            }
 
     def save_model(self, filename: str = "model.joblib") -> str:
         path = os.path.join(self.output_dir, filename)
@@ -458,8 +464,7 @@ def main():
     """
     from ...config.args import parse_args
     args = parse_args()
-    args.task_type = 'forecasting'
-        
+    
     # Load the data
     input_path = os.path.join(args.data_dir, "processed", "tabular_dataset.joblib")
     dataset = TabularDataset.load(input_path)
