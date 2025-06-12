@@ -22,7 +22,7 @@ from sklearn.metrics import (
 import optuna
 from sklearn.metrics import log_loss
 
-from ...graph.builder.tabular import TabularDataset
+from ...data.Loader.tabular_dataset import TabularDataset
 
 # Logging setup
 import logging, sys
