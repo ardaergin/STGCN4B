@@ -462,7 +462,6 @@ def main():
         
     # Load the data
     input_path = os.path.join(args.data_dir, "processed", "tabular_dataset.joblib")
-    from src.graph.builder.tabular import TabularDataset
     dataset = TabularDataset.load(input_path)
     
     if args.task_type == 'classification':
