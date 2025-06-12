@@ -556,22 +556,43 @@ def main():
     logger.info(f"Saved raw evals_result to {evals_json}")
 
     # Also, plotting per-iteration curves for every split/metric
-    for split_name, metrics_dict in er.items():
-        for metric_name, values in metrics_dict.items():
-            fig, ax = plt.subplots(figsize=(6,4))
-            ax.plot(values, label=split_name)
-            ax.set_xlabel("Iteration")
-            ax.set_ylabel(metric_name)
-            ax.set_title(f"{split_name} {metric_name} per iteration")
-            ax.legend()
-            fig.tight_layout()
-            curve_png = os.path.join(
-                args.output_dir,
-                f"{split_name}_{metric_name}_curve.png"
+    metric_names = set()
+    for split_dict in er.values():
+        metric_names.update(split_dict.keys())
+
+    for metric_name in metric_names:
+        fig, ax = plt.subplots(figsize=(12, 8))
+        for split_name, split_dict in er.items():
+            values = split_dict.get(metric_name)
+            if values is None:
+                continue
+            # Draw each point explicitly
+            ax.scatter(
+                range(len(values)), values,
+                s=20,        # marker size
+                alpha=0.7,
+                label=f"{split_name}"
             )
-            fig.savefig(curve_png)
-            plt.close(fig)
-            logger.info(f"Saved curve plot: {curve_png}")
+            # Optionally connect them with light lines
+            ax.plot(
+                range(len(values)), values,
+                linestyle='-', linewidth=1, alpha=0.4
+            )
+
+        ax.set_xlabel("Iteration")
+        ax.set_ylabel(metric_name)
+        ax.set_title(f"{metric_name.capitalize()} per Iteration (actual values)")
+        ax.grid(True, linestyle="--", alpha=0.6)
+        ax.legend()
+        plt.tight_layout()
+
+        curve_path = os.path.join(
+            args.output_dir,
+            f"{metric_name}_actual_curve.png"
+        )
+        fig.savefig(curve_path, dpi=300, bbox_inches="tight")
+        plt.close(fig)
+        logger.info(f"Saved actual‐value plot: {curve_path}")
 
     logger.info("\n" + "=" * 20)
     logger.info("All tests passed! Module is working correctly.")
