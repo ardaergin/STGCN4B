@@ -70,10 +70,14 @@ class TabularDataset:
         self.y_val = self.y[self.val_idx]
         self.y_test = self.y[self.test_idx]
 
-        # Excluding the consumption-related columns and "bucket_idx"
+        # Excluding the consumption-related columns & time-related columns (and "bucket_idx" as usual)
+        ## Reason:
+        ## - consumption is not a part of the original evaluation in the OfficeGraph paper
+        ## - time features are direct leakage for the workhour classification
         cols = self.feature_df.columns
         consumption_columns = [col for col in cols if "consumption" in col]
-        exclude_cols = consumption_columns + ['bucket_idx']
+        time_columns = ['hour_sin', 'hour_cos', 'dow_sin', 'dow_cos']
+        exclude_cols = consumption_columns + time_columns + ['bucket_idx']
         feature_cols = [col for col in cols if col not in exclude_cols]
         self.X = self.feature_df[feature_cols].astype(np.float32).reset_index(drop=True)
 
