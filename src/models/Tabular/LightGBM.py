@@ -1,4 +1,5 @@
 import os
+import json
 import joblib
 import numpy as np
 import pandas as pd
@@ -14,14 +15,22 @@ from sklearn.metrics import (
     roc_auc_score,
     precision_score,
     recall_score,
-    f1_score)
+    f1_score,
+    log_loss,
+    confusion_matrix, 
+    ConfusionMatrixDisplay)
 # Regression Metrics
 from sklearn.metrics import (
     mean_absolute_error,
     root_mean_squared_error,
     r2_score)
 import optuna
-from sklearn.metrics import log_loss
+
+# Plotting
+import matplotlib
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+
 
 from ...data.Loader.tabular_dataset import TabularDataset
 
@@ -89,6 +98,7 @@ class LGBMWrapper(BaseEstimator, RegressorMixin, ClassifierMixin):
         eval_set: Optional[
             List[Tuple[Union[pd.DataFrame, np.ndarray], Union[pd.Series, np.ndarray]]]
         ] = None,
+        eval_names: Optional[List[str]] = None,
         callbacks: Optional[List[Any]] = None,
         verbose: bool = True,
     ) -> "LGBMWrapper":
@@ -142,28 +152,23 @@ class LGBMWrapper(BaseEstimator, RegressorMixin, ClassifierMixin):
             ModelClass = LGBMClassifier
         else:
             ModelClass = LGBMRegressor
-
-        # Instantiate model
         self.model_ = ModelClass(**params)
 
-        # Prepare fit arguments - handle verbose through callbacks
+        # Build fit_kwargs
         fit_kwargs: Dict[str, Any] = {}
-        
-        # Handle callbacks
-        final_callbacks = []
-        if callbacks is not None:
-            final_callbacks.extend(callbacks)
-        
-        # Add default callbacks if none provided and verbose is requested
-        if verbose and eval_set and not callbacks:
-            final_callbacks.extend([
-                log_evaluation(period=5),
-                early_stopping(stopping_rounds=self.early_stopping_rounds or 50)
-            ])
-        
-        if final_callbacks:
-            fit_kwargs["callbacks"] = final_callbacks
+        if eval_names is not None:
+            fit_kwargs["eval_names"] = eval_names
 
+        if callbacks is not None:
+            fit_kwargs["callbacks"] = callbacks
+        elif verbose and eval_set:
+            # default logging + early stopping
+            fit_kwargs["callbacks"] = [
+                log_evaluation(period=5),
+                early_stopping(stopping_rounds=self.early_stopping_rounds or 50,
+                               first_metric_only=True),
+            ]
+        
         # Fit underlying model
         self.model_.fit(X, y, eval_set=eval_set, **fit_kwargs)
 
@@ -278,7 +283,8 @@ class LightGBMTrainer:
         self.model.fit(
             X_train,
             y_train,
-            eval_set=[(X_val, y_val)],
+            eval_set=[ (X_train, y_train), (X_val, y_val) ],
+            eval_names=["train","valid"],
             callbacks=callbacks,
             verbose=verbose,
         )
@@ -499,10 +505,74 @@ def main():
     metrics = trainer.evaluate(dataset)
     logger.info(f"Evaluation successful! Metrics: {metrics}")
     
-    # Save model
+
+    ############### Save ############### 
+    # Model
     model_path = trainer.save_model("test_model.joblib")
     logger.info(f"✓ Model saved to: {model_path}")
     
+    # Metrics
+    metrics_path = os.path.join(args.output_dir, "metrics.json")
+    with open(metrics_path, "w") as f:
+        json.dump(metrics, f, indent=2)
+    logger.info(f"Metrics written to {metrics_path}")
+
+    # Feature importance
+    fi = model.get_feature_importance()
+    fi_csv = os.path.join(args.output_dir, "feature_importance.csv")
+    fi.to_csv(fi_csv, index=False)
+    logger.info(f"Feature importances saved to {fi_csv}")
+
+    # Ploting top N
+    top_n = 20
+    fig, ax = plt.subplots(figsize=(8,6))
+    fi.head(top_n).plot.barh(x="feature", y="importance", ax=ax, legend=False)
+    ax.invert_yaxis()
+    ax.set_title("Top Feature Importances")
+    fig.tight_layout()
+    fi_plot = os.path.join(args.output_dir, "feature_importance.png")
+    fig.savefig(fi_plot)
+    plt.close(fig)
+    logger.info(f"Feature‐importance plot saved to {fi_plot}")
+
+    # Confusion matrix (classification only)
+    if dataset.task == "classification":
+        preds = model.predict(dataset.X_test)
+        cm = confusion_matrix(dataset.y_test, preds)
+        disp = ConfusionMatrixDisplay(cm, display_labels=["off-hour","work-hour"])
+        fig, ax = plt.subplots(figsize=(5,5))
+        disp.plot(ax=ax, cmap="Blues")
+        fig.tight_layout()
+        cm_plot = os.path.join(args.output_dir, "confusion_matrix.png")
+        fig.savefig(cm_plot)
+        plt.close(fig)
+        logger.info(f"Confusion matrix saved to {cm_plot}")
+
+    # Raw evaluation results
+    er = model.evals_result_
+    evals_json = os.path.join(args.output_dir, "evals_result.json")
+    with open(evals_json, "w") as f:
+        json.dump(er, f, indent=2)
+    logger.info(f"Saved raw evals_result to {evals_json}")
+
+    # Also, plotting per-iteration curves for every split/metric
+    for split_name, metrics_dict in er.items():
+        for metric_name, values in metrics_dict.items():
+            fig, ax = plt.subplots(figsize=(6,4))
+            ax.plot(values, label=split_name)
+            ax.set_xlabel("Iteration")
+            ax.set_ylabel(metric_name)
+            ax.set_title(f"{split_name} {metric_name} per iteration")
+            ax.legend()
+            fig.tight_layout()
+            curve_png = os.path.join(
+                args.output_dir,
+                f"{split_name}_{metric_name}_curve.png"
+            )
+            fig.savefig(curve_png)
+            plt.close(fig)
+            logger.info(f"Saved curve plot: {curve_png}")
+
     logger.info("\n" + "=" * 20)
     logger.info("All tests passed! Module is working correctly.")
 
