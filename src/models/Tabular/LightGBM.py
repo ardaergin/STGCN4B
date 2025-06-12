@@ -202,7 +202,7 @@ class LGBMWrapper(BaseEstimator, RegressorMixin, ClassifierMixin):
     def get_feature_importance(self, importance_type: str = "gain") -> pd.DataFrame:
         if self.model_ is None:
             raise ValueError("Model has not been fitted yet")
-        imp = self.model_.feature_importance(importance_type=importance_type)
+        imp = self.model_.booster_.feature_importance(importance_type=importance_type)
         features = (
             self.feature_names_
             if self.feature_names_ is not None
