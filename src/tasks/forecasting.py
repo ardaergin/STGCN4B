@@ -1,7 +1,4 @@
-# src/tasks/forecasting.py
-
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 
 import os
 import sys
@@ -11,7 +8,6 @@ import torch
 from torch_geometric.utils import dense_to_sparse
 import matplotlib.pyplot as plt
 from sklearn.metrics import mean_squared_error, mean_absolute_error, r2_score
-import scipy.sparse as sp
 
 # Set up logging
 logging.basicConfig(
@@ -22,15 +18,20 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from ..config.args import parse_args
-from ..data.load_and_split import load_and_split_data
+from ..data.Loader.graph_loader import load_data
 from ..utils.graph_utils import calc_gso_edge
-from ..models.stgcn import EarlyStopping
+from ..utils.early_stopping import EarlyStopping
 
 def setup_model(args, data):
     """Set up the STGCN model and training components."""
     logger.info("Setting up model for forecasting...")
     device   = data['device']
-    n_vertex = data['n_vertex']
+    logger.info(f"Device: {device}")
+    n_nodes = data['n_nodes']
+    logger.info(f"Number of nodes: {n_nodes}")
+    n_features = data["n_features"]
+    logger.info(f"Number of features: {n_features}")
+
     
     if args.adjacency_type == "weighted" and args.gso_type not in ("rw_norm_adj", "rw_renorm_adj"):
         raise ValueError(
@@ -41,9 +42,12 @@ def setup_model(args, data):
     # Build a single static GSO
     static_A = data["adjacency_matrix"]
     edge_index, edge_weight = dense_to_sparse(static_A)
+    logger.info("edge_index shape:", edge_index.shape)
+    logger.info("edge_weight shape:", edge_weight.shape)
+
     static_gso = calc_gso_edge(
         edge_index, edge_weight, 
-        num_nodes           = n_vertex,
+        num_nodes           = n_nodes,
         gso_type            = args.gso_type,
         device              = device,
     )
@@ -60,7 +64,7 @@ def setup_model(args, data):
             edge_index, edge_weight = dense_to_sparse(adjacency_matrix)
             G = calc_gso_edge(
                 edge_index, edge_weight, 
-                num_nodes           = n_vertex,
+                num_nodes           = n_nodes,
                 gso_type            = args.gso_type,
                 device              = device,
             )
@@ -75,11 +79,13 @@ def setup_model(args, data):
     else:
         raise ValueError(f"Unknown gso_mode: {args.gso_mode!r}. Must be 'static' or 'dynamic'.")
     
-    logger.info(f"Input shape check - Feature dimension: {data['n_features']}")
-    logger.info(f"Sample batch shape from dataloader: {next(iter(data['train_loader']))[0].shape}")
+    batch_sample = next(iter(data['train_loader']))
+    X_batch_list, y_batch = batch_sample[0], batch_sample[1] # Unpack first two elements, ignore the mask
+    logger.info(f"Sample input shape (X[0]): {X_batch_list[0].shape}  # shape=(batch_size, n_nodes, n_features)")
+    logger.info(f"Sample target shape: {y_batch.shape}")
     
     blocks = []
-    blocks.append([data["n_features"]])  # Input features
+    blocks.append([n_features])  # Input features
     logger.info(f"Model first block input dimension: {blocks[0][0]}")
 
     # Add intermediate blocks
@@ -93,25 +99,21 @@ def setup_model(args, data):
     elif Ko > 0:
         blocks.append([128, 128])
         
-    # Output is a single continuous value
-    blocks.append([1])  
+    blocks.append([1])
     
     # Create model based on graph convolution type
     if args.graph_conv_type == 'cheb_graph_conv':
-        from ..models.stgcn.models import STGCNChebGraphConv as Model
+        from ..models.STGCN4B.homogeneous.models import STGCNChebGraphConv as Model
     else:
-        from ..models.stgcn.models import STGCNGraphConv as Model
-
+        from ..models.STGCN4B.homogeneous.models import STGCNGraphConv as Model
+    
     model = Model(
         args     = args,
         blocks   = blocks,
-        n_vertex = n_vertex,
+        n_vertex = n_nodes,
         gso      = gso,
-        task_type= 'forecasting',
+        task_type= args.task_type,
     ).to(device)
-
-    # Set loss function for regression
-    criterion = torch.nn.MSELoss()
     
     # Set optimizer
     if args.optimizer == 'adam':
@@ -129,10 +131,10 @@ def setup_model(args, data):
     
     logger.info(f"Model setup complete with {sum(p.numel() for p in model.parameters())} parameters")
     
-    return model, criterion, optimizer, scheduler, early_stopping
+    return model, optimizer, scheduler, early_stopping
 
 
-def train_model(args, model, criterion, optimizer, scheduler, early_stopping, train_loader, val_loader):
+def train_model(args, model, optimizer, scheduler, early_stopping, train_loader, val_loader):
     """Train the STGCN model for forecasting."""
     logger.info("Starting model training...")
     
@@ -143,79 +145,105 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping, tr
     for epoch in range(args.epochs):
         # Training phase
         model.train()
-        train_loss = 0.0
+        running_loss = 0.0
+        total_valid_points_train = 0
         
-        for X_batch, y_batch in train_loader:
+        for X_batch, y_batch, mask_batch in train_loader:
             # Zero the gradients
             optimizer.zero_grad()
-            
+
+            # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
+            x = torch.stack(X_batch, dim=1).permute(0, 3, 1, 2)
+
             # Forward pass
-            outputs = model(X_batch)
+            outputs = model(x)
             
-            # Ensure shapes match for loss calculation
-            if len(outputs.shape) == 1:
-                outputs = outputs.unsqueeze(1)  # [B] -> [B, 1]
-            if len(y_batch.shape) == 1:
-                y_batch = y_batch.unsqueeze(1)  # [B] -> [B, 1]
-            
-            # Compute loss
-            loss = criterion(outputs, y_batch.float())
-            
-            # Backward pass and optimize
+            if args.task_type == "consumption_forecast":
+                preds = outputs.view(-1)                # (B, 1, 1, 1) or (B, 1) -> (B)
+                targets = y_batch.view(-1).float()      # (B, 1) -> (B)
+                mask = mask_batch.view(-1)              # (B, 1) -> (B)
+            else: # args.task_type == "measurement_forecast"
+                preds   = outputs                       # (B, n_pred, N) -> No change
+                targets = y_batch.float()               # (B, n_pred, N) -> No change, just ensuring float type
+                mask = mask_batch                       # (B, n_pred, N) -> No change
+
+            # Manually calculate squared error and apply mask
+            error = preds - targets
+            masked_squared_error = (error ** 2) * mask
+            loss = torch.sum(masked_squared_error)
+        
+            # Update running loss and count of valid points
+            running_loss += loss.item()
+            total_valid_points_train += torch.sum(mask).item()
+
+            # Backward pass
             loss.backward()
             optimizer.step()
-            
-            train_loss += loss.item() * X_batch.size(0)
-        
+                            
         # Average training loss for the epoch
-        train_loss = train_loss / len(train_loader.dataset)
-        train_losses.append(train_loss)
-        
+        epoch_train_loss = running_loss / total_valid_points_train if total_valid_points_train > 0 else 0.0
+        train_losses.append(epoch_train_loss)
+                
         # Validation phase
         model.eval()
-        val_loss = 0.0
+        running_val_loss = 0.0
+        total_valid_points_val = 0
         all_preds = []
         all_targets = []
         
         with torch.no_grad():
-            for X_batch, y_batch in val_loader:
+            for X_batch, y_batch, mask_batch in val_loader:
+
+                # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
+                x = torch.stack(X_batch, dim=1).permute(0, 3, 1, 2)
+
                 # Forward pass
-                outputs = model(X_batch)
+                outputs = model(x)
                 
-                # Ensure shapes match for loss calculation
-                if len(outputs.shape) == 1:
-                    outputs = outputs.unsqueeze(1)  # [B] -> [B, 1]
-                if len(y_batch.shape) == 1:
-                    y_batch = y_batch.unsqueeze(1)  # [B] -> [B, 1]
-                
-                # Compute loss
-                loss = criterion(outputs, y_batch.float())
-                val_loss += loss.item() * X_batch.size(0)
-                
-                # Store predictions and targets for metrics calculation
-                all_preds.extend(outputs.cpu().numpy())
-                all_targets.extend(y_batch.cpu().numpy())
+                if args.task_type == "consumption_forecast":
+                    preds = outputs.view(-1)                # (B, 1, 1, 1) or (B, 1) -> (B)
+                    targets = y_batch.view(-1).float()      # (B, 1) -> (B)
+                    mask = mask_batch.view(-1)              # (B, 1) -> (B)
+                else: # args.task_type == "measurement_forecast"
+                    preds   = outputs                       # (B, n_pred, N) -> No change
+                    targets = y_batch.float()               # (B, n_pred, N) -> No change, just ensuring float type
+                    mask = mask_batch                       # (B, n_pred, N) -> No change
+
+                error = preds - targets
+                masked_squared_error = (error ** 2) * mask
+                loss_val = torch.sum(masked_squared_error)
+
+                running_val_loss += loss_val.item()
+                total_valid_points_val += torch.sum(mask).item()
+
+                # Collect only valid predictions and targets for R² score
+                valid_preds = preds[mask_batch == 1]
+                valid_targets = targets[mask_batch == 1]
+                all_preds.extend(valid_preds.cpu().tolist())
+                all_targets.extend(valid_targets.cpu().tolist())
+
+        # Average validation loss (MSE) for the epoch
+        epoch_val_loss = running_val_loss / total_valid_points_val if total_valid_points_val > 0 else 0.0
+        val_losses.append(epoch_val_loss)
         
-        # Average validation loss for the epoch
-        val_loss = val_loss / len(val_loader.dataset)
-        val_losses.append(val_loss)
-        
-        # Calculate validation R² score
-        val_r2 = r2_score(all_targets, all_preds)
-        val_r2_scores.append(val_r2)
+        # Calculate validation R² score on the collected (and correctly masked) data
+        epoch_r2 = r2_score(all_targets, all_preds) if len(all_targets) > 0 else 0.0
+        val_r2_scores.append(epoch_r2)
         
         # Update learning rate
         scheduler.step()
         
         # Log epoch results
-        logger.info(f"Epoch [{epoch+1}/{args.epochs}] - "
-                    f"Train Loss: {train_loss:.4f}, "
-                    f"Val Loss: {val_loss:.4f}, "
-                    f"Val R²: {val_r2:.4f}, "
-                    f"LR: {scheduler.get_last_lr()[0]:.6f}")
+        logger.info(
+            f"Epoch [{epoch+1}/{args.epochs}]  "
+            f"Train Loss: {epoch_train_loss:.4f}  "
+            f"Val Loss: {epoch_val_loss:.4f}  "
+            f"Val R²: {epoch_r2:.4f}  "
+            f"LR: {scheduler.get_last_lr()[0]:.6f}"
+        )
         
         # Check early stopping
-        early_stopping(val_loss, model)
+        early_stopping(epoch_val_loss, model)
         if early_stopping.early_stop:
             logger.info("Early stopping triggered")
             break
@@ -233,69 +261,72 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping, tr
     return model, history
 
 
-def evaluate_model(model, criterion, test_loader):
+def evaluate_model(args, model, test_loader):
     """Evaluate the trained model on the test set."""
     logger.info("Evaluating model on test set...")
     
     model.eval()
-    test_loss = 0.0
     all_preds = []
     all_targets = []
     
     with torch.no_grad():
-        for X_batch, y_batch in test_loader:
+        for X_batch, y_batch, mask_batch in test_loader:
+
+            # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
+            x = torch.stack(X_batch, dim=1).permute(0, 3, 1, 2)
+
             # Forward pass
-            outputs = model(X_batch)
+            outputs = model(x)
             
-            # Ensure shapes match for loss calculation
-            if len(outputs.shape) == 1:
-                outputs = outputs.unsqueeze(1)  # [B] -> [B, 1]
-            if len(y_batch.shape) == 1:
-                y_batch = y_batch.unsqueeze(1)  # [B] -> [B, 1]
-            
-            # Compute loss
-            loss = criterion(outputs, y_batch.float())
-            test_loss += loss.item() * X_batch.size(0)
-            
-            # Store predictions and targets for metrics calculation
-            all_preds.extend(outputs.cpu().numpy())
-            all_targets.extend(y_batch.cpu().numpy())
-    
-    # Reshape for metric calculations
-    all_preds = np.array(all_preds).reshape(-1)
-    all_targets = np.array(all_targets).reshape(-1)
-    
-    # Average test loss
-    test_loss = test_loss / len(test_loader.dataset)
-    
-    # Calculate metrics
-    rmse = np.sqrt(mean_squared_error(all_targets, all_preds))
-    mae = mean_absolute_error(all_targets, all_preds)
-    r2 = r2_score(all_targets, all_preds)
-    
-    # Calculate MAPE (Mean Absolute Percentage Error)
-    # Avoid division by zero
-    mask = all_targets != 0
-    mape = np.mean(np.abs((all_targets[mask] - all_preds[mask]) / all_targets[mask])) * 100
-    
-    metrics = {
-        'test_loss': test_loss,
-        'rmse': rmse,
-        'mae': mae,
-        'r2': r2,
-        'mape': mape,
-        'predictions': all_preds,
-        'targets': all_targets
+            if args.task_type == "consumption_forecast":
+                preds = outputs.view(-1)                # (B, 1, 1, 1) or (B, 1) -> (B)
+                targets = y_batch.view(-1).float()      # (B, 1) -> (B)
+                mask = mask_batch.view(-1)              # (B, 1) -> (B)
+            else: # args.task_type == "measurement_forecast"
+                preds   = outputs                       # (B, n_pred, N) -> No change
+                targets = y_batch.float()               # (B, n_pred, N) -> No change, just ensuring float type
+                mask = mask_batch                       # (B, n_pred, N) -> No change
+
+            # Collect only valid predictions and targets for R² score
+            valid_preds = preds[mask_batch == 1]
+            valid_targets = targets[mask_batch == 1]
+            all_preds.extend(valid_preds.cpu().tolist())
+            all_targets.extend(valid_targets.cpu().tolist())
+
+
+    all_preds_np = np.array(all_preds)
+    all_targets_np = np.array(all_targets)
+
+    if all_targets_np.size == 0:
+        logger.warning("No valid targets in test set to evaluate.")
+        return {"test_loss": 0, "rmse": 0, "mae": 0, "r2": 0, "mape": 0, 
+                "predictions": np.array([]), "targets": np.array([])}
+
+    # MSE
+    mse = mean_squared_error(all_targets_np, all_preds_np)
+    # RMSE
+    rmse = np.sqrt(mse)
+    # MAE
+    mae = mean_absolute_error(all_targets_np, all_preds_np)
+    # R²
+    r2 = r2_score(all_targets_np, all_preds_np)
+    # MAPE
+    mape_mask = all_targets_np != 0
+    mape = np.mean(np.abs((all_targets_np[mape_mask] - all_preds_np[mape_mask]) / all_targets_np[mape_mask])) * 100 if np.sum(mape_mask) > 0 else 0.0
+
+    logger.info(
+        f"Evaluation Metrics (on valid data): MSE: {mse:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}, R²: {r2:.4f}, MAPE: {mape:.2f}%"
+    )
+
+    return {
+        "test_loss": mse, 
+        "rmse": rmse, 
+        "mae": mae, 
+        "r2": r2, 
+        "mape": mape,
+        "predictions": all_preds_np, 
+        "targets": all_targets_np,
     }
-
-    logger.info(f"Test Loss: {test_loss:.4f}")
-    logger.info(f"RMSE: {rmse:.4f}")
-    logger.info(f"MAE: {mae:.4f}")
-    logger.info(f"R²: {r2:.4f}")
-    logger.info(f"MAPE: {mape:.2f}%")
-    
-    return metrics
-
 
 def plot_results(args, history, metrics):
     """Plot and save training curves and evaluation results."""
@@ -383,31 +414,27 @@ def main():
     """Main function to run the STGCN model for forecasting."""
     # Parse arguments
     args = parse_args()
-    args.task_type = 'forecasting'
     
     # Set random seed
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(args.seed)
-    
-    # Ensure task type is set to forecasting
-    args.task_type = 'forecasting'
-    
+        
     # Prepare data
-    data = load_and_split_data(args)
+    data = load_data(args)
     
     # Setup model
-    model, criterion, optimizer, scheduler, early_stopping = setup_model(args, data)
+    model, optimizer, scheduler, early_stopping = setup_model(args, data)
     
     # Train model
     model, history = train_model(
-        args, model, criterion, optimizer, scheduler, early_stopping,
+        args, model, optimizer, scheduler, early_stopping,
         data['train_loader'], data['val_loader']
     )
     
     # Evaluate model
-    metrics = evaluate_model(model, criterion, data['test_loader'])
+    metrics = evaluate_model(args, model, data['test_loader'])
     
     # Plot results
     plot_results(args, history, metrics)

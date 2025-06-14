@@ -152,6 +152,57 @@ class HomogGraphBuilderMixin:
         self.room_feature_df = wide
         return wide
     
+    def get_targets_and_mask_for_a_variable(self, variable:str = "Temperature", stat: str = "mean"):
+        """
+        Pivots `room_feature_df` to produce two matrices aligned with `adj_matrix_room_uris`:
+          1. Target values: Pivoted from the "{variable}_{stat}" column (e.g., "Temperature_mean").
+          2. Mask: Pivoted from the "{variable}_has_measurement" column, indicating which
+             (time, room) pairs have valid ground-truth data.
+
+        Stores:
+          - self.measurement_values: (T, R) numpy array of target values.
+          - self.measurement_mask:   (T, R) numpy array of 1s (has data) and 0s (no data).
+        """
+        if not hasattr(self, "room_feature_df"):
+            raise ValueError("room_feature_df not found. Run build_room_feature_df() first.")
+        df = self.room_feature_df
+
+        # 1. Create the target values matrix
+        value_column = f"{variable}_{stat}"
+        value_pivot = (
+            df.pivot(index="bucket_idx",
+                     columns="room_uri",
+                     values=value_column)
+            .sort_index(axis=1, key=lambda cols: cols.map(self.adj_matrix_room_uris.index))
+            .fillna(0.0) # For rooms/times without measurements, target is 0.
+        )
+        self.measurement_values = value_pivot.values
+        logger.info(f"Generated measurement_values matrix of shape {self.measurement_values.shape}")
+
+
+        # 2. Create the mask matrix from the 'has_measurement' column
+        mask_column = f"{variable}_has_measurement"
+        if mask_column not in df.columns:
+            raise ValueError(f"Mask column '{mask_column}' not found in room_feature_df. "
+                             "Ensure `build_room_feature_df` creates it.")
+
+        mask_pivot = (
+            df.pivot(index="bucket_idx",
+                     columns="room_uri",
+                     values=mask_column)
+            .sort_index(axis=1, key=lambda cols: cols.map(self.adj_matrix_room_uris.index))
+            .fillna(0.0) # Rooms with no entries at all get a mask value of 0.
+        )
+        
+        # Ensure the mask is strictly binary (0.0 or 1.0)
+        self.measurement_mask = (mask_pivot.values > 0).astype(float)
+        logger.info(f"Generated measurement_mask matrix of shape {self.measurement_mask.shape}")
+        
+        num_masked_points = np.sum(self.measurement_mask)
+        logger.info(f"The mask identifies {num_masked_points:.0f} valid data points for loss calculation.")
+
+        return None
+
     def incorporate_weather_as_an_outside_room(self) -> None:
         """
         1) Takes `weather_data`, which is a dict mapping bucket_idx → {feature_name: value}.
@@ -345,23 +396,43 @@ class HomogGraphBuilderMixin:
         """        
         This method stacks, for each bucket_idx, the rows of `room_feature_df`
         (excluding 'room_uri' and 'bucket_idx') in the order given by
-        `self.adj_matrix_room_uris`, resulting in a tensor of shape (T, R, F).
+        `self.adj_matrix_room_uris`, concatenates specified static room attributes,
+        and returns matrices of shape (T, R, F_static + F_temporal).
         Stores:
           - self.feature_matrices: Dict[bucket_idx → np.ndarray(shape=(R, F))]
-          - self.feature_names: List[str] = temporal column names
+          - self.feature_names: List[str] = static + temporal column names
           - self.room_uris: List[URIRef] = self.adj_matrix_room_uris
+          - self.static_feature_count: int
+          - self.temporal_feature_count: int
         """
         if not hasattr(self, "room_feature_df"):
             raise ValueError("room_feature_df not found. Run build_room_feature_df() first.")
         if not hasattr(self, "adj_matrix_room_uris"):
             raise ValueError("adj_matrix_room_uris not found. Run build_combined_room_to_room_adjacency() first.")
-        
         df = self.room_feature_df
-        temporal_cols = [c for c in df.columns if c not in {"room_uri", "bucket_idx"}]
-        T = len(self.time_buckets)
         R = len(self.adj_matrix_room_uris)
-        F = len(temporal_cols)
+        T = len(self.time_buckets)
 
+        # Features: temporal
+        temporal_cols = [c for c in df.columns if c not in {"room_uri", "bucket_idx"}]
+        F_temporal = len(temporal_cols)
+        self.temporal_feature_count = F_temporal
+
+        # Features: static
+        # - Building an (R × S) array in the same room order
+        static_feature_names = self.static_room_attributes
+        F_static = len(static_feature_names)
+        # Build static matrix by pulling each attribute from office_graph.rooms
+        static_mat = np.zeros((R, F_static), dtype=float)
+        for i, room_uri in enumerate(self.adj_matrix_room_uris):
+            room_obj = self.office_graph.rooms.get(room_uri)
+            if room_obj is None:
+                raise KeyError(f"Room {room_uri!r} not found in office_graph.rooms")
+            for j, feat in enumerate(static_feature_names):
+                val = getattr(room_obj, feat, None)
+                static_mat[i, j] = float(val) if val is not None else 0.0
+        self.static_feature_count = F_static
+        
         # Initialize empty container
         feat_dict: Dict[int, np.ndarray] = {}
 
@@ -369,32 +440,34 @@ class HomogGraphBuilderMixin:
         grouped = df.groupby("bucket_idx")
 
         # Logging setup
-        total_buckets = T
-        log_interval = max(1, total_buckets // 20)
+        log_interval = max(1, T // 20)
 
+        # Graph snapshot loop
         for bucket_idx in range(T):
-            if bucket_idx % log_interval == 0 or bucket_idx == total_buckets - 1:
-                logger.info(f"Processing feature matrix for bucket {bucket_idx + 1}/{total_buckets}")
-            # Create an (R × F) array
-            mat = np.zeros((R, F), dtype=float)
+            if bucket_idx % log_interval == 0 or bucket_idx == T - 1:
+                logger.info(f"Processing feature matrix for bucket {bucket_idx + 1}/{T}")
+
+            # Temporal matrix
+            mat_temporal = np.zeros((R, F_temporal), dtype=float)
             if bucket_idx in grouped.groups:
                 sub_df = grouped.get_group(bucket_idx).set_index("room_uri")
                 for i, room_uri in enumerate(self.adj_matrix_room_uris):
                     if room_uri in sub_df.index:
-                        mat[i, :] = sub_df.loc[room_uri, temporal_cols].values.astype(float)
-                    # else leave zeros
-            # else leave all zeros if no row for this bucket
+                        mat_temporal[i, :] = sub_df.loc[room_uri, temporal_cols].values.astype(float)
+
+            # Concatenate static + temporal: result shape (R, F_static + F_temporal)
+            mat = np.concatenate([static_mat, mat_temporal], axis=1)
             feat_dict[bucket_idx] = mat
 
         self.feature_matrices = feat_dict
-        self.feature_names = temporal_cols
+        self.feature_names = static_feature_names + temporal_cols
         self.room_uris = list(self.adj_matrix_room_uris)
-        self.static_feature_count = 0  # if purely temporal, otherwise set externally
-        self.temporal_feature_count = F
 
         logger.info(
-            f"Generated feature_matrices for {T} time buckets: "
-            f"rooms={R}, features per room={F}"
+            f"Generated feature_matrices for {T} time buckets:\n"
+            f"- rooms={R}\n"
+            f"- Temporal features per room={F_temporal}\n"
+            f"- Spatial features per room={F_static}"
         )
         return None
 
@@ -423,15 +496,26 @@ class HomogGraphBuilderMixin:
             "property_types": self.used_property_types,
             "feature_matrices": self.feature_matrices,
             "feature_names": self.feature_names,
+            "static_feature_count": self.static_feature_count,
+            "temporal_feature_count": self.temporal_feature_count,
+            "n_features": self.static_feature_count + self.temporal_feature_count,
             "time_indices": time_indices,
             "time_buckets": self.time_buckets,
             "train_idx": self.train_indices,
             "val_idx":   self.val_indices,
             "test_idx":  self.test_indices,
-            "workhour_labels": self.workhour_labels,
-            "consumption_values": self.consumption_values
+            "blocks": self.blocks
         }
-            
+        if self.build_mode == "measurement_forecast":
+            if not hasattr(self, 'measurement_values') or not hasattr(self, 'measurement_mask'):
+                 raise ValueError("measurement_values and/or measurement_mask not found. "
+                                  "Run get_targets_and_mask_for_a_variable() first.")
+            stgcn_input["measurement_values"] = self.measurement_values
+            stgcn_input["measurement_mask"] = self.measurement_mask
+        else:
+            stgcn_input["consumption_values"] = self.consumption_values
+            stgcn_input["workhour_labels"] = self.workhour_labels
+
         logger.info("STGCN input preparation complete")
         return stgcn_input
 
@@ -466,24 +550,35 @@ class HomogGraphBuilderMixin:
                                                                    dtype=torch.float32, 
                                                                    device=device)
         
-        # Classification task
-        torch_input["workhour_labels"] = torch.tensor(stgcn_input["workhour_labels"], 
-                                                    dtype=torch.long,
-                                                    device=device)
-        # Forecasting task        
-        torch_input["consumption_values"] = torch.tensor(stgcn_input["consumption_values"],
-                                                        dtype=torch.float32,
+        # Target(s)
+        if self.build_mode == "measurement_forecast":
+            torch_input["measurement_values"] = torch.tensor(stgcn_input["measurement_values"],
+                                                            dtype=torch.float32,
+                                                            device=device)
+            torch_input["measurement_mask"] = torch.tensor(stgcn_input["measurement_mask"],
+                                                            dtype=torch.float32,
+                                                            device=device)
+        else:
+            torch_input["workhour_labels"] = torch.tensor(stgcn_input["workhour_labels"], 
+                                                        dtype=torch.long,
                                                         device=device)
+            torch_input["consumption_values"] = torch.tensor(stgcn_input["consumption_values"],
+                                                            dtype=torch.float32,
+                                                            device=device)
 
         # Copy non-tensor data
         torch_input["room_uris"] = stgcn_input["room_uris"]
         torch_input["property_types"] = stgcn_input["property_types"]
         torch_input["feature_names"] = stgcn_input["feature_names"]
+        torch_input["static_feature_count"] = stgcn_input["static_feature_count"]
+        torch_input["temporal_feature_count"] = stgcn_input["temporal_feature_count"]
+        torch_input["n_features"] = stgcn_input["n_features"]
         torch_input["time_indices"] = stgcn_input["time_indices"]
         torch_input["time_buckets"] = stgcn_input["time_buckets"]
         torch_input["train_idx"] = stgcn_input["train_idx"]
         torch_input["val_idx"] = stgcn_input["val_idx"]
         torch_input["test_idx"] = stgcn_input["test_idx"]
+        torch_input["blocks"] = stgcn_input["blocks"]
 
         logger.info("Converted data to PyTorch tensors on device: " + str(device))
         return torch_input

@@ -56,6 +56,16 @@ class OfficeGraphBuilder(
             # 'polygons_doc.width', 'polygons_doc.height', 'polygons_doc.centroid',
             # 'polygons_doc.compactness', 'polygons_doc.rect_fit', 'polygons_doc.aspect_ratio', 'polygons_doc.perimeter'
             ]
+        
+    def set_build_mode(self, mode: str):
+        """
+        Options:
+            - "workhour_classification"
+            - "consumption_forecast"
+            - "measurement_forecast"
+        """
+        self.build_mode = mode
+        return None
 
 def main():
     # Argument parser
@@ -66,6 +76,7 @@ def main():
     from ..officegraph import OfficeGraph
     office_graph = OfficeGraph.from_pickles(floors_to_load = args.floors)
     builder = OfficeGraphBuilder(office_graph)
+    builder.set_build_mode(mode=args.task_type)
 
     # ============================
     # TEMPORAL SETUP
@@ -204,6 +215,9 @@ def main():
         elif args.graph_type == "homogeneous":
             builder.build_room_feature_df()
 
+            if args.task_type == "measurement_forecast":
+                builder.get_targets_and_mask_for_a_variable(args.measurement_type)
+
             # Incorporate weather data as outside space if specified
             if not args.skip_incorporating_weather:
                 logger.info("Integrating outside node with weather data into homogeneous graph...")
@@ -218,7 +232,11 @@ def main():
             homogeneous_stgcn_input = builder.prepare_homo_stgcn_input()
             torch_tensors = builder.convert_homo_to_torch_tensors(homogeneous_stgcn_input)
         
-        file_name = f"torch_input_{args.adjacency_type}_{args.interval}_{args.graph_type}.pt"
+        if args.task_type == "measurement_forecast":
+            file_name = f"torch_input_{args.adjacency_type}_{args.interval}_{args.graph_type}_{args.measurement_type}.pt"
+        else:
+            file_name = f"torch_input_{args.adjacency_type}_{args.interval}_{args.graph_type}.pt"
+        
         full_output_path = os.path.join("data/processed", file_name)
         torch.save(torch_tensors, full_output_path)
         logger.info(f"Saved tensors to {full_output_path} with default parameters.")

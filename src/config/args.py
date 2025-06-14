@@ -148,7 +148,7 @@ def add_OfficeGraph_args(parser):
     parser.add_argument('--data_to_build', type=str, default='graph',
                     choices=['graph', 'tabular'],
                     help='Graph type')
-
+    
     parser.add_argument('--graph_type', type=str, default='homogeneous',
                       choices=['heterogeneous', 'homogeneous'],
                       help='Graph type')
@@ -191,9 +191,12 @@ def add_base_modelling_args(parser):
     parser.add_argument('--model', type=str, default='STGCN',
                       choices=['STGCN', 'LightGBM'], 
                       help='Model type')
-    parser.add_argument('--task_type', type=str, default='classification',
-                      choices=['classification', 'forecasting'], 
+    parser.add_argument('--task_type', type=str, default='consumption_forecast',
+                      choices=['workhour_classification', 'consumption_forecast', 'measurement_forecast'], 
                       help='Task type')
+    parser.add_argument('--measurement_type', type=str, default='Temperature',
+                      choices=['Temperature', 'Humidity', 'CO2Level'],
+                      help='If task_type is "measurement_forecast", then, which measurement type to forecast.')
         
     # Device specification
     parser.add_argument('--device', type=str,
@@ -217,10 +220,10 @@ def add_STGCN_args(parser):
     (Yu et al., 2018)
     """
     # STGCN specific parameters
-    parser.add_argument('--n_his', type=int, default=24, 
+    parser.add_argument('--n_his', type=int, default=24,
                       help='Number of historical time steps to use')
-    parser.add_argument('--n_pred', type=int, default=3, 
-                        help='the number of time interval for predcition, default as 3')
+    parser.add_argument('--n_pred', type=int, default=1,
+                        help='the number of time interval for predcition, default as 1')
     parser.add_argument('--time_intvl', type=int, default=5)
     parser.add_argument('--Kt', type=int, default=3, 
                       help='Kernel size in temporal convolution')
