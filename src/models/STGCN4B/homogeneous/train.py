@@ -438,11 +438,15 @@ def main():
     plotter.process()
 
     # Save model
-    torch.save(model.state_dict(), os.path.join(args.output_dir, f'stgcn_{args.task_type}_model.pt'))
+    if args.task_type == "measurement_forecast":
+        fname = f"stgcn_model_{args.adjacency_type}_{args.interval}_{args.graph_type}_{args.measurement_type}.pt"
+    else:
+        fname = f"torch_input_{args.adjacency_type}_{args.interval}_{args.graph_type}.pt"
+
+    torch.save(model.state_dict(), os.path.join(args.output_dir, fname))
     
     logger.info("Done!")
 
 
 if __name__ == "__main__":
     main()
-

@@ -44,19 +44,38 @@ cd $HOME/eSTGNN
 # Create directories on scratch space
 mkdir -p $TMPDIR/data/processed
 
-# Copy data to scratch (fast local disk)
-echo "Copying data to scratch space..."
-cp $HOME/eSTGNN/data/processed/torch_input_binary.pt \
-   $HOME/eSTGNN/data/processed/torch_input_weighted.pt \
-   $TMPDIR/data/processed/
 
+##### Dynamically copying the required file to scratch #####
+echo "Determining required data file..."
+REQUIRED_FILE=$(srun python -m src.utils.get_data_filename "$@")
 
-# Check if data copy succeeded
-if [ ! -f "$TMPDIR/data/processed/torch_input_binary.pt" ] || \ 
-   [ ! -f "$TMPDIR/data/processed/torch_input_weighted.pt" ]; then
-  echo "ERROR: Failed to copy one or more data files"
-  exit 1
+# Checking if it returned a filename
+if [ -z "$REQUIRED_FILE" ]; then
+    echo "ERROR: Helper script could not determine a filename from the arguments."
+    exit 1
 fi
+
+# Define the full source and destination paths
+SOURCE_PATH="$HOME/eSTGNN/data/processed/$REQUIRED_FILE"
+DEST_PATH="$TMPDIR/data/processed/$REQUIRED_FILE"
+
+# Checking if the required file actually exists before trying to copy
+if [ ! -f "$SOURCE_PATH" ]; then
+    echo "ERROR: Required data file not found at: $SOURCE_PATH"
+    exit 1
+fi
+
+# Copying the required file to scratch
+echo "Copying required file '$REQUIRED_FILE' to scratch space..."
+cp "$SOURCE_PATH" "$DEST_PATH"
+
+# Final check
+if [ ! -f "$DEST_PATH" ]; then
+    echo "ERROR: Failed to copy '$REQUIRED_FILE' to scratch space."
+    exit 1
+fi
+##### Dynamically copying the required file to scratch #####
+
 
 # Set directories
 export DATA_DIR=$TMPDIR/data
@@ -65,10 +84,11 @@ echo "Starting training with data from $DATA_DIR"
 echo "Results will be saved to $OUTPUT_DIR"
 
 # Run script pointing to scratch
-srun python -m src.tasks.classification \
+srun python -m src.models.STGCN4B.homogeneous.train \
   --data_dir $DATA_DIR \
   --output_dir $OUTPUT_DIR \
-  --enable_cuda
+  --enable_cuda \
+  "$@"
 
 echo "Cleaning up scratch space..."
 rm -rf $TMPDIR/data
