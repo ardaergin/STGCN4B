@@ -48,8 +48,8 @@ def setup_model(args, data):
     # Build a single static GSO
     static_A = data["adjacency_matrix"]
     edge_index, edge_weight = dense_to_sparse(static_A)
-    logger.info("edge_index shape:", edge_index.shape)
-    logger.info("edge_weight shape:", edge_weight.shape)
+    logger.info(f"edge_index shape: {edge_index.shape}")
+    logger.info(f"edge_weight shape: {edge_weight.shape}")
 
     static_gso = calc_gso_edge(
         edge_index, edge_weight, 
@@ -308,7 +308,7 @@ def evaluate_model(args, model, test_loader, threshold=0.5):
             if args.task_type == "workhour_classification":
                 probs = torch.sigmoid(outputs.squeeze())
                 all_probs.extend(probs.cpu().tolist())
-                all_targets.extend(y_batch.cpu().tolist())
+                all_targets.extend(y_batch.squeeze().cpu().tolist())
             else:
                 preds, targets, mask = get_preds_targets_mask(outputs, y_batch, mask_batch, args.task_type)
                 # Collect only valid predictions and targets for R² score
