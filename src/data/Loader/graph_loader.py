@@ -121,7 +121,12 @@ def homo_collate(batch):
     
     return X_batch_list, y_batch, mask_batch
 
-def load_data(args):
+def load_data(args,
+              *, # for safety
+              train_block_ids: List[int],
+              val_block_ids:   List[int],
+              test_block_ids:  List[int]
+              ):
     """
     Load pre‐processed homogeneous STGCN input and build train/val/test DataLoaders
     with block‐aware temporal windowing.
@@ -197,21 +202,12 @@ def load_data(args):
         )
 
     # Partition into train/val/test block‐lists
-    train_block_lists: List[List[int]] = []
-    val_block_lists: List[List[int]] = []
-    test_block_lists: List[List[int]] = []
+    def _blocks(ids):
+        return [ full_blocks_dict[b]["bucket_indices"] for b in ids ]
 
-    for block_id, info in full_blocks_dict.items():
-        btype = info["block_type"]
-        bidxs = info["bucket_indices"]
-        if btype == "train":
-            train_block_lists.append(bidxs)
-        elif btype == "val":
-            val_block_lists.append(bidxs)
-        elif btype == "test":
-            test_block_lists.append(bidxs)
-        else:
-            raise ValueError(f"Unknown block_type='{btype}' for block_id={block_id}")
+    train_block_lists: List[List[int]] = _blocks(train_block_ids)
+    val_block_lists: List[List[int]]   = _blocks(val_block_ids)  if val_block_ids   is not None else []
+    test_block_lists: List[List[int]]  = _blocks(test_block_ids) if test_block_ids  is not None else []
 
     logger.info(
         f"Using {len(train_block_lists)} train-block(s), "
@@ -228,14 +224,16 @@ def load_data(args):
         args.n_pred,
         mask=mask
     )
-    val_ds = BlockAwareSTGCNDataset(
-        torch_input["feature_matrices"],
-        val_block_lists,
-        targets,
-        args.n_his,
-        args.n_pred,
-        mask=mask
-    )
+    val_ds = None
+    if val_block_lists:
+        val_ds = BlockAwareSTGCNDataset(
+            torch_input["feature_matrices"],
+            val_block_lists,
+            targets,
+            args.n_his,
+            args.n_pred,
+            mask=mask
+        )
     test_ds = BlockAwareSTGCNDataset(
         torch_input["feature_matrices"],
         test_block_lists,
@@ -257,12 +255,14 @@ def load_data(args):
         shuffle=False,
         collate_fn=homo_collate,
     )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=windows_per_block,
-        shuffle=False,
-        collate_fn=homo_collate,
-    )
+    val_loader = None
+    if val_ds:
+        val_loader = DataLoader(
+            val_ds,
+            batch_size=windows_per_block,
+            shuffle=False,
+            collate_fn=homo_collate,
+        )
     test_loader = DataLoader(
         test_ds,
         batch_size=windows_per_block,
@@ -285,10 +285,6 @@ def load_data(args):
         # Feature metadata
         "feature_names": torch_input["feature_names"],
         "room_uris": torch_input["room_uris"],
-        # Split indices
-        "train_idx": torch_input["train_idx"],
-        "val_idx": torch_input["val_idx"],
-        "test_idx": torch_input["test_idx"],
         # Targets
         "targets": targets,
         # Number of nodes & features

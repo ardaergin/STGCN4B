@@ -156,11 +156,12 @@ def setup_model(args, data):
     return model, criterion, optimizer, scheduler, early_stopping
 
 
-def train_model(args, model, criterion, optimizer, scheduler, early_stopping, train_loader, val_loader):
+def train_model(args, model, criterion, optimizer, scheduler, early_stopping, train_loader, val_loader = None):
     """Train the STGCN model for forecasting."""
     logger.info("Starting model training...")
     
     train_losses = []
+    # (Optional)
     val_losses = []
     val_metrics = []  # For R2 score or accuracy
     
@@ -202,88 +203,106 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping, tr
         epoch_train_loss = running_loss / total_valid_points_train if total_valid_points_train > 0 else 0.0
         train_losses.append(epoch_train_loss)
                 
-        # Validation phase
-        model.eval()
-        running_val_loss = 0.0
-        total_valid_points_val = 0
-        all_preds = []
-        all_targets = []
-        
-        with torch.no_grad():
-            for X_batch, y_batch, mask_batch in val_loader:
+        # Validation phase (Optional)
+        if val_loader is not None:
+            model.eval()
+            running_val_loss = 0.0
+            total_valid_points_val = 0
+            all_preds = []
+            all_targets = []
+            
+            with torch.no_grad():
+                for X_batch, y_batch, mask_batch in val_loader:
 
-                # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
-                x = torch.stack(X_batch, dim=1).permute(0, 3, 1, 2)
+                    # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
+                    x = torch.stack(X_batch, dim=1).permute(0, 3, 1, 2)
 
-                # Forward pass
-                outputs = model(x)
+                    # Forward pass
+                    outputs = model(x)
 
-                if args.task_type == "workhour_classification":
-                    loss_val = criterion(outputs.squeeze(), y_batch.squeeze().float())
-                    running_val_loss += loss_val.item() * x.size(0)
-                    total_valid_points_val += x.size(0)
-                    preds = (torch.sigmoid(outputs.squeeze()) > 0.5).int()
-                    all_preds.extend(preds.cpu().tolist())
-                    all_targets.extend(y_batch.cpu().tolist())
-                else: # Forecasting tasks
-                    preds, targets, mask = get_preds_targets_mask(outputs, y_batch, mask_batch, args.task_type)
-                    # Manually calculate squared error and apply mask
-                    error = preds - targets
-                    masked_squared_error = (error ** 2) * mask
-                    loss_val = torch.sum(masked_squared_error)
-                    # Update running loss and count of valid points
-                    running_val_loss += loss_val.item()
-                    total_valid_points_val += torch.sum(mask).item()
-                    # Collect only valid predictions and targets for R² score
-                    valid_preds = preds[mask == 1]
-                    valid_targets = targets[mask == 1]
-                    all_preds.extend(valid_preds.cpu().tolist())
-                    all_targets.extend(valid_targets.cpu().tolist())
+                    if args.task_type == "workhour_classification":
+                        loss_val = criterion(outputs.squeeze(), y_batch.squeeze().float())
+                        running_val_loss += loss_val.item() * x.size(0)
+                        total_valid_points_val += x.size(0)
+                        preds = (torch.sigmoid(outputs.squeeze()) > 0.5).int()
+                        all_preds.extend(preds.cpu().tolist())
+                        all_targets.extend(y_batch.cpu().tolist())
+                    else: # Forecasting tasks
+                        preds, targets, mask = get_preds_targets_mask(outputs, y_batch, mask_batch, args.task_type)
+                        # Manually calculate squared error and apply mask
+                        error = preds - targets
+                        masked_squared_error = (error ** 2) * mask
+                        loss_val = torch.sum(masked_squared_error)
+                        # Update running loss and count of valid points
+                        running_val_loss += loss_val.item()
+                        total_valid_points_val += torch.sum(mask).item()
+                        # Collect only valid predictions and targets for R² score
+                        valid_preds = preds[mask == 1]
+                        valid_targets = targets[mask == 1]
+                        all_preds.extend(valid_preds.cpu().tolist())
+                        all_targets.extend(valid_targets.cpu().tolist())
 
-        # Average validation loss (MSE) for the epoch
-        epoch_val_loss = running_val_loss / total_valid_points_val if total_valid_points_val > 0 else 0.0
-        val_losses.append(epoch_val_loss)
-        
-        if args.task_type == "workhour_classification":
-            epoch_metric = accuracy_score(all_targets, all_preds) if len(all_targets) > 0 else 0.0
-            val_metrics.append(epoch_metric)
-            metric_name, metric_val = "Val Accuracy", f"{epoch_metric:.4f}"
-        else: # Forecasting tasks
-            epoch_metric = r2_score(all_targets, all_preds) if len(all_targets) > 0 else 0.0
-            val_metrics.append(epoch_metric)
-            metric_name, metric_val = "Val R²", f"{epoch_metric:.4f}"
+            # Average validation loss (MSE) for the epoch
+            epoch_val_loss = running_val_loss / total_valid_points_val if total_valid_points_val > 0 else 0.0
+            val_losses.append(epoch_val_loss)
+            
+            if args.task_type == "workhour_classification":
+                epoch_metric = accuracy_score(all_targets, all_preds) if len(all_targets) > 0 else 0.0
+                val_metrics.append(epoch_metric)
+                metric_name, metric_val = "Val Accuracy", f"{epoch_metric:.4f}"
+            else: # Forecasting tasks
+                epoch_metric = r2_score(all_targets, all_preds) if len(all_targets) > 0 else 0.0
+                val_metrics.append(epoch_metric)
+                metric_name, metric_val = "Val R²", f"{epoch_metric:.4f}"
+
+        else: # No validation
+             pass
         
         # Update learning rate
         scheduler.step()
         
         # Log epoch results
-        logger.info(
-            f"Epoch [{epoch+1}/{args.epochs}]  "
-            f"Train Loss: {epoch_train_loss:.4f}  "
-            f"Val Loss: {epoch_val_loss:.4f}  "
-            f"{metric_name}: {metric_val}  "
-            f"LR: {scheduler.get_last_lr()[0]:.6f}"
-        )
-        
+        if val_loader is not None:
+            logger.info(
+                f"Epoch [{epoch+1}/{args.epochs}]  "
+                f"Train Loss: {epoch_train_loss:.4f}  "
+                f"Val Loss: {epoch_val_loss:.4f}  "
+                f"{metric_name}: {metric_val}  "
+                f"LR: {scheduler.get_last_lr()[0]:.6f}"
+            )
+        else:
+            logger.info(
+                f"Epoch [{epoch+1}/{args.epochs}]  "
+                f"Train Loss: {epoch_train_loss:.4f}  "
+                f"LR: {scheduler.get_last_lr()[0]:.6f}"
+            )
+
         # Check early stopping
-        early_stopping(epoch_val_loss, model)
-        if early_stopping.early_stop:
-            logger.info("Early stopping triggered")
-            break
-    
+        if val_loader is not None:
+            early_stopping(epoch_val_loss, model)
+            if early_stopping.early_stop:
+                logger.info("Early stopping triggered")
+                break
+        
     # Load the best model
-    model.load_state_dict(early_stopping.best_model_state)
+    if val_loader is not None:
+        model.load_state_dict(early_stopping.best_model_state)
     
     # Return training history
-    history = {
-        'train_loss': train_losses,
-        'val_loss': val_losses,
-    }
-    if args.task_type == "workhour_classification":
-        history['val_accuracy'] = val_metrics
+    if val_loader is not None:
+        history = {
+            'train_loss': train_losses,
+            'val_loss': val_losses,
+        }
+        if args.task_type == "workhour_classification":
+            history['val_accuracy'] = val_metrics
+        else:
+            history['val_r2'] = val_metrics
     else:
-        history['val_r2'] = val_metrics
-
+        history = {
+            'train_loss': train_losses,
+        }
+    
     return model, history
 
 
