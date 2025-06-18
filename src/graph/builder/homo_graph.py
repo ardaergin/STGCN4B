@@ -36,10 +36,7 @@ class HomogGraphBuilderMixin:
         Aggregation rules when multiple devices of the same property live in one room:
             - "mean", "std", "max", "min"  →  take the mean across devices
             - "count", "has_measurement"   →  take the sum across devices
-
-        After pivoting, any missing (room, bucket) pairs are filled with 0.0 so that
-        every room appears in every bucket, even if it had no measurements.
-
+        
         Returns:
             A pandas.DataFrame with columns:
             ['room_uri', 'bucket_idx',
@@ -113,9 +110,8 @@ class HomogGraphBuilderMixin:
             flat_columns.append(f"{prop}_{stat}")
         wide.columns = flat_columns
 
-        # 6) Reset index so that 'room_uri' and 'bucket_idx' return as ordinary columns,
-        #    then fill any NaNs with 0.0.
-        wide = wide.reset_index().fillna(0.0)
+        # 6) Reset index so that 'room_uri' and 'bucket_idx' return as ordinary columns.
+        wide = wide.reset_index()
         logger.info(f"After flattening, wide table has {wide.shape[0]} rows and {wide.shape[1]} columns (including 'room_uri' and 'bucket_idx').")
 
         # 7) Re-index to ensure every room × every bucket appears.
@@ -133,7 +129,6 @@ class HomogGraphBuilderMixin:
             .set_index(["room_uri", "bucket_idx"])  # make these two levels the index
             .reindex(full_index)                    # add missing (room, bucket) pairs
             .reset_index()                           # restore columns 'room_uri' & 'bucket_idx'
-            .fillna(0.0)                             # fill any new NaNs with 0.0
         )
         logger.info(f"Reindexed to full (room, bucket) grid: {len(all_rooms)} rooms × {len(all_buckets)} buckets = {len(wide)} total rows.")
 
@@ -174,7 +169,6 @@ class HomogGraphBuilderMixin:
                      columns="room_uri",
                      values=value_column)
             .sort_index(axis=1, key=lambda cols: cols.map(self.adj_matrix_room_uris.index))
-            .fillna(0.0) # For rooms/times without measurements, target is 0.
         )
         self.measurement_values = value_pivot.values
         logger.info(f"Generated measurement_values matrix of shape {self.measurement_values.shape}")
@@ -501,9 +495,6 @@ class HomogGraphBuilderMixin:
             "n_features": self.static_feature_count + self.temporal_feature_count,
             "time_indices": time_indices,
             "time_buckets": self.time_buckets,
-            "train_idx": self.train_indices,
-            "val_idx":   self.val_indices,
-            "test_idx":  self.test_indices,
             "blocks": self.blocks
         }
         if self.build_mode == "measurement_forecast":
@@ -575,9 +566,6 @@ class HomogGraphBuilderMixin:
         torch_input["n_features"] = stgcn_input["n_features"]
         torch_input["time_indices"] = stgcn_input["time_indices"]
         torch_input["time_buckets"] = stgcn_input["time_buckets"]
-        torch_input["train_idx"] = stgcn_input["train_idx"]
-        torch_input["val_idx"] = stgcn_input["val_idx"]
-        torch_input["test_idx"] = stgcn_input["test_idx"]
         torch_input["blocks"] = stgcn_input["blocks"]
 
         logger.info("Converted data to PyTorch tensors on device: " + str(device))

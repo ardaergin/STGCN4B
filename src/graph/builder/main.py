@@ -91,21 +91,11 @@ def main():
         use_sundays=args.use_sundays
     )
     # Split time buckets
-    train_blocks, val_blocks, test_blocks = args.split
-    builder.split_time_buckets(
-        train_blocks=train_blocks,
-        val_blocks=val_blocks,
-        test_blocks=test_blocks,
-        seed=args.seed
-    )
+    builder.build_weekly_blocks()
 
     # Get weather data
     logger.info("Loading and processing weather data...")
-    builder.get_weather_data(
-        weather_csv_path=args.weather_csv_path,
-        normalize=True,
-        scaler=args.weather_scaler
-    )
+    builder.get_weather_data(weather_csv_path=args.weather_csv_path)
     
     # Get classification labels
     logger.info("Generating work hour classification labels...")
@@ -113,24 +103,14 @@ def main():
     
     # Get forecasting values
     logger.info("Loading and processing consumption data...")
-    builder.get_forecasting_values(
-        consumption_dir=args.consumption_dir,
-        normalize=True,
-        scaler=args.consumption_scaler
-    )
+    builder.get_forecasting_values(consumption_dir=args.consumption_dir)
 
     # Processing measurements
     logger.info("Processing measurements...")
     
     # Bucket measurements by device and property
-    builder.bucket_measurements_by_device_property(drop_sum=args.drop_sum)
-    
-    # Normalize bucketed measurements
-    builder.normalize_bucketed_measurements(
-        drop_sum=args.drop_sum,
-        scaler=args.measurement_scaler
-    )
-    
+    builder.bucket_measurements_by_device_property()
+        
     # Build full feature DataFrame
     builder.build_full_feature_df()
 

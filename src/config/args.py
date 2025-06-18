@@ -69,13 +69,7 @@ def add_OfficeGraph_args(parser):
                         help='Frequency of time buckets as a pandas offset string e.g., ("15min", "30min", "1h", "2h")')
     parser.add_argument('--use_sundays', action='store_true',
                         help='Include Sundays in the time blocks (default: False)')
-
-    # Data splitting
-    parser.add_argument("--split", type=int, nargs=3,
-                        metavar=("TRAIN", "VAL", "TEST"),
-                        default=[3, 1, 1],
-                        help="train/val/test split in number of blocks (default: 3 1 1)")
-
+    
     # Classification arguments
     parser.add_argument('--country_code', type=str,
                         default='NL',
@@ -86,29 +80,11 @@ def add_OfficeGraph_args(parser):
                         default='data/consumption',
                         help='Directory containing consumption data (for forecasting)')
     
-    parser.add_argument('--consumption_scaler', type=str,
-                        choices=['standard', 'robust', 'minmax'],
-                        default='robust',
-                        help='Scaler type for consumption data normalization')
-
     # Weather data arguments
     parser.add_argument('--weather_csv_path', type=str,
                         default="data/weather/hourly_weather_2022_2023.csv",
                         help='Path to weather data CSV file')
-    
-    parser.add_argument('--weather_scaler', type=str,
-                        choices=['standard', 'robust', 'minmax'],
-                        default='robust',
-                        help='Scaler type for weather data normalization')
-    
-    # Measurement processing arguments
-    parser.add_argument('--measurement_scaler', type=str,
-                        choices=['standard', 'robust', 'minmax'],
-                        default='robust',
-                        help='Scaler type for measurement normalization')
-    parser.add_argument('--drop_sum', action='store_true',
-                        help='Drop sum feature from measurements')
-    
+        
     ##############################
     #  Spatial Builder
     ##############################
