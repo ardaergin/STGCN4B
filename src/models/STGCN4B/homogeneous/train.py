@@ -24,7 +24,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from ....config.args import parse_args
-from ....data.Loader.graph_loader import load_data
+from .graph_loader import load_data
 from ....utils.graph_utils import calc_gso_edge
 from ....utils.early_stopping import EarlyStopping
 

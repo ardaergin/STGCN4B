@@ -13,6 +13,4 @@ __all__ = [
     # Weather
     "weather",
     "openmeteo_api",
-    # Torch data loading and splitting
-    "load_and_split"
 ]
