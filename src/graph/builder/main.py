@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 # Importing mixin classes
 from .temporal import TemporalBuilderMixin
+from .temporal_viz import TemporalVisualizerMixin
 from .spatial import SpatialBuilderMixin
 from .spatial_viz import SpatialVisualizerMixin
 from .homo_graph import HomogGraphBuilderMixin
@@ -23,6 +24,7 @@ class OfficeGraphBuilder(
     SpatialBuilderMixin,
     SpatialVisualizerMixin,
     TemporalBuilderMixin,
+    TemporalVisualizerMixin,
     HomogGraphBuilderMixin,
     HeteroGraphBuilderMixin,
     TabularBuilderMixin):
