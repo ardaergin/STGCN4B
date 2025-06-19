@@ -122,88 +122,24 @@ def homo_collate(batch):
     return X_batch_list, y_batch, mask_batch
 
 def load_data(args,
+              blocks: Dict[int, Dict[str, List[int]]],
+              feature_matrices,
+              targets,
+              mask,
               *, # for safety
               train_block_ids: List[int],
               val_block_ids:   List[int],
               test_block_ids:  List[int]
               ):
     """
-    Load pre‐processed homogeneous STGCN input and build train/val/test DataLoaders
-    with block‐aware temporal windowing.
+    Builds train/val/test DataLoaders from pre-loaded, in-memory data tensors.
 
-    Expects `args` to have:
-      - data_dir: base path
-      - interval: str (e.g., "1h")
-      - enable_cuda: bool
-      - task_type: 'classification' or 'forecasting'
-      - n_his: int
-      - n_pred: int
-
-    Returns a dict containing:
-      - device
-      - time_buckets
-      - train_loader, val_loader, test_loader
-      - adjacency_matrix
-      - dynamic_adjacencies (or None)
-      - feature_names, room_uris
-      - train_idx, val_idx, test_idx
-      - workhour_labels, consumption_values
-      - (optionally) any other metadata needed downstream
-    """
-    # 1) Load saved torch input for homogeneous graph
-    if args.task_type == "measurement_forecast":
-        fname = f"torch_input_{args.adjacency_type}_{args.interval}_{args.graph_type}_{args.measurement_type}.pt"
-    else:
-        fname = f"torch_input_{args.adjacency_type}_{args.interval}_{args.graph_type}.pt"
-    path = os.path.join(args.data_dir, "processed", fname)
-    logger.info(f"Loading homogeneous STGCN input from {path}")
-    torch_input = torch.load(path, map_location="cpu")
-
-    # 2) Device setup
-    device = (
-        torch.device("cuda")
-        if args.enable_cuda and torch.cuda.is_available()
-        else torch.device("cpu")
-    )
-    logger.info(f"Using device: {device}")
-
-    # 3) Move adjacency matrices to device
-    torch_input["adjacency_matrix"] = torch_input["adjacency_matrix"].to(device)
-    if torch_input.get("dynamic_adjacencies") is not None:
-        for step, mat in torch_input["dynamic_adjacencies"].items():
-            torch_input["dynamic_adjacencies"][step] = mat.to(device)
-
-    # 4) Move feature matrices to device
-    #    Each entry torch_input["feature_matrices"][t] is a tensor (R×F)
-    for t, mat in torch_input["feature_matrices"].items():
-        torch_input["feature_matrices"][t] = mat.to(device)
-
-    # 5A) Select targets based on task, move to device
-    if args.task_type == "measurement_forecast":
-        targets = torch_input["measurement_values"].to(device)  # shape (T, N)
-    elif args.task_type == "consumption_forecast":
-        targets = torch_input["consumption_values"].to(device) # shape (T, 1)
-    elif args.task_type == "workhour_classification":
-        targets = torch_input["workhour_labels"].to(device) # shape (T, )
-
-    # 5B) Mask creation
-    mask = torch_input.get("measurement_mask") 
-    if mask is None:
-        logger.info("No measurement mask found. Creating a default mask of all ones.")
-        mask = torch.ones_like(targets, dtype=torch.float32)
-    mask = mask.to(device)
-
-    # 6) Extract the precomputed blocks dict from torch_input
-    full_blocks_dict: Dict[int, Dict[str, List[int]]] = torch_input.get("blocks", None)
-    if full_blocks_dict is None:
-        raise KeyError(
-            "'blocks' not found in torch_input. Expected "
-            "torch_input['blocks'] = { block_id: { 'block_type': str, 'bucket_indices': [..] }, ... }"
-        )
-
-    # Partition into train/val/test block‐lists
+    This function is designed for efficiency, avoiding disk I/O by operating
+    on data that is already loaded.
+    """    
+    # 1) Partition into train/val/test block‐lists
     def _blocks(ids):
-        return [ full_blocks_dict[b]["bucket_indices"] for b in ids ]
+        return [ blocks[b]["bucket_indices"] for b in ids ]
 
     train_block_lists: List[List[int]] = _blocks(train_block_ids)
     val_block_lists: List[List[int]]   = _blocks(val_block_ids)  if val_block_ids   is not None else []
@@ -215,9 +151,9 @@ def load_data(args,
         f"{len(test_block_lists)} test-block(s)"
     )
 
-    # 7) Construct Datasets
+    # 2) Construct Datasets
     train_ds = BlockAwareSTGCNDataset(
-        torch_input["feature_matrices"],
+        feature_matrices,
         train_block_lists,
         targets,
         args.n_his,
@@ -227,7 +163,7 @@ def load_data(args,
     val_ds = None
     if val_block_lists:
         val_ds = BlockAwareSTGCNDataset(
-            torch_input["feature_matrices"],
+            feature_matrices,
             val_block_lists,
             targets,
             args.n_his,
@@ -235,7 +171,7 @@ def load_data(args,
             mask=mask
         )
     test_ds = BlockAwareSTGCNDataset(
-        torch_input["feature_matrices"],
+        feature_matrices,
         test_block_lists,
         targets,
         args.n_his,
@@ -243,12 +179,12 @@ def load_data(args,
         mask=mask
     )
 
-    # 8) Determine windows_per_block for batch_size
-    #    We pick the first train block to determine the number of windows
+    # 3) Determine windows_per_block for batch_size
+    #    We can pick the first train block to determine the number of windows
     first_block_len = len(train_ds.blocks[0])
     windows_per_block = first_block_len - (args.n_his + args.n_pred) + 1
 
-    # 9) Create DataLoaders (no shuffling; windows are pre‐segmented per block)
+    # 4) Create DataLoaders (no shuffling; windows are pre‐segmented per block)
     train_loader = DataLoader(
         train_ds,
         batch_size=windows_per_block,
@@ -270,30 +206,13 @@ def load_data(args,
         collate_fn=homo_collate,
     )
 
-    logger.info("Block‐aware homogeneous data loaders ready (using precomputed blocks).")
-
-    # 10) Return everything downstream might need
-    input_dict = {
-        "device": device,
-        "time_buckets": torch_input["time_buckets"],
+    # 5) Return everything downstream might need
+    loaders = {
         "train_loader": train_loader,
         "val_loader": val_loader,
         "test_loader": test_loader,
-        # Adjacency and dynamic adjacency
-        "adjacency_matrix": torch_input["adjacency_matrix"],
-        "dynamic_adjacencies": torch_input.get("dynamic_adjacencies", None),
-        # Feature metadata
-        "feature_names": torch_input["feature_names"],
-        "room_uris": torch_input["room_uris"],
-        # Targets
-        "targets": targets,
-        # Number of nodes & features
-        "n_nodes": 52,
-        "n_features": torch_input["n_features"], # Total features: static + temporal
-        "static_feature_count": torch_input["static_feature_count"],
-        "temporal_feature_count": torch_input["temporal_feature_count"]
     }
 
-    logger.info("STGCN input preparation complete")
+    logger.info("Block‐aware homogeneous data loaders ready (using precomputed blocks).")
 
-    return input_dict
+    return loaders

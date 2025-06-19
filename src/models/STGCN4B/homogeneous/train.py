@@ -160,11 +160,12 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping, tr
     """Train the STGCN model for forecasting."""
     logger.info("Starting model training...")
     
-    train_losses = []
-    # (Optional)
-    val_losses = []
-    val_metrics = []  # For R2 score or accuracy
-    
+    history = {
+        'train_loss': [],
+        'val_loss': [],
+        'val_metrics': {}
+    }
+
     for epoch in range(args.epochs):
         # Training phase
         model.train()
@@ -201,7 +202,7 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping, tr
                             
         # Average training loss for the epoch
         epoch_train_loss = running_loss / total_valid_points_train if total_valid_points_train > 0 else 0.0
-        train_losses.append(epoch_train_loss)
+        history['train_loss'].append(epoch_train_loss)
                 
         # Validation phase (Optional)
         if val_loader is not None:
@@ -244,67 +245,46 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping, tr
 
             # Average validation loss (MSE) for the epoch
             epoch_val_loss = running_val_loss / total_valid_points_val if total_valid_points_val > 0 else 0.0
-            val_losses.append(epoch_val_loss)
-            
-            if args.task_type == "workhour_classification":
-                epoch_metric = accuracy_score(all_targets, all_preds) if len(all_targets) > 0 else 0.0
-                val_metrics.append(epoch_metric)
-                metric_name, metric_val = "Val Accuracy", f"{epoch_metric:.4f}"
-            else: # Forecasting tasks
-                epoch_metric = r2_score(all_targets, all_preds) if len(all_targets) > 0 else 0.0
-                val_metrics.append(epoch_metric)
-                metric_name, metric_val = "Val R²", f"{epoch_metric:.4f}"
+            history['val_loss'].append(epoch_val_loss)
 
-        else: # No validation
-             pass
-        
-        # Update learning rate
-        scheduler.step()
-        
-        # Log epoch results
-        if val_loader is not None:
+            # Append epoch metrics to the history dictionary
+            epoch_metrics = {}
+            if len(all_targets) > 0:
+                if args.task_type == "workhour_classification":
+                    epoch_metrics['accuracy'] = accuracy_score(all_targets, all_preds)
+                    epoch_metrics['f1'] = f1_score(all_targets, all_preds, zero_division=0)
+                else: # Forecasting
+                    epoch_metrics['r2'] = r2_score(all_targets, all_preds)
+                    epoch_metrics['mae'] = mean_absolute_error(all_targets, all_preds)
+            for metric_name, metric_val in epoch_metrics.items():
+                history['val_metrics'].setdefault(metric_name, []).append(metric_val)
+
+            # Logging
+            metrics_log_str = " | ".join([f"{k}: {v:.4f}" for k, v in epoch_metrics.items()])
             logger.info(
-                f"Epoch [{epoch+1}/{args.epochs}]  "
-                f"Train Loss: {epoch_train_loss:.4f}  "
-                f"Val Loss: {epoch_val_loss:.4f}  "
-                f"{metric_name}: {metric_val}  "
-                f"LR: {scheduler.get_last_lr()[0]:.6f}"
-            )
-        else:
-            logger.info(
-                f"Epoch [{epoch+1}/{args.epochs}]  "
-                f"Train Loss: {epoch_train_loss:.4f}  "
+                f"Epoch [{epoch+1}/{args.epochs}] | Train Loss: {epoch_train_loss:.4f} | "
+                f"Val Loss: {epoch_val_loss:.4f} | {metrics_log_str} | "
                 f"LR: {scheduler.get_last_lr()[0]:.6f}"
             )
 
-        # Check early stopping
-        if val_loader is not None:
+            # Check early stopping
             early_stopping(epoch_val_loss, model)
             if early_stopping.early_stop:
                 logger.info("Early stopping triggered")
                 break
+
+        else: # No validation
+            logger.info(f"Epoch [{epoch+1}/{args.epochs}] | Train Loss: {epoch_train_loss:.4f}")
         
+        # Update learning rate
+        scheduler.step()
+                
     # Load the best model
-    if val_loader is not None:
+    if val_loader is not None and early_stopping.early_stop:
+        logger.info(f"Loading best model from epoch {early_stopping.best_epoch}")
         model.load_state_dict(early_stopping.best_model_state)
     
-    # Return training history
-    if val_loader is not None:
-        history = {
-            'train_loss': train_losses,
-            'val_loss': val_losses,
-        }
-        if args.task_type == "workhour_classification":
-            history['val_accuracy'] = val_metrics
-        else:
-            history['val_r2'] = val_metrics
-    else:
-        history = {
-            'train_loss': train_losses,
-        }
-    
     return model, history
-
 
 def evaluate_model(args, model, test_loader, threshold=0.5):
     """Evaluate the trained model on the test set."""

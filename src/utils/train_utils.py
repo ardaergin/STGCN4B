@@ -63,7 +63,7 @@ class ResultHandler:
         
         # R² Score Curve
         plt.subplot(2, 2, 2)
-        plt.plot(self.history['val_r2'], label='Validation R²', color='green')
+        plt.plot(self.history['val_metrics']['val_r2'], label='Validation R²', color='green')
         plt.axhline(y=self.metrics['r2'], color='r', linestyle='--', label=f'Test R²: {self.metrics["r2"]:.4f}')
         plt.xlabel('Epoch'); plt.ylabel('R² Score'); plt.title('R² Score Curve')
         plt.legend(); plt.grid(True, linestyle='--', alpha=0.6)
@@ -110,40 +110,59 @@ class ResultHandler:
             f.write(f"MAPE: {self.metrics['mape']:.2f}%\n")
 
     def _plot_classification(self):
-        """Generates the main plot for classification results."""
-        plt.figure(figsize=(15, 5))
+        """Generates the main 2x2 plot for classification results."""
+        plt.figure(figsize=(12, 10))
         
         # Loss Curves
-        plt.subplot(1, 3, 1)
+        plt.subplot(2, 2, 1)
         plt.plot(self.history['train_loss'], label='Training Loss', color='blue')
-        plt.plot(self.history['val_loss'], label='Validation Loss', color='red')
+        if 'val_loss' in self.history and self.history['val_loss']:
+            plt.plot(self.history['val_loss'], label='Validation Loss', color='red')
         plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.title('Loss Curves')
         plt.legend(); plt.grid(True, linestyle='--', alpha=0.6)
         
         # Accuracy Curve
-        plt.subplot(1, 3, 2)
-        plt.plot(self.history['val_accuracy'], label='Validation Accuracy', color='green')
-        plt.axhline(y=self.metrics['accuracy'], color='r', linestyle='--', label=f'Test Accuracy: {self.metrics["accuracy"]:.4f}')
+        plt.subplot(2, 2, 2)
+        if 'val_metrics' in self.history and self.history['val_metrics'].get('accuracy'):
+            plt.plot(self.history['val_metrics']['accuracy'], label='Validation Accuracy', color='green')
+        plt.axhline(y=self.metrics['accuracy'], color='r', linestyle='--', label=f"Test Accuracy: {self.metrics['accuracy']:.4f}")
         baseline = max(sum(self.metrics['labels']), len(self.metrics['labels']) - sum(self.metrics['labels'])) / len(self.metrics['labels'])
         plt.axhline(y=baseline, color='grey', linestyle=':', label=f'Baseline: {baseline:.4f}')
         plt.xlabel('Epoch'); plt.ylabel('Accuracy'); plt.title('Accuracy Curve')
         plt.legend(); plt.grid(True, linestyle='--', alpha=0.6)
+
+        # F1-Score Curve
+        plt.subplot(2, 2, 3)
+        if 'val_metrics' in self.history and self.history['val_metrics'].get('f1'):
+            plt.plot(self.history['val_metrics']['f1'], label='Validation F1-score', color='purple')
+        plt.axhline(y=self.metrics['f1'], color='r', linestyle='--', label=f"Test F1-score: {self.metrics['f1']:.4f}")
+        plt.xlabel('Epoch'); plt.ylabel('F1-score'); plt.title('F1-score Curve')
+        plt.legend(); plt.grid(True, linestyle='--', alpha=0.6)
         
         # Confusion Matrix
-        plt.subplot(1, 3, 3)
+        plt.subplot(2, 2, 4)
         conf_mat = self.metrics['confusion_matrix']
-        labels = ['Non-Work Hours', 'Work Hours']
-        plt.imshow(conf_mat, cmap='Blues'); plt.title('Confusion Matrix'); plt.colorbar()
+        labels = ['Non-Work', 'Work']
+        im = plt.imshow(conf_mat, interpolation='nearest', cmap=plt.cm.Blues)
+        plt.title('Confusion Matrix')
+        plt.colorbar(im)
         tick_marks = np.arange(len(labels))
-        plt.xticks(tick_marks, labels, rotation=45); plt.yticks(tick_marks, labels)
-        thresh = conf_mat.max() / 2
+        plt.xticks(tick_marks, labels, rotation=45)
+        plt.yticks(tick_marks, labels)
+        plt.ylabel('True label')
+        plt.xlabel('Predicted label')
+
+        thresh = conf_mat.max() / 2.
         for i in range(conf_mat.shape[0]):
             for j in range(conf_mat.shape[1]):
-                plt.text(j, i, conf_mat[i, j], ha="center", va="center", color="white" if conf_mat[i, j] > thresh else "black")
+                plt.text(j, i, format(conf_mat[i, j], 'd'),
+                         ha="center", va="center",
+                         color="white" if conf_mat[i, j] > thresh else "black")
         
         plt.tight_layout()
         plt.savefig(os.path.join(self.output_dir, 'stgcn_classification_results.png'), dpi=300, bbox_inches='tight')
         plt.close()
+
 
     def _save_classification_metrics(self):
         """Saves classification metrics to a text file."""
