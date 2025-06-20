@@ -274,7 +274,7 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
                     metric_to_report = epoch_val_loss
                 
                 # Report the intermediate metric to Optuna
-                trial.report(metric_to_report, epoch)
+                trial.report(metric_to_report, epoch + epoch_offset)
 
                 # Check if the trial should be pruned based on the pruner's decision
                 if trial.should_prune():
