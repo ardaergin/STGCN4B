@@ -13,7 +13,7 @@ from sklearn.metrics import (mean_squared_error, mean_absolute_error, r2_score)
 from sklearn.metrics import (confusion_matrix, accuracy_score, 
                              precision_score, recall_score, f1_score, precision_recall_curve,
                              roc_auc_score, average_precision_score, balanced_accuracy_score)
-from ....utils.train_utils import ResultHandler
+import optuna
 
 # Set up logging
 logging.basicConfig(
@@ -24,13 +24,15 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 from ....config.args import parse_args
-from .graph_loader import load_data
 from ....utils.graph_utils import calc_gso_edge
 from ....utils.early_stopping import EarlyStopping
+from ....utils.train_utils import ResultHandler
+from .processor import NumpyDataProcessor
+from .graph_loader import load_data
 
 def setup_model(args, data):
     """Set up the STGCN model and training components."""
-    logger.info("Setting up model for forecasting...")
+    logger.info(f"Setting up model for the task type '{args.task_type}'...")
     device   = data['device']
     logger.info(f"Device: {device}")
     n_nodes = data['n_nodes']
@@ -60,13 +62,13 @@ def setup_model(args, data):
     if args.gso_mode == "static":
         gso = static_gso
 
-    # Build dynamic GSOs
+    # Build masked GSOs for information propagation
     elif args.gso_mode == "dynamic":
-        dynamic_adjacencies_dict = data.get("dynamic_adjacencies", {})
-        dynamic_adjacencies = list(dynamic_adjacencies_dict.values())
-        dynamic_adjacencies = dynamic_adjacencies[: args.stblock_num]
-        dynamic_gsos = []
-        for adjacency_matrix in dynamic_adjacencies:
+        masked_adjacencies_dict = data.get("masked_adjacencies", {})
+        masked_adjacencies = list(masked_adjacencies_dict.values())
+        masked_adjacencies = masked_adjacencies[: args.stblock_num]
+        masked_gsos = []
+        for adjacency_matrix in masked_adjacencies:
             edge_index, edge_weight = dense_to_sparse(adjacency_matrix)
             G = calc_gso_edge(
                 edge_index, edge_weight, 
@@ -74,13 +76,13 @@ def setup_model(args, data):
                 gso_type            = args.gso_type,
                 device              = device,
             )
-            dynamic_gsos.append(G)
+            masked_gsos.append(G)
 
         # In case we've got fewer than stblock_num, pad with the static GSO
-        while len(dynamic_gsos) < args.stblock_num:
-            dynamic_gsos.append(static_gso)
+        while len(masked_gsos) < args.stblock_num:
+            masked_gsos.append(static_gso)
         
-        gso = dynamic_gsos
+        gso = masked_gsos
     
     else:
         raise ValueError(f"Unknown gso_mode: {args.gso_mode!r}. Must be 'static' or 'dynamic'.")
@@ -104,8 +106,9 @@ def setup_model(args, data):
         blocks.append([128])
     elif Ko > 0:
         blocks.append([128, 128])
-        
-    blocks.append([1])
+    
+    # Output dimension determined by n_pred
+    blocks.append([args.n_pred])
     
     # Create model based on graph convolution type
     if args.graph_conv_type == 'cheb_graph_conv':
@@ -156,7 +159,9 @@ def setup_model(args, data):
     return model, criterion, optimizer, scheduler, early_stopping
 
 
-def train_model(args, model, criterion, optimizer, scheduler, early_stopping, train_loader, val_loader = None):
+def train_model(args, model, criterion, optimizer, scheduler, early_stopping, 
+                train_loader, val_loader = None,
+                trial: optuna.trial.Trial = None):
     """Train the STGCN model for forecasting."""
     logger.info("Starting model training...")
     
@@ -259,6 +264,24 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping, tr
             for metric_name, metric_val in epoch_metrics.items():
                 history['val_metrics'].setdefault(metric_name, []).append(metric_val)
 
+            # --- PRUNING LOGIC ---
+            if trial:
+                # For classification, we prune based on the primary metric (e.g., F1-score)
+                if args.task_type == "workhour_classification":
+                    metric_to_report = history['val_metrics'].get('f1', [-1])[-1]
+                # For forecasting, we prune based on validation loss
+                else:
+                    metric_to_report = epoch_val_loss
+                
+                # Report the intermediate metric to Optuna
+                trial.report(metric_to_report, epoch)
+
+                # Check if the trial should be pruned based on the pruner's decision
+                if trial.should_prune():
+                    logger.info(f"Pruning trial {trial.number} at epoch {epoch} due to poor performance.")
+                    raise optuna.exceptions.TrialPruned()
+            # --- END OF PRUNING LOGIC ---
+
             # Logging
             metrics_log_str = " | ".join([f"{k}: {v:.4f}" for k, v in epoch_metrics.items()])
             logger.info(
@@ -286,14 +309,17 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping, tr
     
     return model, history
 
-def evaluate_model(args, model, test_loader, threshold=0.5):
+def evaluate_model(args, model, test_loader, processor: NumpyDataProcessor, threshold=0.5):
     """Evaluate the trained model on the test set."""
     logger.info("Evaluating model on test set...")
     
     model.eval()
-    all_preds = []
-    all_targets = []
+    all_preds_norm = []
+    all_targets_norm = []
+
+    # For classification
     all_probs = []
+    all_class_labels = []
 
     with torch.no_grad():
         for X_batch, y_batch, mask_batch in test_loader:
@@ -307,57 +333,62 @@ def evaluate_model(args, model, test_loader, threshold=0.5):
             if args.task_type == "workhour_classification":
                 probs = torch.sigmoid(outputs.squeeze())
                 all_probs.extend(probs.cpu().tolist())
-                all_targets.extend(y_batch.squeeze().cpu().tolist())
+                all_class_labels.extend(y_batch.squeeze().cpu().tolist())
             else:
-                preds, targets, mask = get_preds_targets_mask(outputs, y_batch, mask_batch, args.task_type)
+                preds_norm, targets_norm, mask = get_preds_targets_mask(outputs, y_batch, mask_batch, args.task_type)
                 # Collect only valid predictions and targets for R² score
-                valid_preds = preds[mask == 1]
-                valid_targets = targets[mask == 1]
-                all_preds.extend(valid_preds.cpu().tolist())
-                all_targets.extend(valid_targets.cpu().tolist())
+                valid_preds_norm = preds_norm[mask.bool()]
+                valid_targets_norm = targets_norm[mask.bool()]
+                all_preds_norm.extend(valid_preds_norm.cpu().tolist())
+                all_targets_norm.extend(valid_targets_norm.cpu().tolist())
 
     if args.task_type == "workhour_classification":
-        all_preds = [1 if prob >= threshold else 0 for prob in all_probs]
-        roc_auc = roc_auc_score(all_targets, all_probs)
-        ap_score = average_precision_score(all_targets, all_probs)
+        all_preds_class = [1 if prob >= threshold else 0 for prob in all_probs]
+        roc_auc = roc_auc_score(all_class_labels, all_probs)
+        ap_score = average_precision_score(all_class_labels, all_probs)
         return {
-            "test_loss": 0, # Loss not easily comparable, can be calculated if needed
-            "accuracy": accuracy_score(all_targets, all_preds),
-            "balanced_accuracy": balanced_accuracy_score(all_targets, all_preds),
-            "precision": precision_score(all_targets, all_preds, zero_division=0),
-            "recall": recall_score(all_targets, all_preds, zero_division=0),
-            "f1": f1_score(all_targets, all_preds, zero_division=0),
+            "test_loss": 0, # Not applicable here
+            "accuracy": accuracy_score(all_class_labels, all_preds_class),
+            "balanced_accuracy": balanced_accuracy_score(all_class_labels, all_preds_class),
+            "precision": precision_score(all_class_labels, all_preds_class, zero_division=0),
+            "recall": recall_score(all_class_labels, all_preds_class, zero_division=0),
+            "f1": f1_score(all_class_labels, all_preds_class, zero_division=0),
             "roc_auc": roc_auc,
             "auc_pr": ap_score,
-            "confusion_matrix": confusion_matrix(all_targets, all_preds),
-            "predictions": all_preds,
-            "labels": all_targets,
+            "confusion_matrix": confusion_matrix(all_class_labels, all_preds_class),
+            "predictions": all_preds_class,
+            "labels": all_class_labels,
             "probabilities": all_probs,
             "threshold": threshold
         }
     else: # Forecasting tasks
-        all_preds_np = np.array(all_preds)
-        all_targets_np = np.array(all_targets)
-
-        if all_targets_np.size == 0:
+        if not all_preds_norm:
             logger.warning("No valid targets in test set to evaluate.")
             return {"test_loss": 0, "rmse": 0, "mae": 0, "r2": 0, "mape": 0, 
                     "predictions": np.array([]), "targets": np.array([])}
+
+        # Converting the lists of normalized values to NumPy arrays
+        preds_norm_np = np.array(all_preds_norm)
+        targets_norm_np = np.array(all_targets_norm)
+
+        # Inverse transforming back to the original scale
+        preds_orig = processor.inverse_transform_target(preds_norm_np)
+        targets_orig = processor.inverse_transform_target(targets_norm_np)
         
-        # MSE
-        mse = mean_squared_error(all_targets_np, all_preds_np)
-        # RMSE
+        # Calculating all metrics on the original-scale data
+        mse = mean_squared_error(targets_orig, preds_orig)
         rmse = np.sqrt(mse)
-        # MAE
-        mae = mean_absolute_error(all_targets_np, all_preds_np)
-        # R²
-        r2 = r2_score(all_targets_np, all_preds_np)
-        # MAPE
-        mape_mask = all_targets_np != 0
-        mape = np.mean(np.abs((all_targets_np[mape_mask] - all_preds_np[mape_mask]) / all_targets_np[mape_mask])) * 100 if np.sum(mape_mask) > 0 else 0.0
-        
+        mae = mean_absolute_error(targets_orig, preds_orig)
+        r2 = r2_score(targets_orig, preds_orig)
+        ## Calculating MAPE safely, avoiding division by zero:
+        mape_mask = targets_orig != 0
+        if np.sum(mape_mask) > 0:
+            mape = np.mean(np.abs((targets_orig[mape_mask] - preds_orig[mape_mask]) / targets_orig[mape_mask])) * 100
+        else:
+            mape = 0.0
+
         logger.info(
-            f"Evaluation Metrics (on valid data): MSE: {mse:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}, R²: {r2:.4f}, MAPE: {mape:.2f}%"
+            f"Evaluation Metrics (original scale): MSE: {mse:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}, R²: {r2:.4f}, MAPE: {mape:.2f}%"
         )
 
         return {
@@ -366,8 +397,8 @@ def evaluate_model(args, model, test_loader, threshold=0.5):
             "mae": mae, 
             "r2": r2, 
             "mape": mape,
-            "predictions": all_preds_np, 
-            "targets": all_targets_np,
+            "predictions": preds_orig, 
+            "targets": targets_orig,
         }
 
 
@@ -403,7 +434,7 @@ def find_optimal_threshold(model, val_loader):
     return optimal_threshold
 
 def main():
-    """Main function to run the STGCN model for forecasting."""
+    """Main function to run the STGCN model."""
     # Parse arguments
     args = parse_args()
     

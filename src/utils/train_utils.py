@@ -10,20 +10,12 @@ class ResultHandler:
     A class to handle plotting and saving of model training and evaluation results.
     It dispatches to the correct plotting methods based on the task type.
     """
-    def __init__(self, args, history, metrics):
-        """
-        Initializes the ResultPlotter with all necessary data.
-        
-        Args:
-            args: The command-line arguments.
-            history (dict): A dictionary containing training history (e.g., losses, metrics per epoch).
-            metrics (dict): A dictionary containing final evaluation metrics.
-        """
-        self.args = args
+    def __init__(self, output_dir: str, task_type: str, history: dict, metrics: dict):
+        """Initializes the ResultPlotter with all necessary data."""
+        self.output_dir = output_dir
+        self.task_type = task_type
         self.history = history
         self.metrics = metrics
-        self.task_type = args.task_type
-        self.output_dir = args.output_dir
 
     def process(self):
         """
@@ -57,13 +49,15 @@ class ResultHandler:
         # Loss Curves
         plt.subplot(2, 2, 1)
         plt.plot(self.history['train_loss'], label='Training Loss', color='blue')
-        plt.plot(self.history['val_loss'], label='Validation Loss', color='red')
+        if self.history.get('val_loss'):
+            plt.plot(self.history['val_loss'], label='Validation Loss', color='red')
         plt.xlabel('Epoch'); plt.ylabel('Loss (MSE)'); plt.title('Loss Curves')
         plt.legend(); plt.grid(True, linestyle='--', alpha=0.6)
         
         # R² Score Curve
         plt.subplot(2, 2, 2)
-        plt.plot(self.history['val_metrics']['val_r2'], label='Validation R²', color='green')
+        if self.history.get('val_metrics', {}).get('r2'):
+            plt.plot(self.history['val_metrics']['r2'], label='Validation R²', color='green')
         plt.axhline(y=self.metrics['r2'], color='r', linestyle='--', label=f'Test R²: {self.metrics["r2"]:.4f}')
         plt.xlabel('Epoch'); plt.ylabel('R² Score'); plt.title('R² Score Curve')
         plt.legend(); plt.grid(True, linestyle='--', alpha=0.6)
@@ -116,7 +110,7 @@ class ResultHandler:
         # Loss Curves
         plt.subplot(2, 2, 1)
         plt.plot(self.history['train_loss'], label='Training Loss', color='blue')
-        if 'val_loss' in self.history and self.history['val_loss']:
+        if self.history.get('val_loss'):
             plt.plot(self.history['val_loss'], label='Validation Loss', color='red')
         plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.title('Loss Curves')
         plt.legend(); plt.grid(True, linestyle='--', alpha=0.6)
@@ -133,7 +127,7 @@ class ResultHandler:
 
         # F1-Score Curve
         plt.subplot(2, 2, 3)
-        if 'val_metrics' in self.history and self.history['val_metrics'].get('f1'):
+        if self.history.get('val_metrics', {}).get('f1'):
             plt.plot(self.history['val_metrics']['f1'], label='Validation F1-score', color='purple')
         plt.axhline(y=self.metrics['f1'], color='r', linestyle='--', label=f"Test F1-score: {self.metrics['f1']:.4f}")
         plt.xlabel('Epoch'); plt.ylabel('F1-score'); plt.title('F1-score Curve')

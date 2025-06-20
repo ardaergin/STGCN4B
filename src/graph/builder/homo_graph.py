@@ -1,3 +1,4 @@
+import os
 import numpy as np
 from rdflib import URIRef
 from typing import Dict, Any
@@ -42,7 +43,7 @@ class HomogGraphBuilderMixin:
             ['room_uri', 'bucket_idx',
              '<prop1>_mean', '<prop1>_std', '<prop1>_max', '<prop1>_min', '<prop1>_count', '<prop1>_has_measurement',
              '<prop2>_mean', …, etc. ],
-            one row per (room_uri, bucket_idx), with all NaNs replaced by 0.0.
+            one row per (room_uri, bucket_idx).
         """
         # 1) Ensure full_feature_df exists
         if not hasattr(self, 'full_feature_df'):
@@ -385,188 +386,124 @@ class HomogGraphBuilderMixin:
 
         return None
 
+    def build_feature_array(self) -> None:
+        """
+        Converts the `room_feature_df` into a single, comprehensive 3D NumPy array
+        of shape (T, R, F_static + F_temporal) containing all feature data.
 
-    def generate_feature_matrices(self) -> None:
-        """        
-        This method stacks, for each bucket_idx, the rows of `room_feature_df`
-        (excluding 'room_uri' and 'bucket_idx') in the order given by
-        `self.adj_matrix_room_uris`, concatenates specified static room attributes,
-        and returns matrices of shape (T, R, F_static + F_temporal).
-        Stores:
-          - self.feature_matrices: Dict[bucket_idx → np.ndarray(shape=(R, F))]
-          - self.feature_names: List[str] = static + temporal column names
-          - self.room_uris: List[URIRef] = self.adj_matrix_room_uris
-          - self.static_feature_count: int
-          - self.temporal_feature_count: int
+        This method should be called once during the initial data preparation phase.
+        It stores the final array in `self.feature_array`.
+
+        To turn these into feature matrices later, run:
+        >>> self.feature_matrices = {t: processed_array[t] for t in range(T)}
         """
         if not hasattr(self, "room_feature_df"):
             raise ValueError("room_feature_df not found. Run build_room_feature_df() first.")
-        if not hasattr(self, "adj_matrix_room_uris"):
-            raise ValueError("adj_matrix_room_uris not found. Run build_combined_room_to_room_adjacency() first.")
+        
         df = self.room_feature_df
-        R = len(self.adj_matrix_room_uris)
+        
+        # --- Dimensions ---
         T = len(self.time_buckets)
+        R = len(self.adj_matrix_room_uris)
 
-        # Features: temporal
-        temporal_cols = [c for c in df.columns if c not in {"room_uri", "bucket_idx"}]
+        # --- Temporal Features ---
+        temporal_cols = sorted([c for c in df.columns if c not in {"room_uri", "bucket_idx"}])
         F_temporal = len(temporal_cols)
+        
+        # --- Static Features ---
+        static_feature_names = getattr(self, "static_room_attributes", [])
+        F_static = len(static_feature_names)
+
+        # Total features
+        self.feature_names = static_feature_names + temporal_cols
+        F = F_static + F_temporal
+        self.n_features = F
+        self.static_feature_count = F_static
         self.temporal_feature_count = F_temporal
 
-        # Features: static
-        # - Building an (R × S) array in the same room order
-        static_feature_names = self.static_room_attributes
-        F_static = len(static_feature_names)
-        # Build static matrix by pulling each attribute from office_graph.rooms
+        logger.info(f"Preparing to build feature array with dimensions T={T}, R={R}, F={F}")
+        
+        # --- Build Static Feature Matrix ---
         static_mat = np.zeros((R, F_static), dtype=float)
-        for i, room_uri in enumerate(self.adj_matrix_room_uris):
-            room_obj = self.office_graph.rooms.get(room_uri)
-            if room_obj is None:
-                raise KeyError(f"Room {room_uri!r} not found in office_graph.rooms")
-            for j, feat in enumerate(static_feature_names):
-                val = getattr(room_obj, feat, None)
-                static_mat[i, j] = float(val) if val is not None else 0.0
-        self.static_feature_count = F_static
+        if F_static > 0:
+            for i, room_uri in enumerate(self.adj_matrix_room_uris):
+                room_obj = self.office_graph.rooms.get(room_uri)
+                if room_obj:
+                    for j, feat in enumerate(static_feature_names):
+                        val = getattr(room_obj, feat, 0.0)
+                        static_mat[i, j] = float(val) if val is not None else 0.0
         
-        # Initialize empty container
-        feat_dict: Dict[int, np.ndarray] = {}
+        # Tile static features across the time dimension
+        static_array = np.tile(static_mat, (T, 1, 1)) # Shape -> (T, R, F_static)
 
-        # Group by bucket_idx for faster access
-        grouped = df.groupby("bucket_idx")
+        # --- Build Temporal Feature Array ---
+        # Pivot the DataFrame to get a (T, R, F_temporal) structure directly
+        # Set index for easy slicing
+        df = df.set_index(['bucket_idx', 'room_uri'])
+        
+        # Create a complete index to ensure all (T, R) pairs are present
+        all_rooms = self.adj_matrix_room_uris
+        idx = pd.MultiIndex.from_product([range(T), all_rooms], names=['bucket_idx', 'room_uri'])
+        
+        # Reindex and sort to ensure canonical order
+        temporal_df = df[temporal_cols].reindex(idx).sort_index()
+        
+        # Reshape into a 3D NumPy array
+        temporal_array = temporal_df.values.reshape(T, R, F_temporal)
 
-        # Logging setup
-        log_interval = max(1, T // 20)
-
-        # Graph snapshot loop
-        for bucket_idx in range(T):
-            if bucket_idx % log_interval == 0 or bucket_idx == T - 1:
-                logger.info(f"Processing feature matrix for bucket {bucket_idx + 1}/{T}")
-
-            # Temporal matrix
-            mat_temporal = np.zeros((R, F_temporal), dtype=float)
-            if bucket_idx in grouped.groups:
-                sub_df = grouped.get_group(bucket_idx).set_index("room_uri")
-                for i, room_uri in enumerate(self.adj_matrix_room_uris):
-                    if room_uri in sub_df.index:
-                        mat_temporal[i, :] = sub_df.loc[room_uri, temporal_cols].values.astype(float)
-
-            # Concatenate static + temporal: result shape (R, F_static + F_temporal)
-            mat = np.concatenate([static_mat, mat_temporal], axis=1)
-            feat_dict[bucket_idx] = mat
-
-        self.feature_matrices = feat_dict
-        self.feature_names = static_feature_names + temporal_cols
-        self.room_uris = list(self.adj_matrix_room_uris)
-
-        logger.info(
-            f"Generated feature_matrices for {T} time buckets:\n"
-            f"- rooms={R}\n"
-            f"- Temporal features per room={F_temporal}\n"
-            f"- Spatial features per room={F_static}"
-        )
+        # --- Concatenate Static and Temporal Arrays ---
+        feature_array = np.concatenate([static_array, temporal_array], axis=2)
+        
+        self.feature_array = feature_array
+        logger.info(f"Successfully built feature_array of shape {self.feature_array.shape}")
+        
         return None
-
-    def prepare_homo_stgcn_input(self) -> Dict[str, Any]:
+    
+    def prepare_and_save_numpy_input(self, output_path: str):
         """
-        Prepare all necessary inputs for a STGCN model, including weighted non-symmetric
-        adjacency matrix and combined static/temporal features.
-                    
-        Returns:
-            Dictionary containing all STGCN inputs
-            
-        Raises:
-            ValueError: If required components are missing or not initialized
-        """        
-        if not hasattr(self, 'feature_matrices') or not self.feature_matrices:
-            raise ValueError("Feature matrices not available. Run generate_feature_matrices first.")
+        Gathers all pre-computed NumPy arrays and metadata and saves them to a
+        single file. This is the final step of the data building process.
 
-        # Get time indices
-        time_indices = list(range(len(self.time_buckets)))
+        Args:
+            output_path (str): The full path to save the output file (e.g., 'data/processed/numpy_input.pt').
+        """
+        if not hasattr(self, 'feature_array'):
+            raise ValueError("feature_array not found. Run build_feature_array() first.")
         
-        # Package everything into a dictionary
-        stgcn_input = {
-            "adjacency_matrix": self.room_to_room_adj_matrix,
-            "dynamic_adjacencies": self.masked_adjacencies,
-            "room_uris": self.room_uris,
-            "property_types": self.used_property_types,
-            "feature_matrices": self.feature_matrices,
+        logger.info(f"Packaging NumPy arrays and metadata for saving to {output_path}...")
+        
+        numpy_input = {
+            # Data indices in block format
+            "blocks": self.blocks,
+
+            # Main data (X)
+            "feature_array": self.feature_array,
             "feature_names": self.feature_names,
+            "n_features": self.n_features,
             "static_feature_count": self.static_feature_count,
             "temporal_feature_count": self.temporal_feature_count,
-            "n_features": self.static_feature_count + self.temporal_feature_count,
-            "time_indices": time_indices,
-            "time_buckets": self.time_buckets,
-            "blocks": self.blocks
+
+            # Graph structure
+            "room_uris": self.adj_matrix_room_uris,
+            "n_nodes": len(self.adj_matrix_room_uris),
+
+            # Adjacency
+            "adjacency_matrix": self.room_to_room_adj_matrix,
+            "masked_adjacencies": self.masked_adjacencies,
         }
+
+        # Add task-specific targets and masks
         if self.build_mode == "measurement_forecast":
-            if not hasattr(self, 'measurement_values') or not hasattr(self, 'measurement_mask'):
-                 raise ValueError("measurement_values and/or measurement_mask not found. "
-                                  "Run get_targets_and_mask_for_a_variable() first.")
-            stgcn_input["measurement_values"] = self.measurement_values
-            stgcn_input["measurement_mask"] = self.measurement_mask
+            numpy_input["measurement_values"] = self.measurement_values
+            numpy_input["target_mask"] = self.measurement_mask
         else:
-            stgcn_input["consumption_values"] = self.consumption_values
-            stgcn_input["workhour_labels"] = self.workhour_labels
-
-        logger.info("STGCN input preparation complete")
-        return stgcn_input
-
-    def convert_homo_to_torch_tensors(self, stgcn_input: Dict[str, Any], device: str = "cpu") -> Dict[str, Any]:
-        """
-        Convert numpy arrays to PyTorch tensors for model input.
-        
-        Args:
-            stgcn_input: Dictionary output from prepare_stgcn_input
-            device: PyTorch device to move tensors to
+            numpy_input["consumption_values"] = self.consumption_values
+            numpy_input["workhour_labels"] = self.workhour_labels
             
-        Returns:
-            Dictionary with numpy arrays converted to PyTorch tensors
-        """
-        torch_input = {}
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
         
-        # Adjacency matrices
-        torch_input["adjacency_matrix"] = torch.tensor(stgcn_input["adjacency_matrix"], 
-                                                     dtype=torch.float32, 
-                                                     device=device)
-        
-        torch_input["dynamic_adjacencies"] = {}
-        for step, masked_adj in stgcn_input["dynamic_adjacencies"].items():
-            torch_input["dynamic_adjacencies"][step] = torch.tensor(masked_adj, 
-                                                                  dtype=torch.float32,
-                                                                  device=device)
-
-        # Convert feature matrices
-        torch_input["feature_matrices"] = {}
-        for time_idx, feature_matrix in stgcn_input["feature_matrices"].items():
-            torch_input["feature_matrices"][time_idx] = torch.tensor(feature_matrix, 
-                                                                   dtype=torch.float32, 
-                                                                   device=device)
-        
-        # Target(s)
-        if self.build_mode == "measurement_forecast":
-            torch_input["measurement_values"] = torch.tensor(stgcn_input["measurement_values"],
-                                                            dtype=torch.float32,
-                                                            device=device)
-            torch_input["measurement_mask"] = torch.tensor(stgcn_input["measurement_mask"],
-                                                            dtype=torch.float32,
-                                                            device=device)
-        else:
-            torch_input["workhour_labels"] = torch.tensor(stgcn_input["workhour_labels"], 
-                                                        dtype=torch.long,
-                                                        device=device)
-            torch_input["consumption_values"] = torch.tensor(stgcn_input["consumption_values"],
-                                                            dtype=torch.float32,
-                                                            device=device)
-
-        # Copy non-tensor data
-        torch_input["room_uris"] = stgcn_input["room_uris"]
-        torch_input["property_types"] = stgcn_input["property_types"]
-        torch_input["feature_names"] = stgcn_input["feature_names"]
-        torch_input["static_feature_count"] = stgcn_input["static_feature_count"]
-        torch_input["temporal_feature_count"] = stgcn_input["temporal_feature_count"]
-        torch_input["n_features"] = stgcn_input["n_features"]
-        torch_input["time_indices"] = stgcn_input["time_indices"]
-        torch_input["time_buckets"] = stgcn_input["time_buckets"]
-        torch_input["blocks"] = stgcn_input["blocks"]
-
-        logger.info("Converted data to PyTorch tensors on device: " + str(device))
-        return torch_input
+        # Save the dictionary using torch.save
+        torch.save(numpy_input, output_path)
+        logger.info("Successfully saved all NumPy inputs.")
+        return None

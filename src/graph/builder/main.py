@@ -17,7 +17,7 @@ from .spatial import SpatialBuilderMixin
 from .spatial_viz import SpatialVisualizerMixin
 from .homo_graph import HomogGraphBuilderMixin
 from .hetero_graph import HeteroGraphBuilderMixin
-from .tabular import TabularBuilderMixin
+# from .tabular import TabularBuilderMixin
 
 
 class OfficeGraphBuilder(
@@ -27,7 +27,8 @@ class OfficeGraphBuilder(
     TemporalVisualizerMixin,
     HomogGraphBuilderMixin,
     HeteroGraphBuilderMixin,
-    TabularBuilderMixin):
+    # TabularBuilderMixin
+    ):
     """
     Consolidated class to build and manipulate graphs from OfficeGraph data,
     including spatial relationships and temporal features.
@@ -79,6 +80,7 @@ def main():
     office_graph = OfficeGraph.from_pickles(floors_to_load = args.floors)
     builder = OfficeGraphBuilder(office_graph)
     builder.set_build_mode(mode=args.task_type)
+    logger.info(f"Builder initialized with build mode '{builder.build_mode}'.")
 
     # ============================
     # TEMPORAL SETUP
@@ -99,13 +101,14 @@ def main():
     logger.info("Loading and processing weather data...")
     builder.get_weather_data(weather_csv_path=args.weather_csv_path)
     
-    # Get classification labels
-    logger.info("Generating work hour classification labels...")
-    builder.get_classification_labels(country_code=args.country_code)
-    
-    # Get forecasting values
-    logger.info("Loading and processing consumption data...")
-    builder.get_forecasting_values(consumption_dir=args.consumption_dir)
+    if builder.build_mode in ("workhour_classification", "consumption_forecast"):
+        # Get classification labels
+        logger.info("Generating work hour classification labels...")
+        builder.get_classification_labels(country_code=args.country_code)
+        
+        # Get forecasting values
+        logger.info("Loading and processing consumption data...")
+        builder.get_forecasting_values(consumption_dir=args.consumption_dir)
 
     # Processing measurements
     logger.info("Processing measurements...")
@@ -164,8 +167,9 @@ def main():
     builder.build_combined_room_to_room_adjacency()
 
     # Build outside adjacency
-    logger.info("Calculating outside adjacency...")
-    builder.build_outside_adjacency(mode=args.adjacency_type)
+    if not args.skip_incorporating_weather:
+        logger.info("Calculating outside adjacency...")
+        builder.build_outside_adjacency(mode=args.adjacency_type)
 
     # Calculate information propagation masks and apply them
     logger.info("Building masked adjacency matrices for information propagation...")
@@ -193,6 +197,15 @@ def main():
             heterogeneous_stgcn_input = builder.prepare_hetero_stgcn_input()
             torch_tensors = builder.convert_hetero_to_torch_tensors(heterogeneous_stgcn_input)
 
+            if args.task_type == "measurement_forecast":
+                file_name = f"stgcn_input_{args.adjacency_type}_{args.interval}_{args.graph_type}_{args.measurement_type}.pt"
+            else:
+                file_name = f"stgcn_input_{args.adjacency_type}_{args.interval}_{args.graph_type}.pt"
+
+            full_output_path = os.path.join("data/processed", file_name)
+            torch.save(torch_tensors, full_output_path)
+            logger.info(f"Saved tensors to {full_output_path} with default parameters.")
+
         # Homogeneous Graph Builder
         elif args.graph_type == "homogeneous":
             builder.build_room_feature_df()
@@ -206,23 +219,19 @@ def main():
                 builder.incorporate_weather_as_an_outside_room()
 
             # Feature matrices
-            logger.info("Generating feature matrices for homogeneous graph...")
-            builder.generate_feature_matrices()
+            logger.info("Generating feature arrays for homogeneous graph...")
+            builder.build_feature_array()
 
-            # Prepare torch input
-            logger.info("Preparing homogeneous STGCN input...")
-            homogeneous_stgcn_input = builder.prepare_homo_stgcn_input()
-            torch_tensors = builder.convert_homo_to_torch_tensors(homogeneous_stgcn_input)
-        
-        if args.task_type == "measurement_forecast":
-            file_name = f"torch_input_{args.adjacency_type}_{args.interval}_{args.graph_type}_{args.measurement_type}.pt"
-        else:
-            file_name = f"torch_input_{args.adjacency_type}_{args.interval}_{args.graph_type}.pt"
-        
-        full_output_path = os.path.join("data/processed", file_name)
-        torch.save(torch_tensors, full_output_path)
-        logger.info(f"Saved tensors to {full_output_path} with default parameters.")
+            if args.task_type == "measurement_forecast":
+                file_name = f"stgcn_input_{args.adjacency_type}_{args.interval}_{args.graph_type}_{args.measurement_type}.pt"
+            else:
+                file_name = f"stgcn_input_{args.adjacency_type}_{args.interval}_{args.graph_type}.pt"
+            full_output_path = os.path.join("data/processed", file_name)
 
+            # Prepare numpy input
+            logger.info("Preparing homogeneous numpy input...")
+            builder.prepare_and_save_numpy_input(output_path=full_output_path)
+        
         if args.graph_type == "heterogeneous":
             # Save graph schema
             schema_path = os.path.join(args.output_dir, f"hetero_graph_schema_{args.interval}.txt")

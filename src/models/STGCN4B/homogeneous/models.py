@@ -129,9 +129,10 @@ class STGCNChebGraphConv(nn.Module):
             return x                    # [B,C,T,V]
 
         elif self.task_type=='measurement_forecast':
-            # x is [B,C,T,V], i.e.: (batch_size, 1, n_pred, n_vertex)
-            # We can drop that singleton channel
-            return x.squeeze(1)   # → (batch_size, n_pred, n_vertex)
+            # x is [B, C_out=n_pred, T_out=1, N]
+            # drop the temporal axis (dim=2), keep the channel axis of length n_pred
+            x = x.squeeze(2)            # → (B, C_out=n_pred, N)
+            return x                   # which aligns perfectly with y: (B, n_pred, N)
 
         elif self.task_type == 'consumption_forecast':
             x = self.global_pool(x)                # [B,1,1,1]
@@ -239,9 +240,10 @@ class STGCNGraphConv(nn.Module):
             return x                    # [B,C,T,V]
 
         elif self.task_type=='measurement_forecast':
-            # x is [B,C,T,V], i.e.: (batch_size, 1, n_pred, n_vertex)
-            # We can drop that singleton channel
-            return x.squeeze(1)   # → (batch_size, n_pred, n_vertex)
+            # x is [B, C_out=n_pred, T_out=1, N]
+            # drop the temporal axis (dim=2), keep the channel axis of length n_pred
+            x = x.squeeze(2)            # → (B, C_out=n_pred, N)
+            return x                   # which aligns perfectly with y: (B, n_pred, N)
 
         elif self.task_type == 'consumption_forecast':
             x = self.global_pool(x)                # [B,1,1,1]

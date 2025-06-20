@@ -40,14 +40,14 @@ class BlockAwareSTGCNDataset(Dataset):
         targets: torch.Tensor,
         n_his: int,
         n_pred: int,
-        mask: torch.Tensor = None
+        target_mask: torch.Tensor = None
     ):
         self.feature_matrices = feature_matrices
         self.blocks = blocks
         self.targets = targets
         self.n_his = n_his
         self.n_pred = n_pred
-        self.mask = mask
+        self.target_mask = target_mask
 
         # Precompute valid samples as (block_idx, start_pos)
         self.samples: List[tuple] = []
@@ -59,10 +59,7 @@ class BlockAwareSTGCNDataset(Dataset):
             for start in range(L - (n_his + n_pred) + 1):
                 self.samples.append((b_idx, start))
 
-        logger.info(
-            f"Initialized BlockAwareSTGCNDataset: "
-            f"{len(self.blocks)} blocks, {len(self.samples)} valid samples"
-        )
+        logger.info(f"Initialized Dataset: {len(self.samples)} valid samples")
 
     def __len__(self) -> int:
         return len(self.samples)
@@ -79,8 +76,8 @@ class BlockAwareSTGCNDataset(Dataset):
         X_list = [self.feature_matrices[t] for t in his_idxs]
         # Gather target values (1D tensor of length n_pred)
         y = self.targets[pred_idxs]
-        # Get the mask
-        m = self.mask[pred_idxs]
+        # Get the mask for the target
+        m = self.target_mask[pred_idxs]
         
         return X_list, y, m
 
@@ -90,27 +87,27 @@ def homo_collate(batch):
 
     Args:
         batch: List of samples, each
-            - (X_list, y, mask)
+            - (X_list, y, target_mask)
           where
             * X_list is a list of length n_his of tensors, each of shape (R, F)
             * y is a tensor of shape (n_pred, R)
-            * mask is a tensor of shape (n_pred, R) with 1s where targets are valid
+            * target_mask is a tensor of shape (n_pred, R) with 1s where targets are valid
 
     Returns:
         (X_batch_list, y_batch, mask_batch)
         - X_batch_list: list of length n_his, each element is a tensor of shape
                         (batch_size, R, F)
         - y_batch:     tensor of shape (batch_size, n_pred, R)
-        - mask_batch:  tensor of shape (batch_size, n_pred, R)
+        - target_mask_batch:  tensor of shape (batch_size, n_pred, R)
     """
-    windows, ys, masks = zip(*batch)
+    windows, ys, target_masks = zip(*batch)
 
     batch_size = len(windows)
     n_his = len(windows[0])
 
     # Stack target tensors: shape (batch_size, n_pred)
     y_batch = torch.stack(ys, dim=0)
-    mask_batch = torch.stack(masks, dim=0)
+    target_mask_batch = torch.stack(target_masks, dim=0)
 
     # For each history step t, gather that step across the batch
     X_batch_list: List[torch.Tensor] = []
@@ -119,13 +116,13 @@ def homo_collate(batch):
         step_tensors = [windows[i][t] for i in range(batch_size)]
         X_batch_list.append(torch.stack(step_tensors, dim=0))
     
-    return X_batch_list, y_batch, mask_batch
+    return X_batch_list, y_batch, target_mask_batch
 
 def load_data(args,
               blocks: Dict[int, Dict[str, List[int]]],
               feature_matrices,
               targets,
-              mask,
+              target_mask,
               *, # for safety
               train_block_ids: List[int],
               val_block_ids:   List[int],
@@ -158,7 +155,7 @@ def load_data(args,
         targets,
         args.n_his,
         args.n_pred,
-        mask=mask
+        target_mask=target_mask
     )
     val_ds = None
     if val_block_lists:
@@ -168,7 +165,7 @@ def load_data(args,
             targets,
             args.n_his,
             args.n_pred,
-            mask=mask
+            target_mask=target_mask
         )
     test_ds = BlockAwareSTGCNDataset(
         feature_matrices,
@@ -176,13 +173,14 @@ def load_data(args,
         targets,
         args.n_his,
         args.n_pred,
-        mask=mask
+        target_mask=target_mask
     )
 
     # 3) Determine windows_per_block for batch_size
     #    We can pick the first train block to determine the number of windows
     first_block_len = len(train_ds.blocks[0])
     windows_per_block = first_block_len - (args.n_his + args.n_pred) + 1
+    logger.info(f"Calculated batch size: {windows_per_block}")
 
     # 4) Create DataLoaders (no shuffling; windows are pre‐segmented per block)
     train_loader = DataLoader(

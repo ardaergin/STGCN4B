@@ -1,5 +1,6 @@
 import numpy as np
 from typing import List, Tuple, Generator, Dict, TypedDict
+import os, json
 
 import logging, sys
 logging.basicConfig(
@@ -45,7 +46,8 @@ class StratifiedBlockSplitter:
         ...     # train_data = your_data_array[train_indices]
         ...     # val_data = your_data_array[val_indices]
     """
-    def __init__(self, blocks: Dict[int, dict], stratum_size: int = 5, seed: int = 2658918):
+    def __init__(self, output_dir: str, blocks: Dict[int, dict],
+                 stratum_size: int = 5, seed: int = 2658918):
         """
         Initializes the splitter with a pre-built dictionary of blocks.
         
@@ -63,6 +65,7 @@ class StratifiedBlockSplitter:
                             Let's say "5" is specified. Then, the strata ratio is 3:1:1. 
                             Thus, test size is 20%, and k=4 for CV.
             seed: Seed for reproducibility.
+            output_dir: JSON split files will be saved here.
         """
 
         # Validating inputs
@@ -110,6 +113,60 @@ class StratifiedBlockSplitter:
         self.test_block_ids: List[int] = None
         self.CV_splits: List[CVFold] = None
 
+        # For saving
+        self.output_dir = output_dir
+        os.makedirs(self.output_dir, exist_ok=True)
+        self.save_filename = os.path.join(self.output_dir, f"{self.seed}.json")
+
+    def _save_block_split(self, split_type: str,
+                        train_ids: List[int], val_ids: List[int], test_ids: List[int]
+                        ) -> None:
+        """
+        Internal helper: save block IDs to JSON under self.output_dir.
+        """
+        os.makedirs(self.output_dir, exist_ok=True)
+        fname = f"{split_type}_{self.seed}.json"
+        path = os.path.join(self.output_dir, fname)
+        payload = {"train_blocks": train_ids, "val_blocks": val_ids, "test_blocks": test_ids}
+        with open(path, "w") as fp:
+            json.dump(payload, fp, indent=2)
+        logger.info(f"Saved {split_type} to {path}")
+        return None
+    
+    def _save_block_split(self, split_type: str,
+                        train_ids: List[int], val_ids: List[int], test_ids: List[int]
+                        ) -> None:
+        """
+        Internal helper: save or append splits in one JSON file.
+        - 'train_test' overwrites/creates base structure.
+        - 'cv' appends under 'cv_folds'.
+        """
+        data: Dict[str, any]
+
+        if split_type == 'train_test':
+            data = {
+                'seed': self.seed,
+                'train_blocks': [int(i) for i in train_ids],
+                'test_blocks': [int(i) for i in test_ids]
+            }
+            with open(self.save_filename, 'w') as fp:
+                json.dump(data, fp, indent=2)
+            logger.info(f"Wrote train-test split to {self.save_filename}")
+
+        elif split_type == 'cv':
+            if not os.path.exists(self.save_filename):
+                raise FileNotFoundError("Train-test split file not found.")
+            with open(self.save_filename, 'r') as fp:
+                data = json.load(fp)
+            cv_fold_data = {
+                'train_blocks': [int(i) for i in train_ids], 
+                'val_blocks': [int(i) for i in val_ids]
+            }
+            data.setdefault('cv_folds', []).append(cv_fold_data)
+            with open(self.save_filename, 'w') as fp:
+                json.dump(data, fp, indent=2)
+            logger.info(f"Appended CV fold to {self.save_filename}")
+
     def get_train_test_split(self) -> None:
         """
         Performs the primary train/test split based on the unified strata.
@@ -130,11 +187,15 @@ class StratifiedBlockSplitter:
 
         self.test_block_ids = sorted(test_block_ids)
         self.train_block_ids = sorted(list(np.setdiff1d(self.block_ids, self.test_block_ids)))
-        
+
+        # Saving train-test split
+        self._save_block_split('train_test', self.train_block_ids, [], self.test_block_ids)
+
         logger.info(
-            f"Initial split performed. Stored {len(self.train_block_ids)} train blocks "
-            f"and {len(self.test_block_ids)} test blocks."
-        )
+            f"Initial split performed. Successfully created, stored, and saved "
+            f"{len(self.train_block_ids)} train blocks."
+            f"and {len(self.test_block_ids)} test blocks.")
+        
         return None
     
     def get_cv_splits(self) -> None:
@@ -208,7 +269,13 @@ class StratifiedBlockSplitter:
             fold["val_block_ids"].sort()
             
         self.CV_splits = all_folds
-        logger.info(f"Successfully created and stored {len(self.CV_splits)} randomized CV folds.")
+        
+        # Saving each fold
+        for fold in all_folds:
+            self._save_block_split('cv', fold['train_block_ids'], fold['val_block_ids'], [])
+
+        logger.info(f"Successfully created, stored, and saved {len(self.CV_splits)} randomized CV folds.")
+
         return None
     
     def get_single_split(self) -> Tuple[List[int], List[int]]:

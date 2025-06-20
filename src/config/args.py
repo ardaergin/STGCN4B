@@ -186,6 +186,22 @@ def add_base_modelling_args(parser):
                       help='Batch size')
     parser.add_argument('--epochs', type=int, default=100, 
                       help='Number of epochs')
+    
+    # Stratified data splitting
+    parser.add_argument('--stratum_size', type=int, 
+                        default=5, 
+                        help='Number of blocks per stratum for the data splitter.')
+
+    # Experimental Setup
+    parser.add_argument('--n_outer_splits', type=int,
+                         default=2, # For minimal testing
+                         help='Number of outer loop train-test splits for nested CV.')
+    parser.add_argument('--n_optuna_trials', type=int, 
+                        default=2, # For minimal testing
+                        help='Number of Optuna trials for HPO.')
+    parser.add_argument('--optuna_crash_mode', type=str, default='safe',
+                        choices=['fail_fast', 'safe'], 
+                        help="weather to add 'study.optimize(..., catch=(Exception,))'.")
 
 
 def add_STGCN_args(parser):
