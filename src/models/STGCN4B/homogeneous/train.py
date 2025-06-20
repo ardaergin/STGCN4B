@@ -291,7 +291,7 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
             )
 
             # Check early stopping
-            early_stopping(epoch_val_loss, model)
+            early_stopping(epoch_val_loss, model, epoch + 1)
             if early_stopping.early_stop:
                 logger.info("Early stopping triggered")
                 break

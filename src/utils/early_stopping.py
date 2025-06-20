@@ -2,6 +2,7 @@
 
 import sys
 import logging
+import torch
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,13 +22,14 @@ class EarlyStopping:
         self.early_stop = False
         self.val_loss_min = float('inf')
         self.best_model_state = None
-        
-    def __call__(self, val_loss, model):
+        self.best_epoch = 0
+
+    def __call__(self, val_loss, model, epoch):
         score = -val_loss
         
         if self.best_score is None:
             self.best_score = score
-            self.save_checkpoint(val_loss, model)
+            self.save_checkpoint(val_loss, model, epoch)
         elif score < self.best_score + self.delta:
             self.counter += 1
             if self.verbose:
@@ -36,11 +38,12 @@ class EarlyStopping:
                 self.early_stop = True
         else:
             self.best_score = score
-            self.save_checkpoint(val_loss, model)
+            self.save_checkpoint(val_loss, model, epoch)
             self.counter = 0
             
-    def save_checkpoint(self, val_loss, model):
+    def save_checkpoint(self, val_loss, model, epoch):
         if self.verbose:
             logger.info(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}). Saving model...')
-        self.best_model_state = model.state_dict().copy()
+        self.best_model_state = model.state_dict()
         self.val_loss_min = val_loss
+        self.best_epoch = epoch
