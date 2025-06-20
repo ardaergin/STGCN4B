@@ -159,9 +159,9 @@ def setup_model(args, data):
     return model, criterion, optimizer, scheduler, early_stopping
 
 
-def train_model(args, model, criterion, optimizer, scheduler, early_stopping, 
-                train_loader, val_loader = None,
-                trial: optuna.trial.Trial = None):
+def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
+                train_loader, val_loader=None,
+                trial: optuna.trial.Trial = None, epoch_offset: int = 0):
     """Train the STGCN model for forecasting."""
     logger.info("Starting model training...")
     

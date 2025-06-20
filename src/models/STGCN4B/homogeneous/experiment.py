@@ -319,12 +319,14 @@ class ExperimentRunner:
             loaders, processor = self._process_and_load_data(trial_args, train_ids, val_ids, test_block_ids=[], splitter=splitter)
             data_for_setup = {**self.input_dict, **loaders}
 
+            epoch_offset = fold_num * trial_args.epochs
             model, criterion, optimizer, scheduler, early_stopping = setup_model(trial_args, data_for_setup)
             _, history = train_model(trial_args, model, criterion, optimizer, scheduler, 
                                     early_stopping=early_stopping, 
                                     train_loader=loaders['train_loader'], 
                                     val_loader=loaders['val_loader'],
-                                    trial=trial)
+                                    trial=trial,
+                                    epoch_offset=epoch_offset)
             
             fold_actual_epochs.append(early_stopping.best_epoch)
 
@@ -361,9 +363,9 @@ class ExperimentRunner:
 
         # Aggregate results and save to trial
         avg_metric = np.mean(fold_metrics)
-        trial.set_user_attr("best_n_epochs", np.mean(fold_actual_epochs))
+        trial.set_user_attr("best_n_epochs", float(np.mean(fold_actual_epochs)))
         if self.args.task_type == "workhour_classification":
-            trial.set_user_attr("optimal_threshold", np.mean(fold_thresholds))
+            trial.set_user_attr("optimal_threshold", float(np.mean(fold_thresholds)))
 
         # --- Logging: Announce the final aggregated result for the trial ---
         logger.info(f"--- Finished Optuna Trial {trial.number} ---")
