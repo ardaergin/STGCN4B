@@ -303,7 +303,7 @@ class ExperimentRunner:
         # Calculate the resulting temporal dimension before building the model.
         ko = trial_args.n_his - (trial_args.stblock_num * 2 * (trial_args.Kt - 1))
         
-        if ko < 0 or ko == 1: # This combination is architecturally impossible and will crash.
+        if ko <= 0: # This combination is architecturally impossible and will crash.
             logger.warning(
                 f"Pruning Trial {trial.number} due to invalid architecture: "
                 f"n_his={trial_args.n_his}, Kt={trial_args.Kt}, stblock_num={trial_args.stblock_num} results in Ko={ko}."
