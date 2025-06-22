@@ -1,6 +1,7 @@
 import os
 import argparse
 
+
 def add_OfficeGraph_args(parser):
     """
     Parse OfficeGraph arguments.
@@ -18,8 +19,9 @@ def add_OfficeGraph_args(parser):
     ##############################
     #  Seed
     ##############################
-    parser.add_argument('--seed', type=int, default=2658918, 
-                      help='Random seed')
+    parser.add_argument('--seed', type=int, 
+                        default=2658918, 
+                        help='Random seed')
 
     ##############################
     #  Base data arguments
@@ -90,9 +92,9 @@ def add_OfficeGraph_args(parser):
     ##############################
     # Static room attributes
     parser.add_argument('--static_attr_preset', type=str,
-                    choices=['minimal', 'standard', 'all'],
-                    default='standard',
-                    help='Preset for static room attributes: minimal, standard, or all')
+                        choices=['minimal', 'standard', 'all'],
+                        default='standard',
+                        help='Preset for static room attributes: minimal, standard, or all')
 
     # Polygon-related arguments
     parser.add_argument('--polygon_type', type=str,
@@ -122,12 +124,12 @@ def add_OfficeGraph_args(parser):
     #  Graph
     ##############################
     parser.add_argument('--data_to_build', type=str, default='graph',
-                    choices=['graph', 'tabular'],
-                    help='Graph type')
+                        choices=['graph', 'tabular'],
+                        help='Graph type')
     
     parser.add_argument('--graph_type', type=str, default='homogeneous',
-                      choices=['heterogeneous', 'homogeneous'],
-                      help='Graph type')
+                        choices=['heterogeneous', 'homogeneous'],
+                        help='Graph type')
     
     parser.add_argument('--skip_incorporating_weather', 
                         action='store_true',
@@ -138,8 +140,8 @@ def add_OfficeGraph_args(parser):
     ##############################
 
     parser.add_argument('--gso_mode', type=str, default='dynamic',
-                      choices=['static', 'dynamic'], 
-                      help='Adjacency matrix type')
+                        choices=['static', 'dynamic'], 
+                        help='Adjacency matrix type')
     
     parser.add_argument('--gso_type', type=str, default='rw_norm_adj',
         choices=[
@@ -160,35 +162,36 @@ def add_OfficeGraph_args(parser):
     )
 
 
+
 def add_base_modelling_args(parser):
     """Parse common data and training arguments."""
     
     # Task-related arguments
     parser.add_argument('--model', type=str, default='STGCN',
-                      choices=['STGCN', 'LightGBM'], 
-                      help='Model type')
+                        choices=['STGCN', 'LightGBM'], 
+                        help='Model type')
     parser.add_argument('--task_type', type=str, default='consumption_forecast',
-                      choices=['workhour_classification', 'consumption_forecast', 'measurement_forecast'], 
-                      help='Task type')
+                        choices=['workhour_classification', 'consumption_forecast', 'measurement_forecast'], 
+                        help='Task type')
     parser.add_argument('--measurement_variable', type=str, default='Temperature',
-                      choices=['Temperature', 'Humidity', 'CO2Level'],
-                      help='If task_type is "measurement_forecast", then, which measurement type to forecast.')
+                        choices=['Temperature', 'Humidity', 'CO2Level'],
+                        help='If task_type is "measurement_forecast", then, which measurement type to forecast.')
     parser.add_argument('--measurement_variable_stat', type=str, default='mean',
-                    choices=['mean', 'max', 'min'],
-                    help='Which statistic to use for creating targets for the measurement variable.')
+                        choices=['mean', 'max', 'min'],
+                        help='Which statistic to use for creating targets for the measurement variable.')
 
     # Device specification
     parser.add_argument('--device', type=str,
                         default='cpu',
                         help='PyTorch device for tensor operations (cpu, cuda, etc.)')
     parser.add_argument('--enable_cuda', action='store_true', 
-                      help='Enable CUDA')
+                        help='Enable CUDA')
     
     # Common training arguments
     parser.add_argument('--batch_size', type=int, default=144, 
-                      help='Batch size')
+                        help='Batch size')
     parser.add_argument('--epochs', type=int, default=100, 
-                      help='Number of epochs')
+                        help='Number of epochs')
     
     # Stratified data splitting
     parser.add_argument('--stratum_size', type=int, 
@@ -197,8 +200,8 @@ def add_base_modelling_args(parser):
 
     ########## Experimental Setup ##########
     parser.add_argument('--n_experiments', type=int,
-                         default=10,
-                         help='Number of outer loop train-test splits for nested CV.')
+                        default=10,
+                        help='Number of outer loop train-test splits for nested CV.')
     parser.add_argument('--experiment_id', type=int, 
                         help='The ID of the outer loop train-test split to run (for parallel execution).')
     parser.add_argument('--parellelize_experiments', action='store_true', 
@@ -232,64 +235,100 @@ def add_STGCN_args(parser):
     STGCN: Spatio-temporal graph convolutional network.
     (Yu et al., 2018)
     """
-    # STGCN specific parameters
-    parser.add_argument('--n_his', type=int, default=24,
-                      help='Number of historical time steps to use')
-    parser.add_argument('--n_pred', type=int, default=1,
+    ########## STGCN parameters ##########
+    parser.add_argument('--n_his', type=int, 
+                        default=24,
+                        help='Number of historical time steps to use')
+    parser.add_argument('--n_pred', type=int, 
+                        default=1,
                         help='the number of time interval for predcition, default as 1')
-    parser.add_argument('--time_intvl', type=int, default=5)
-    parser.add_argument('--Kt', type=int, default=3, 
-                      help='Kernel size in temporal convolution')
-    parser.add_argument('--Ks', type=int, default=3, 
-                      help='Kernel size in graph convolution')
-    parser.add_argument('--stblock_num', type=int, default=3, 
-                      help='Number of ST-Conv blocks')
-    parser.add_argument('--act_func', type=str, default='glu', 
-                      choices=['glu', 'gtu', 'relu', 'silu'], 
-                      help='Activation function')
-    parser.add_argument('--graph_conv_type', type=str, default='graph_conv', 
-                      choices=['cheb_graph_conv', 'graph_conv'], 
-                      help='Graph convolution type')
-    parser.add_argument('--droprate', type=float, default=0.5, 
-                      help='Dropout rate')
-    parser.add_argument('--step_size', type=int, default=10, 
-                      help='Step size for learning rate scheduler')
-    parser.add_argument('--gamma', type=float, default=0.9, 
-                      help='Gamma for learning rate scheduler')
-    parser.add_argument('--enable-bias', dest='enable_bias', action='store_true', help='Enable bias in layers.')
-    parser.add_argument('--disable-bias', dest='enable_bias', action='store_false', help='Disable bias in layers.')
-    parser.set_defaults(enable_bias=True)
-    parser.add_argument('--weight_decay_rate', type=float, default=0.001, help='weight decay (L2 penalty)')
-    parser.add_argument('--patience', type=int, default=10, help='early stopping patience')
+    parser.add_argument('--time_intvl', type=int, 
+                        default=5)
+    
+    parser.add_argument('--Kt', type=int, 
+                        default=3, 
+                        help='Kernel size in temporal convolution')
+    parser.add_argument('--Ks', type=int, 
+                        default=3, 
+                        help='Kernel size in graph convolution')
+    
+    parser.add_argument('--stblock_num', type=int, 
+                        default=3, 
+                        help='Number of ST-Conv blocks')
+    
+    parser.add_argument('--graph_conv_type', type=str, 
+                        default='graph_conv', 
+                        choices=['cheb_graph_conv', 'graph_conv'], 
+                        help='Graph convolution type')
 
-    parser.add_argument('--optimizer', type=str, default='adamw', 
-                      choices=['adam', 'adamw', 'sgd'], 
-                      help='Optimizer type')
-    parser.add_argument('--lr', type=float, default=0.0001, 
-                      help='Learning rate')
+    parser.add_argument('--act_func', type=str, 
+                        default='glu', 
+                        choices=['glu', 'gtu', 'relu', 'silu'], 
+                        help='Activation function')
+
+    # Channel size arguments
+    parser.add_argument('--st-main-channels', type=int, 
+                        default=64,
+                        help='Number of main channels in the ST-Conv blocks (e.g., C in T-G(C,B)-T(B,C)).')
+    parser.add_argument('--st-bottleneck-channels', type=int, 
+                        default=16,
+                        help='Number of bottleneck channels in the graph convolution layer within ST-Conv blocks.')
+    parser.add_argument('--output-channels', type=int, 
+                        default=128,
+                        help='Number of channels in the final output block.')
+
+    # Early stopping
+    parser.add_argument('--patience', type=int, 
+                        default=10, 
+                        help='early stopping patience')
+
+    # Common training parameters
+    parser.add_argument('--lr', type=float, 
+                        default=0.0001, 
+                        help='Learning rate')
+    parser.add_argument('--optimizer', type=str, 
+                        default='adamw', 
+                        choices=['adam', 'adamw', 'sgd'], 
+                        help='Optimizer type')
+    parser.add_argument('--step_size', type=int, 
+                        default=10, 
+                        help='Step size for learning rate scheduler')
+    parser.add_argument('--gamma', type=float,
+                        default=0.9, 
+                        help='Gamma for learning rate scheduler')
+
+    parser.add_argument('--droprate', type=float, 
+                        default=0.5, 
+                        help='Dropout rate')
+    parser.add_argument('--weight_decay_rate', type=float, 
+                        default=0.001, 
+                        help='weight decay (L2 penalty)')
+    
+    parser.add_argument('--enable-bias', dest='enable_bias', 
+                        action='store_true', 
+                        help='Enable bias in layers.')
+    parser.add_argument('--disable-bias', dest='enable_bias', 
+                        action='store_false', 
+                        help='Disable bias in layers.')
+    parser.set_defaults(enable_bias=True)
+
 
 
 def add_LightGBM_args(parser):
     """
     Tabular‐specific arguments for LightGBM training/evaluation.
     """
-    parser.add_argument(
-        '--verbose',
-        action='store_true',
-        help='Enable verbose LightGBM output (shows eval logs)'
-    )
-    parser.add_argument(
-        '--n_estimators',
-        type=int,
-        default=1000,
-        help='Number of boosting rounds'
-    )
-    parser.add_argument(
-        '--early_stopping_rounds',
-        type=int,
-        default=50,
-        help='Rounds of early stopping'
-    )
+    parser.add_argument('--verbose',
+                        action='store_true',
+                        help='Enable verbose LightGBM output (shows eval logs)')
+    parser.add_argument('--n_estimators', type=int,
+                        default=1000,
+                        help='Number of boosting rounds')
+    parser.add_argument('--early_stopping_rounds', type=int,
+                        default=50,
+                        help='Rounds of early stopping')
+
+
 
 def parse_args():
     """Parse command-line arguments with model-specific parameters."""

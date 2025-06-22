@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
-#SBATCH --time=03:00:00
+#SBATCH --time=06:00:00
 #SBATCH --array=0-9
 #SBATCH --output=output/experiments/slurm_output_%A_%a.out # %A=job ID, %a=array task ID
 #SBATCH --error=output/experiments/slurm_error_%A_%a.err

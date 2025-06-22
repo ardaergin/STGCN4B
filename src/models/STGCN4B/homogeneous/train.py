@@ -90,14 +90,15 @@ def setup_model(args, data):
 
     # Add intermediate blocks
     for _ in range(args.stblock_num):
-        blocks.append([64, 16, 64])
+        intermediate_channels = [args.st_main_channels, args.st_bottleneck_channels, args.st_main_channels]
+        blocks.append(intermediate_channels)
         
     # Add output blocks
     Ko = args.n_his - (args.Kt - 1) * 2 * args.stblock_num
     if Ko == 0:
-        blocks.append([128])
+        blocks.append([args.output_channels])
     elif Ko > 0:
-        blocks.append([128, 128])
+        blocks.append([args.output_channels, args.output_channels])
     
     # Output dimension determined by n_pred
     blocks.append([args.n_pred])

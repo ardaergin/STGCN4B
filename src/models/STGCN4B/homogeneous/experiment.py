@@ -328,6 +328,9 @@ class ExperimentRunner:
         trial_args.n_his = trial.suggest_categorical("n_his", [12, 18, 24, 30, 36])
         trial_args.Kt = trial.suggest_categorical("Kt", [2, 3])
         trial_args.Ks = trial.suggest_categorical("Ks", [2, 3])
+        trial_args.st_main_channels = trial.suggest_categorical("st_main_channels", [32, 64, 96])
+        trial_args.st_bottleneck_channels = trial.suggest_categorical("st_bottleneck_channels", [8, 16, 24])
+        trial_args.output_channels = trial.suggest_categorical("output_channels", [128, 256, 512])
 
         # We don't tune epochs directly. We set a max value and let early stopping find the best.
         # This is the max number of epochs the model is allowed to run for in each CV fold.
