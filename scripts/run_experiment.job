@@ -4,8 +4,8 @@
 #SBATCH --gpus=1
 #SBATCH --job-name=stgcn
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=2
-#SBATCH --mem=16G
+#SBATCH --cpus-per-task=6
+#SBATCH --mem=64G
 #SBATCH --time=03:00:00
 #SBATCH --output=output/experiments/slurm_output_%A.out
 #SBATCH --error=output/experiments/slurm_error_%A.err
@@ -91,6 +91,7 @@ srun python -m src.models.STGCN4B.homogeneous.experiment \
   --data_dir $DATA_DIR \
   --output_dir $OUTPUT_DIR \
   --enable_cuda \
+  --n_jobs 5 \
   "$@"
 
 echo "Cleaning up scratch space..."
