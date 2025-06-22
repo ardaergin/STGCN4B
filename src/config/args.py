@@ -203,7 +203,7 @@ def add_base_modelling_args(parser):
     parser.add_argument('--n_optuna_trials', type=int, 
                         default=20,
                         help='Number of Optuna trials for HPO.')
-    parser.add_argument('--njobs', type=int, 
+    parser.add_argument('--n_jobs', type=int, 
                         default=5,
                         help="Number of parallel Optuna worker processes (passed as `n_jobs` to study.optimize).")
     parser.add_argument('--optuna_crash_mode', type=str, default='safe',
