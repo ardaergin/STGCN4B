@@ -296,15 +296,17 @@ class ExperimentRunner:
             # DEBUG MODE: Let any unhandled exception crash the script for immediate feedback.
             logger.warning("Running in fail_fast mode. Unhandled trial exceptions will crash the experiment.")
             study.optimize(
-                objective_func, 
-                n_trials=self.args.n_optuna_trials
+                objective_func,
+                n_trials=self.args.n_optuna_trials,
+                n_jobs=self.args.n_jobs
             )
         elif self.args.optuna_crash_mode == "safe":
             # SAFE MODE (DEFAULT): Catch all exceptions, log them, and continue the study.
             logger.info("Running in safe mode. Unhandled trial exceptions will be caught and logged.")
             study.optimize(
-                objective_func, 
+                objective_func,
                 n_trials=self.args.n_optuna_trials,
+                n_jobs=self.args.n_jobs,
                 catch=(Exception,)
             )
 

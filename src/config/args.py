@@ -225,7 +225,9 @@ def add_base_modelling_args(parser):
     parser.add_argument('--interval_steps', type=int, default=1,
                         help='Interval (in steps/epochs) at which to check for pruning possibilities '
                              'after the warmup period is over.')
-
+    parser.add_argument('--n_jobs', type=int, 
+                        default=1,
+                        help="Number of parallel Optuna worker processes (passed as `n_jobs` to study.optimize).")
 
 
 def add_STGCN_args(parser):
