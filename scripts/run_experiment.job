@@ -17,7 +17,7 @@ export BASE_OUTPUT_DIR=output/experiments/stgcn_${SLURM_ARRAY_JOB_ID}
 
 # Define a specific output directory for this single task in the array
 # SLURM_ARRAY_TASK_ID is unique for each job (0, 1, 2, ...)
-export TASK_OUTPUT_DIR=${BASE_OUTPUT_DIR}/split_${SLURM_ARRAY_TASK_ID}
+export TASK_OUTPUT_DIR=${BASE_OUTPUT_DIR}/experiment_${SLURM_ARRAY_TASK_ID}
 mkdir -p $TASK_OUTPUT_DIR
 
 # Load modules

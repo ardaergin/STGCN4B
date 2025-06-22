@@ -272,7 +272,7 @@ class ExperimentRunner:
         logger.info(f"===== Experiment [{self.experiment_id + 1}/{self.args.n_experiments}] COMPLETED. "
                     f"Results saved to {self.output_dir}.")
 
-    def _run_hyperparameter_study(self, splitter: StratifiedBlockSplitter, experiment_id: int):
+    def _run_hyperparameter_study(self, splitter: StratifiedBlockSplitter):
         """Sets up and runs an Optuna study for hyperparameter optimization."""
         direction = "maximize" if self.args.task_type == "workhour_classification" else "minimize"
         
@@ -284,14 +284,14 @@ class ExperimentRunner:
         storage = f"sqlite:///{db_path}"
         
         study = optuna.create_study(direction=direction,
-            storage=storage, study_name=f"experiment_{experiment_id}", load_if_exists=True,
+            storage=storage, study_name=f"experiment_{self.experiment_id}", load_if_exists=True,
             pruner=pruner)
         logger.info(f"Optuna study storage: {storage} (study_name={study.study_name}) with {pruner.__class__.__name__}")
         
         # Making the CV splits
         splitter.get_cv_splits()
         
-        objective_func = lambda trial: self._objective(trial, splitter, experiment_id)
+        objective_func = lambda trial: self._objective(trial, splitter, self.experiment_id)
         if self.args.optuna_crash_mode == "fail_fast":
             # DEBUG MODE: Let any unhandled exception crash the script for immediate feedback.
             logger.warning("Running in fail_fast mode. Unhandled trial exceptions will crash the experiment.")
