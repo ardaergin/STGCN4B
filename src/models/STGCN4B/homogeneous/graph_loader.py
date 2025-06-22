@@ -1,16 +1,8 @@
-import os
-import sys
-import logging
 from typing import Dict, List
-
 import torch
 from torch.utils.data import Dataset, DataLoader
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s %(name)s %(levelname)s %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+import logging
 logger = logging.getLogger(__name__)
 
 

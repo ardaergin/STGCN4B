@@ -1,9 +1,9 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-import logging
-from sklearn.metrics import roc_curve, auc, precision_recall_curve
+from sklearn.metrics import roc_curve, precision_recall_curve
 
+import logging
 logger = logging.getLogger(__name__)
 
 class ResultHandler:

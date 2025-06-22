@@ -1,26 +1,18 @@
 #!/usr/bin/env python
 
 import os
-import sys
-import logging
 import numpy as np
 import torch
 from torch_geometric.utils import dense_to_sparse
-import matplotlib.pyplot as plt
-# Forecasting
+# Forecasting metrics
 from sklearn.metrics import (mean_squared_error, mean_absolute_error, r2_score)
-# Classificaation
+# Classificaation metrics
 from sklearn.metrics import (confusion_matrix, accuracy_score, 
                              precision_score, recall_score, f1_score, precision_recall_curve,
                              roc_auc_score, average_precision_score, balanced_accuracy_score)
 import optuna
 
-# Set up logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+import logging
 logger = logging.getLogger(__name__)
 
 from ....config.args import parse_args

@@ -1,14 +1,9 @@
 # from https://github.com/hazdzz/stgcn/blob/main/script/earlystopping.py
+# Made some slight updates
 
-import sys
-import logging
 import torch
 
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+import logging
 logger = logging.getLogger(__name__)
 
 class EarlyStopping:

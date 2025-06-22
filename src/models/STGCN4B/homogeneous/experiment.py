@@ -1,17 +1,14 @@
 #!/usr/bin/env python
 
 import os
-import logging
+from copy import deepcopy
+from typing import Dict, Any, List, Tuple
 import numpy as np
 import pandas as pd
 import torch
 from torch.utils.data import DataLoader
-
 import optuna
 from optuna.pruners import MedianPruner
-from copy import deepcopy
-from typing import Dict, Any, List, Tuple
-
 import seaborn as sns
 import matplotlib.pyplot as plt
 import plotly
@@ -23,7 +20,7 @@ from .graph_loader import load_data
 from .processor import NumpyDataProcessor
 from .train import setup_model, train_model, evaluate_model, find_optimal_threshold
 
-# Set up logging
+# Set up the main logging
 import logging, sys
 logging.basicConfig(
     level=logging.INFO,

@@ -1,13 +1,10 @@
+import os
+import json
 import numpy as np
 from typing import List, Tuple, Generator, Dict, TypedDict
-import os, json
 
-import logging, sys
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+
+import logging
 logger = logging.getLogger(__name__)
 
 

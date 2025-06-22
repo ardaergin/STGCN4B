@@ -1,8 +1,8 @@
 from typing import Union
 import numpy as np
 import torch
-import logging
 
+import logging
 logger = logging.getLogger(__name__)
 
 class NumpyDataProcessor:
