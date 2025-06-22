@@ -27,7 +27,7 @@ from .train import setup_model, train_model, evaluate_model, find_optimal_thresh
 import logging, sys
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - [PID:%(process)d] - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
