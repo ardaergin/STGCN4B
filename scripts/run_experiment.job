@@ -1,10 +1,10 @@
 #!/bin/bash
 
 #SBATCH --partition=gpu_h100
-#SBATCH --gpus=2
+#SBATCH --gpus=4
 #SBATCH --job-name=stgcn
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=6
+#SBATCH --cpus-per-task=16
 #SBATCH --mem=64G
 #SBATCH --time=03:00:00
 #SBATCH --output=output/experiments/slurm_output_%A.out
@@ -40,6 +40,7 @@ python -c "import kaleido" 2>/dev/null || pip install --user kaleido
 # Set PyTorch optimization flags
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 export NCCL_DEBUG=INFO
+export OMP_NUM_THREADS=4
 
 # Move into your project directory (safety)
 cd $HOME/eSTGNN
@@ -91,7 +92,7 @@ srun python -m src.models.STGCN4B.homogeneous.experiment \
   --data_dir $DATA_DIR \
   --output_dir $OUTPUT_DIR \
   --enable_cuda \
-  --n_jobs 5 \
+  --n_jobs 4 \
   "$@"
 
 echo "Cleaning up scratch space..."

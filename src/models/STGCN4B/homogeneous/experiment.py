@@ -145,12 +145,13 @@ class ExperimentRunner:
 
     def _process_and_load_data(self, args: Any,
                                train_block_ids: List[int], val_block_ids: List[int], test_block_ids: List[int],
-                               splitter: StratifiedBlockSplitter) -> Tuple[Dict, NumpyDataProcessor]:
+                               splitter: StratifiedBlockSplitter, 
+                               device) -> Tuple[Dict, NumpyDataProcessor]:
         """
         Handles all data processing for a given fold using the fast NumPy workflow.
         Returns the final data loaders and the fitted processor.
         """
-        device = self.input_dict['device']
+        # device = self.input_dict['device']
         
         # --- 1. Get train indices and slice arrays to fit the processor ---
         train_indices = splitter._get_indices_from_blocks(train_block_ids)
@@ -289,6 +290,11 @@ class ExperimentRunner:
     
     def _objective(self, trial: optuna.trial.Trial, splitter: StratifiedBlockSplitter, outer_split_num: int):
         """The objective function for Optuna, performing k-fold cross-validation."""
+        num_available_gpus = torch.cuda.device_count()
+        gpu_id = trial.number % num_available_gpus
+        device = torch.device(f"cuda:{gpu_id}")
+        logger.info(f"[Trial {trial.number}] will be assigned to device: {device}")
+
         splitter.get_cv_splits()
         trial_args = deepcopy(self.args)
 
@@ -328,8 +334,8 @@ class ExperimentRunner:
             logger.info(f">>> [Trial {trial.number}] Starting CV Fold {fold_num + 1}/{splitter.n_splits} <<<")
 
             # Load data for the current fold, combine loaders with other necessary data for setup_model
-            loaders, processor = self._process_and_load_data(trial_args, train_ids, val_ids, test_block_ids=[], splitter=splitter)
-            data_for_setup = {**self.input_dict, **loaders}
+            loaders, processor = self._process_and_load_data(trial_args, train_ids, val_ids, [], splitter, device=device)
+            data_for_setup = {**self.input_dict, **loaders, 'device': device} # Pass device to setup_model
 
             epoch_offset = fold_num * trial_args.epochs
             model, criterion, optimizer, scheduler, early_stopping = setup_model(trial_args, data_for_setup)
