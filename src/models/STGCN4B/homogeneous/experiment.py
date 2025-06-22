@@ -227,7 +227,7 @@ class ExperimentRunner:
         splitter.get_train_test_split()
 
         # 2. Run hyperparameter tuning using cross-validation on the training data.
-        study = self._run_hyperparameter_study(splitter, experiment_id=experiment_id)
+        study = self._run_hyperparameter_study(splitter)
         best_trial = study.best_trial
         best_params = best_trial.params
         best_params['epochs'] = int(np.ceil(best_trial.user_attrs["best_n_epochs"])) # the optimal number of epochs determined during CV
@@ -291,7 +291,7 @@ class ExperimentRunner:
         # Making the CV splits
         splitter.get_cv_splits()
         
-        objective_func = lambda trial: self._objective(trial, splitter, self.experiment_id)
+        objective_func = lambda trial: self._objective(trial, splitter)
         if self.args.optuna_crash_mode == "fail_fast":
             # DEBUG MODE: Let any unhandled exception crash the script for immediate feedback.
             logger.warning("Running in fail_fast mode. Unhandled trial exceptions will crash the experiment.")
