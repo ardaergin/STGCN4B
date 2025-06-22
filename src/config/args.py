@@ -203,6 +203,9 @@ def add_base_modelling_args(parser):
     parser.add_argument('--n_optuna_trials', type=int, 
                         default=20,
                         help='Number of Optuna trials for HPO.')
+    parser.add_argument('--njobs', type=int, 
+                        default=5,
+                        help="Number of parallel Optuna worker processes (passed as `n_jobs` to study.optimize).")
     parser.add_argument('--optuna_crash_mode', type=str, default='safe',
                         choices=['fail_fast', 'safe'], 
                         help="weather to add 'study.optimize(..., catch=(Exception,))'.")
@@ -217,7 +220,7 @@ def add_base_modelling_args(parser):
     parser.add_argument('--interval-steps', type=int, default=1,
                         help='Interval (in steps/epochs) at which to check for pruning possibilities '
                              'after the warmup period is over.')
-
+    
 
 def add_STGCN_args(parser):
     """
