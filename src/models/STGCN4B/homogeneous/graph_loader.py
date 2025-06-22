@@ -18,7 +18,7 @@ class BlockAwareSTGCNDataset(Dataset):
     and y is the target vector of length n_pred (classification or forecasting).
 
     Args:
-        feature_matrices: Dict[int → torch.Tensor] mapping bucket_idx → (R×F) tensor
+        feature_tensor: torch.Tensor of shape (T, R, F)
         blocks: List of Lists, each sublist contains bucket‐indices for one block
         targets: torch.Tensor of shape (T,) giving label/target for each bucket
         n_his: history length (number of past buckets)

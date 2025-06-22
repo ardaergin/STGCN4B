@@ -202,7 +202,7 @@ class ExperimentRunner:
         loaders = load_data(
             args,
             blocks=self.input_dict["blocks"],
-            feature_matrices=norm_feature_tensor,
+            feature_tensor=norm_feature_tensor,
             targets=final_targets,
             target_mask=final_mask,
             train_block_ids=train_block_ids,
