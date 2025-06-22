@@ -80,8 +80,8 @@ def setup_model(args, data, device):
         raise ValueError(f"Unknown gso_mode: {args.gso_mode!r}. Must be 'static' or 'dynamic'.")
     
     batch_sample = next(iter(data['train_loader']))
-    X_batch_list, y_batch = batch_sample[0], batch_sample[1] # Unpack first two elements, ignore the mask
-    logger.info(f"Sample input shape (X[0]): {X_batch_list[0].shape}  # shape=(batch_size, n_nodes, n_features)")
+    X_batch_sample, y_batch = batch_sample[0], batch_sample[1]
+    logger.info(f"Sample batch input shape (X): {X_batch_sample.shape}  # shape=(batch_size, n_his, n_nodes, n_features)")
     logger.info(f"Sample target shape: {y_batch.shape}")
     
     blocks = []
@@ -174,7 +174,7 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
             optimizer.zero_grad()
 
             # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
-            x = torch.stack(X_batch, dim=1).permute(0, 3, 1, 2)
+            x = X_batch.permute(0, 3, 1, 2)
 
             # Forward pass
             outputs = model(x)
@@ -213,7 +213,7 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
                 for X_batch, y_batch, mask_batch in val_loader:
 
                     # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
-                    x = torch.stack(X_batch, dim=1).permute(0, 3, 1, 2)
+                    x = X_batch.permute(0, 3, 1, 2)
 
                     # Forward pass
                     outputs = model(x)
@@ -317,7 +317,7 @@ def evaluate_model(args, model, test_loader, processor: NumpyDataProcessor, thre
         for X_batch, y_batch, mask_batch in test_loader:
 
             # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
-            x = torch.stack(X_batch, dim=1).permute(0, 3, 1, 2)
+            x = X_batch.permute(0, 3, 1, 2)
 
             # Forward pass
             outputs = model(x)
@@ -414,7 +414,7 @@ def find_optimal_threshold(model, val_loader):
     all_probs, all_labels = [], []
     with torch.no_grad():
         for X_batch, y_batch, _ in val_loader:
-            outputs = model(torch.stack(X_batch, dim=1).permute(0, 3, 1, 2)).squeeze()
+            outputs = model(X_batch.permute(0, 3, 1, 2)).squeeze()
             probs = torch.sigmoid(outputs)
             all_probs.extend(probs.cpu().numpy())
             all_labels.extend(y_batch.cpu().numpy())

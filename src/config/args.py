@@ -196,31 +196,34 @@ def add_base_modelling_args(parser):
                         help='Number of blocks per stratum for the data splitter.')
 
     ########## Experimental Setup ##########
-    parser.add_argument('--n_outer_splits', type=int,
+    parser.add_argument('--n_experiments', type=int,
                          default=10,
                          help='Number of outer loop train-test splits for nested CV.')
+    parser.add_argument('--experiment_id', type=int, 
+                        help='The ID of the outer loop train-test split to run (for parallel execution).')
+    parser.add_argument('--parellelize_experiments', action='store_true', 
+                        help='Parellelize the outer loop (Default: False).')
+
     # Optuna general args
     parser.add_argument('--n_optuna_trials', type=int, 
                         default=20,
                         help='Number of Optuna trials for HPO.')
-    parser.add_argument('--n_jobs', type=int, 
-                        default=5,
-                        help="Number of parallel Optuna worker processes (passed as `n_jobs` to study.optimize).")
     parser.add_argument('--optuna_crash_mode', type=str, default='safe',
                         choices=['fail_fast', 'safe'], 
                         help="weather to add 'study.optimize(..., catch=(Exception,))'.")
     
     # Arguments for configuring Optuna's MedianPruner
-    parser.add_argument('--n-startup-trials', type=int, default=5,
+    parser.add_argument('--n_startup_trials', type=int, default=5,
                         help='Number of trials to complete before pruning is activated. '
                              'These first trials will always run to completion.')
-    parser.add_argument('--n-warmup-steps', type=int, default=20,
+    parser.add_argument('--n_warmup_steps', type=int, default=20,
                         help="Number of steps (epochs in this case) to complete within a trial "
                              "before it can be pruned. This prevents pruning on initial noisy performance.")
-    parser.add_argument('--interval-steps', type=int, default=1,
+    parser.add_argument('--interval_steps', type=int, default=1,
                         help='Interval (in steps/epochs) at which to check for pruning possibilities '
                              'after the warmup period is over.')
-    
+
+
 
 def add_STGCN_args(parser):
     """

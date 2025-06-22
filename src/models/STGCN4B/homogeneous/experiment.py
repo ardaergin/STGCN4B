@@ -9,9 +9,6 @@ import torch
 from torch.utils.data import DataLoader
 import optuna
 from optuna.pruners import MedianPruner
-import seaborn as sns
-import matplotlib.pyplot as plt
-import plotly
 
 from ....utils.filename_util import get_data_filename
 from ....utils.block_split import StratifiedBlockSplitter
@@ -24,7 +21,7 @@ from .train import setup_model, train_model, evaluate_model, find_optimal_thresh
 import logging, sys
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - [PID:%(process)d] - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)]
 )
 logger = logging.getLogger(__name__)
@@ -35,31 +32,42 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 class ExperimentRunner:
     """
-    Orchestrates a full machine learning experiment with nested cross-validation.
+    Orchestrates a single machine learning experiment.
 
-    The runner performs two loops:
-    1. An outer loop that creates multiple, independent train-test splits to
-       assess model robustness and generalization.
-    2. An inner loop that, for each train-test split, performs k-fold
-       cross-validation on the training data to find the best hyperparameters
-       using Optuna.
+    This class is designed to be executed as a self-contained unit, often as
+    part of a larger parallel execution framework (e.g., a Slurm job array)
+    where multiple experiments are run with different seeds to assess model
+    robustness.
 
-    After finding the best hyperparameters, the model is retrained on the full
-    training set and evaluated on the hold-out test set. Results from all
-    outer loops are aggregated to provide a final performance estimate.
+    A single run of this class performs the following steps:
+    1. Creates a unique train-test split based on a given seed.
+    2. Runs hyperparameter optimization on the training set using k-fold
+       cross-validation with Optuna.
+    3. Retrains a final model on the full training set using the best-found
+       hyperparameters.
+    4. Evaluates the final model on the hold-out test set and saves all results.
     """
 
     def __init__(self, args: Any):
         """
-        Initializes the ExperimentRunner.
+        Initializes the ExperimentRunner for a single experiment instance.
 
         Args:
             args: A configuration object (e.g., from argparse) containing all
-                  necessary parameters for data loading, model setup, and training.
-                  Must include `n_outer_splits` and `n_optuna_trials`.
-            output: 
+                  necessary parameters. It must include:
+                  - `split_id`: A unique integer for this experiment run, used for seeding.
+                  - `n_experiments`: The total number of parallel experiments being run.
+                  - `seed`: A base random seed.
+                  - `n_optuna_trials`: The number of HPO trials to run.
         """
         self.args = args
+
+        # A unique ID for this specific experiment run (e.g., from SLURM_ARRAY_TASK_ID)
+        self.experiment_id = args.experiment_id
+        # Create a unique seed for this run to ensure data splits are different
+        self.seed = args.seed + args.experiment_id
+
+        # Pruning
         self.median_pruning = {
             "n_startup_trials": args.n_startup_trials,
             "n_warmup_steps": args.n_warmup_steps,
@@ -74,13 +82,9 @@ class ExperimentRunner:
         self.input_dict: Dict[str, Any] = {}
         self.load_data_file()
 
-        # Output directories for this specific experiment
-        self.main_output_dir = args.output_dir
-        logger.info(f"Experiment outputs will be saved in: {self.main_output_dir}")
-        self.splits_dir = os.path.join(self.main_output_dir, "splits")
-        os.makedirs(self.splits_dir, exist_ok=True)
-        self.final_results_dir = os.path.join(self.main_output_dir, "results")
-        os.makedirs(self.final_results_dir, exist_ok=True)
+        # Set up the specific output directory for this run's artifacts
+        self.output_dir = args.output_dir
+        logger.info(f"Experiment outputs will be saved in: {self.output_dir}")
 
     def load_data_file(self):
         """
@@ -136,22 +140,22 @@ class ExperimentRunner:
         elif args.task_type == "consumption_forecast":
             self.input_dict["targets"] = numpy_input["consumption_values"]
         elif args.task_type == "measurement_forecast":
-            target_name = f"{self.measurement_variable}_values"
+            target_name = f"{self.args.measurement_variable}_values"
             self.input_dict["targets"] = numpy_input[target_name]
         else:
             raise ValueError(f"Unknown task type: {args.task_type}")
 
         logger.info("NumPy data loaded and ready for processing.")
 
-    def _process_and_load_data(self, args: Any,
-                               train_block_ids: List[int], val_block_ids: List[int], test_block_ids: List[int],
-                               splitter: StratifiedBlockSplitter, 
-                               device) -> Tuple[Dict, NumpyDataProcessor]:
+    def _process_and_load_data(self, args,
+                            train_block_ids: List[int], val_block_ids: List[int], test_block_ids: List[int],
+                            splitter: StratifiedBlockSplitter
+                            )-> Tuple[Dict, NumpyDataProcessor, torch.Tensor]:
         """
         Handles all data processing for a given fold using the fast NumPy workflow.
         Returns the final data loaders and the fitted processor.
         """
-        # device = self.input_dict['device']
+        device = self.input_dict['device']
         
         # --- 1. Get train indices and slice arrays to fit the processor ---
         train_indices = splitter._get_indices_from_blocks(train_block_ids)
@@ -166,12 +170,10 @@ class ExperimentRunner:
         processor.fit_features(train_feature_slice)
         norm_feature_array = processor.transform_features(self.input_dict["feature_array"])
         norm_feature_array[np.isnan(norm_feature_array)] = 0.0
-        # Convert final NumPy array to the required dictionary format
-        T = norm_feature_array.shape[0]
-        feature_matrices_dict = {t: norm_feature_array[t] for t in range(T)}
-        # Move all feature matrices to device
-        for t in feature_matrices_dict:
-            feature_matrices_dict[t] = torch.from_numpy(feature_matrices_dict[t]).float().to(device)
+
+        # NOTE: I used to create dictionary of T tensors. 
+        #       Now, creating create one large tensor, which is a more efficient bulk transfer to the GPU.
+        norm_feature_tensor = torch.from_numpy(norm_feature_array).float().to(device)
 
         ##### y #####
         if self.args.task_type == "workhour_classification":
@@ -200,7 +202,7 @@ class ExperimentRunner:
         loaders = load_data(
             args,
             blocks=self.input_dict["blocks"],
-            feature_matrices=feature_matrices_dict,
+            feature_matrices=norm_feature_tensor,
             targets=final_targets,
             target_mask=final_mask,
             train_block_ids=train_block_ids,
@@ -210,48 +212,67 @@ class ExperimentRunner:
         return loaders, processor
 
     def run_experiment(self):
-        """Executes the entire experimental pipeline."""
-        logger.info("Starting experiment orchestration...")
+        """
+        Executes the full pipeline for a single experiment instance.
+        """
+        logger.info("Starting a single split experiment run...")
         all_blocks = self.input_dict["blocks"]
+        experiment_id = self.experiment_id
+        seed = self.seed
 
-        ########## Outer Loop: Multiple Train-Test Splits ##########
-        for i in range(self.args.n_outer_splits):
-            seed = self.args.seed + i
-            logger.info(f"--- Starting Outer Loop Iteration {i+1}/{self.args.n_outer_splits} (Seed: {seed}) ---")
+        logger.info(f"===== Starting Experiment [{experiment_id+1}/{self.args.n_experiments}] | Seed: {seed} =====")
 
-            # 1. Create a new splitter with a new seed for a fresh train-test split.
-            splitter = StratifiedBlockSplitter(output_dir=self.splits_dir, blocks=all_blocks, stratum_size=self.args.stratum_size, seed=seed)
-            splitter.get_train_test_split()
+        # 1. Create a unique, seeded train-test split for this experiment.
+        splitter = StratifiedBlockSplitter(output_dir=self.output_dir, blocks=all_blocks, stratum_size=self.args.stratum_size, seed=seed)
+        splitter.get_train_test_split()
 
-            # 2. Run the inner loop: hyperparameter tuning with CV.
-            study = self._run_hyperparameter_study(splitter, outer_split_num=i)
-            best_trial = study.best_trial
-            best_params = best_trial.params
-            best_params['epochs'] = int(np.ceil(best_trial.user_attrs["best_n_epochs"])) # the optimal number of epochs determined during CV
+        # 2. Run hyperparameter tuning using cross-validation on the training data.
+        study = self._run_hyperparameter_study(splitter, experiment_id=experiment_id)
+        best_trial = study.best_trial
+        best_params = best_trial.params
+        best_params['epochs'] = int(np.ceil(best_trial.user_attrs["best_n_epochs"])) # the optimal number of epochs determined during CV
 
-            logger.info(f"Best trial for outer loop {i+1}: Metric={best_trial.value:.4f}, Params={best_params}")
+        logger.info(f"Best trial for Experiment [{experiment_id+1}/{self.args.n_experiments}]: "
+                    f"Metric={best_trial.value:.4f}, Params={best_params}")
 
-            # 3. Retrain the final model on the entire training set with the best hyperparameters.
-            final_model, final_history, test_loader, processor = self._train_final_model(best_params, splitter)
-            test_metrics = self._evaluate_final_model(final_model, test_loader, best_trial, processor)
+        # 3. Retrain the final model on the entire training set with the best hyperparameters.
+        final_model, final_history, test_loader, processor = self._train_final_model(best_params, splitter)
 
-            ### Saving ###
-            iter_results_dir = os.path.join(self.final_results_dir, f"split_{i}")
-            handler = ResultHandler(output_dir=iter_results_dir, task_type=self.args.task_type,
-                                    history=final_history, metrics=test_metrics)
-            handler.process()
-            ### Saving ###
+        # 4. Evaluate the final model on the hold-out test set.
+        test_metrics = self._evaluate_final_model(final_model, test_loader, best_trial, processor)
 
-            # Store test metrics
-            scalar_metrics = {k: v for k, v in test_metrics.items() if np.isscalar(v)}
-            scalar_metrics['outer_split'] = i
-            self.test_records.append(scalar_metrics)
-            logger.info(f"Test metrics for outer loop {i+1}: {scalar_metrics}")
+        # 5. Save all results and artifacts for this experiment run.
+        handler = ResultHandler(output_dir=self.output_dir, task_type=self.args.task_type,
+                                history=final_history, metrics=test_metrics)
+        handler.process()
+        
+        # Save detailed CV records from the HPO phase
+        cv_df = pd.DataFrame(self.cv_records)
+        cv_path = os.path.join(self.output_dir, "results_CV.csv")
+        cv_df.to_csv(cv_path, index=False)
+        logger.info(f"Saved detailed CV results for this split to {cv_path}")
 
-        # 5. Report and save final results across all outer loop iterations
-        self._report_and_save_final_results()
+        # Save the final test metrics
+        scalar_metrics = {k: v for k, v in test_metrics.items() if np.isscalar(v)}
+        scalar_metrics['experiment_id'] = experiment_id
+        self.test_records.append(scalar_metrics)
 
-    def _run_hyperparameter_study(self, splitter: StratifiedBlockSplitter, outer_split_num: int):
+        test_df = pd.DataFrame(self.test_records)
+        test_path = os.path.join(self.output_dir, "results_test.csv")
+        test_df.to_csv(test_path, index=False)
+
+        logger.info(f"\n===== TEST METRICS for Experiment [{experiment_id+1}/{self.args.n_experiments}] =====\n"
+                    f"{scalar_metrics}"
+                    f"===== =====")
+
+        logger.info(f"\n===== BEST PARAMETERS for Experiment [{experiment_id+1}/{self.args.n_experiments}] =====\n"
+                    f"{best_params}\n"
+                    f"===== =====")
+
+        logger.info(f"===== Experiment [{self.experiment_id + 1}/{self.args.n_experiments}] COMPLETED. "
+                    f"Results saved to {self.output_dir}.")
+
+    def _run_hyperparameter_study(self, splitter: StratifiedBlockSplitter, experiment_id: int):
         """Sets up and runs an Optuna study for hyperparameter optimization."""
         direction = "maximize" if self.args.task_type == "workhour_classification" else "minimize"
         
@@ -259,22 +280,24 @@ class ExperimentRunner:
         pruner = MedianPruner(**self.median_pruning)
         
         # build a URI in your results folder
-        db_path = os.path.join(self.main_output_dir, "optuna_study.db")
+        db_path = os.path.join(self.output_dir, "optuna_study.db")
         storage = f"sqlite:///{db_path}"
         
         study = optuna.create_study(direction=direction,
-            storage=storage, study_name=f"outer_loop_{outer_split_num}", load_if_exists=True,
+            storage=storage, study_name=f"experiment_{experiment_id}", load_if_exists=True,
             pruner=pruner)
         logger.info(f"Optuna study storage: {storage} (study_name={study.study_name}) with {pruner.__class__.__name__}")
-
-        objective_func = lambda trial: self._objective(trial, splitter, outer_split_num)
+        
+        # Making the CV splits
+        splitter.get_cv_splits()
+        
+        objective_func = lambda trial: self._objective(trial, splitter, experiment_id)
         if self.args.optuna_crash_mode == "fail_fast":
             # DEBUG MODE: Let any unhandled exception crash the script for immediate feedback.
             logger.warning("Running in fail_fast mode. Unhandled trial exceptions will crash the experiment.")
             study.optimize(
                 objective_func, 
-                n_trials=self.args.n_optuna_trials,
-                n_jobs=self.args.n_jobs
+                n_trials=self.args.n_optuna_trials
             )
         elif self.args.optuna_crash_mode == "safe":
             # SAFE MODE (DEFAULT): Catch all exceptions, log them, and continue the study.
@@ -282,20 +305,13 @@ class ExperimentRunner:
             study.optimize(
                 objective_func, 
                 n_trials=self.args.n_optuna_trials,
-                n_jobs=self.args.n_jobs,
                 catch=(Exception,)
             )
 
         return study
     
-    def _objective(self, trial: optuna.trial.Trial, splitter: StratifiedBlockSplitter, outer_split_num: int):
+    def _objective(self, trial: optuna.trial.Trial, splitter: StratifiedBlockSplitter):
         """The objective function for Optuna, performing k-fold cross-validation."""
-        num_available_gpus = torch.cuda.device_count()
-        gpu_id = trial.number % num_available_gpus
-        device = torch.device(f"cuda:{gpu_id}")
-        logger.info(f"[Trial {trial.number}] will be assigned to device: {device}")
-
-        splitter.get_cv_splits()
         trial_args = deepcopy(self.args)
 
         # --- General Training Hyperparameters ---
@@ -334,8 +350,8 @@ class ExperimentRunner:
             logger.info(f">>> [Trial {trial.number}] Starting CV Fold {fold_num + 1}/{splitter.n_splits} <<<")
 
             # Load data for the current fold, combine loaders with other necessary data for setup_model
-            loaders, processor = self._process_and_load_data(trial_args, train_ids, val_ids, [], splitter, device=device)
-            data_for_setup = {**self.input_dict, **loaders, 'device': device} # Pass device to setup_model
+            loaders, processor = self._process_and_load_data(trial_args, train_ids, val_ids, test_block_ids=[], splitter=splitter)
+            data_for_setup = {**self.input_dict, **loaders}
 
             epoch_offset = fold_num * trial_args.epochs
             model, criterion, optimizer, scheduler, early_stopping = setup_model(trial_args, data_for_setup)
@@ -356,7 +372,7 @@ class ExperimentRunner:
 
             # Log the result of this specific CV fold
             cv_record = {
-                'outer_split': outer_split_num,
+                'experiment_id': self.experiment_id,
                 'trial_num': trial.number,
                 'fold_num': fold_num,
                 'validation_metric': metric_val,
@@ -396,8 +412,8 @@ class ExperimentRunner:
         return avg_metric
     
     def _train_final_model(self, best_params, splitter):
-        """Trains the final model on the full training set."""
-        logger.info("Retraining final model on all available training data...")
+        """Trains the final model on the full training set with best hyperparameters."""
+        logger.info("Retraining final model on the full training dataset...")
         
         # Get train and test ids from the splitter
         train_ids = splitter.train_block_ids
@@ -422,7 +438,7 @@ class ExperimentRunner:
                               test_loader: DataLoader, 
                               best_trial: optuna.trial.FrozenTrial,
                               processor: NumpyDataProcessor):
-        """Evaluates the final model on the hold-out test set."""
+        """Evaluates the final, retrained model on the hold-out test set."""
         if self.args.task_type == "workhour_classification":
             # Retrieve the optimal threshold found during CV for the best trial.
             # Use 0.5 as a safe fallback if it's not found.
@@ -436,113 +452,11 @@ class ExperimentRunner:
             metrics = evaluate_model(self.args, model, test_loader, processor, threshold=None)
         return metrics
 
-    def _report_and_save_final_results(self):
-        """Aggregates, logs, and saves all collected results to CSV files."""
-        logger.info("---" * 20 + "\n--- Aggregating and Saving Final Results ---\n" + "---" * 20)
-        
-        # 1. Save detailed CV records
-        cv_df = pd.DataFrame(self.cv_records)
-        cv_path = os.path.join(self.final_results_dir, "cv_results_per_fold.csv")
-        cv_df.to_csv(cv_path, index=False)
-        logger.info(f"Saved detailed CV results to {cv_path}")
-
-        # 2. Save detailed test records
-        if not self.test_records:
-            logger.warning("No test records to save.")
-            return
-            
-        test_df = pd.DataFrame(self.test_records)
-        test_path = os.path.join(self.final_results_dir, "test_results_per_split.csv")
-        test_df.to_csv(test_path, index=False)
-        logger.info(f"Saved test results per split to {test_path}")
-
-        # 3. Calculate and save the final summary report
-        summary_df = test_df.describe().loc[['mean', 'std']]
-        summary_path = os.path.join(self.final_results_dir, "final_summary_metrics.csv")
-        summary_df.to_csv(summary_path)
-        
-        logger.info("\n--- Aggregated Metrics (Mean ± Std) ---\n" + summary_df.to_string(float_format="%.4f") + "\n" + "---" * 20)
-
-        # 4. Save the name of the data file used for this experiment
-        data_source_path = os.path.join(self.final_results_dir, "data_source.txt")
-        with open(data_source_path, 'w') as f:
-            f.write(f"Experiment data was sourced from the following file:\n")
-            f.write(f"{self.data_filename}\n")
-        logger.info(f"Saved data source filename to {data_source_path}")
-
-        # 5. Generate and save Optuna analysis visualizations
-        if not cv_df.empty:
-            self._generate_optuna_visualizations(cv_df)
-        else:
-            logger.warning("CV dataframe is empty, skipping Optuna visualizations.")
-
-    def _generate_optuna_visualizations(self, cv_df: pd.DataFrame):
-        """
-        Generates and saves plots related to the Optuna hyperparameter study.
-
-        This method produces:
-        - A violin plot of the validation metric distribution (validation_metric_distribution.png).
-        - Interactive HTML plots from Optuna for the first outer loop's study:
-        - Optimization history (optuna_optimization_history.html).
-        - Hyperparameter importances (optuna_param_importances.html).
-        - Slice plot (optuna_slice_plot.html).
-        """
-        logger.info("--- Generating Optuna Analysis Visualizations ---")
-        optuna_analysis_dir = os.path.join(self.final_results_dir, "optuna_analysis")
-        os.makedirs(optuna_analysis_dir, exist_ok=True)
-        logger.info(f"Saving Optuna plots to: {optuna_analysis_dir}")
-
-        # 1. Plot the distribution of validation metrics across all folds and trials
-        plt.figure(figsize=(12, 8))
-        sns.violinplot(data=cv_df, x='validation_metric', inner='quartile', color='lightblue')
-        sns.stripplot(data=cv_df, x='validation_metric', color='darkblue', alpha=0.4, jitter=0.1)
-        metric_name = "F1 Score" if self.args.task_type == "workhour_classification" else "Loss (MSE)"
-        plt.title(f'Distribution of Validation {metric_name} Across All CV Folds & Trials', fontsize=16)
-        plt.xlabel(f'Validation {metric_name}', fontsize=12)
-        plt.grid(True, linestyle='--', alpha=0.6)
-        plt.tight_layout()
-        dist_path = os.path.join(optuna_analysis_dir, 'validation_metric_distribution.png')
-        plt.savefig(dist_path, dpi=300)
-        plt.close()
-        logger.info(f"Saved validation metric distribution plot to {dist_path}")
-
-        # 2. Generate and save standard Optuna plots from the first outer loop's study
-        logger.info("Loading study 'outer_loop_0' to generate standard Optuna plots...")
-        try:
-            db_path = os.path.join(self.main_output_dir, "optuna_study.db")
-            storage = f"sqlite:///{db_path}"
-            study_to_plot = optuna.load_study(study_name="outer_loop_0", storage=storage)
-            
-            # Plot Optimization History
-            history_fig = optuna.visualization.plot_optimization_history(study_to_plot)
-            history_path = os.path.join(optuna_analysis_dir, 'optuna_optimization_history.html')
-            history_fig.write_html(history_path)
-            logger.info(f"Saved optimization history plot to {history_path}")
-
-            # Plot Hyperparameter Importances
-            if len(study_to_plot.trials) > 1:
-                importance_fig = optuna.visualization.plot_param_importances(study_to_plot)
-                importance_path = os.path.join(optuna_analysis_dir, 'optuna_param_importances.html')
-                importance_fig.write_html(importance_path)
-                logger.info(f"Saved parameter importances plot to {importance_path}")
-            else:
-                logger.warning("Skipping parameter importance plot: not enough trials.")
-
-            # Plot Slice
-            slice_fig = optuna.visualization.plot_slice(study_to_plot)
-            slice_path = os.path.join(optuna_analysis_dir, 'optuna_slice_plot.html')
-            slice_fig.write_html(slice_path)
-            logger.info(f"Saved slice plot to {slice_path}")
-
-        except Exception as e:
-            logger.error(f"Could not generate Optuna plots. Error: {e}")
-
 def main():
     """
-    The main entry point for the script.
-    - Parses arguments.
-    - Initializes the ExperimentRunner.
-    - Starts the experiment.
+    Main entry point to run a single experiment.
+    
+    This function parses command-line arguments and starts the ExperimentRunner.
     """
     from ....config.args import parse_args
     args = parse_args()

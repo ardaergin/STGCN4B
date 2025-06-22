@@ -27,14 +27,14 @@ class BlockAwareSTGCNDataset(Dataset):
 
     def __init__(
         self,
-        feature_matrices: Dict[int, torch.Tensor],
+        feature_tensor: torch.Tensor,
         blocks: List[List[int]],
         targets: torch.Tensor,
         n_his: int,
         n_pred: int,
         target_mask: torch.Tensor = None
     ):
-        self.feature_matrices = feature_matrices
+        self.feature_tensor = feature_tensor
         self.blocks = blocks
         self.targets = targets
         self.n_his = n_his
@@ -64,14 +64,15 @@ class BlockAwareSTGCNDataset(Dataset):
         his_idxs = block[start : start + self.n_his]
         pred_idxs = block[start + self.n_his : start + self.n_his + self.n_pred]
 
-        # Gather feature matrices for history (list of tensors, each R×F)
-        X_list = [self.feature_matrices[t] for t in his_idxs]
+        # Indexing operation on the large GPU tensor
+        X = self.feature_tensor[his_idxs]
+
         # Gather target values (1D tensor of length n_pred)
         y = self.targets[pred_idxs]
         # Get the mask for the target
         m = self.target_mask[pred_idxs]
         
-        return X_list, y, m
+        return X, y, m
 
 def homo_collate(batch):
     """
@@ -81,7 +82,7 @@ def homo_collate(batch):
         batch: List of samples, each
             - (X_list, y, target_mask)
           where
-            * X_list is a list of length n_his of tensors, each of shape (R, F)
+            * X is a tensor of shape (n_his, R, F)
             * y is a tensor of shape (n_pred, R)
             * target_mask is a tensor of shape (n_pred, R) with 1s where targets are valid
 
@@ -92,27 +93,19 @@ def homo_collate(batch):
         - y_batch:     tensor of shape (batch_size, n_pred, R)
         - target_mask_batch:  tensor of shape (batch_size, n_pred, R)
     """
-    windows, ys, target_masks = zip(*batch)
+    Xs, ys, target_masks = zip(*batch)
 
-    batch_size = len(windows)
-    n_his = len(windows[0])
+    # Stack into a single batch tensor
+    X_batch = torch.stack(Xs, dim=0)  # Shape: (batch_size, n_his, R, F)
 
-    # Stack target tensors: shape (batch_size, n_pred)
     y_batch = torch.stack(ys, dim=0)
     target_mask_batch = torch.stack(target_masks, dim=0)
 
-    # For each history step t, gather that step across the batch
-    X_batch_list: List[torch.Tensor] = []
-    for t in range(n_his):
-        # windows[i][t] has shape (R, F); stack into (batch_size, R, F)
-        step_tensors = [windows[i][t] for i in range(batch_size)]
-        X_batch_list.append(torch.stack(step_tensors, dim=0))
-    
-    return X_batch_list, y_batch, target_mask_batch
+    return X_batch, y_batch, target_mask_batch
 
 def load_data(args,
               blocks: Dict[int, Dict[str, List[int]]],
-              feature_matrices,
+              feature_tensor: torch.Tensor,
               targets,
               target_mask,
               *, # for safety
@@ -142,7 +135,7 @@ def load_data(args,
 
     # 2) Construct Datasets
     train_ds = BlockAwareSTGCNDataset(
-        feature_matrices,
+        feature_tensor,
         train_block_lists,
         targets,
         args.n_his,
@@ -152,7 +145,7 @@ def load_data(args,
     val_ds = None
     if val_block_lists:
         val_ds = BlockAwareSTGCNDataset(
-            feature_matrices,
+            feature_tensor,
             val_block_lists,
             targets,
             args.n_his,
@@ -160,7 +153,7 @@ def load_data(args,
             target_mask=target_mask
         )
     test_ds = BlockAwareSTGCNDataset(
-        feature_matrices,
+        feature_tensor,
         test_block_lists,
         targets,
         args.n_his,
