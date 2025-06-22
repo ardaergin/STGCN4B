@@ -18,6 +18,7 @@ from .spatial_viz import SpatialVisualizerMixin
 from .homo_graph import HomogGraphBuilderMixin
 from .hetero_graph import HeteroGraphBuilderMixin
 # from .tabular import TabularBuilderMixin
+from ...utils.filename_util import get_data_filename
 
 
 class OfficeGraphBuilder(
@@ -60,14 +61,27 @@ class OfficeGraphBuilder(
             # 'polygons_doc.compactness', 'polygons_doc.rect_fit', 'polygons_doc.aspect_ratio', 'polygons_doc.perimeter'
             ]
         
-    def set_build_mode(self, mode: str):
+    def set_build_mode(self, mode: str, measurement_variable=None):
         """
-        Options:
+        Options for 'mode':
             - "workhour_classification"
             - "consumption_forecast"
             - "measurement_forecast"
         """
-        self.build_mode = mode
+        valid_options = ["workhour_classification", "consumption_forecast", "measurement_forecast"]
+        if mode not in valid_options:
+            raise ValueError(f"Invalid build mode '{mode}'. Valid options are: {valid_options}")
+        else:
+            self.build_mode = mode
+        
+        if mode == "measurement_forecast" and measurement_variable is None:
+            raise ValueError("measurement_variable must be specified for 'measurement_forecast' mode.")
+        valid_measurement_variables = ["Temperature", "CO2Level", "Humidity"]
+        if mode == "measurement_forecast" and measurement_variable not in valid_measurement_variables:
+            raise ValueError(f"Invalid measurement variable '{measurement_variable}'. Valid options are: {valid_measurement_variables}")
+        else:
+            self.measurement_variable = measurement_variable
+        
         return None
 
 def main():
@@ -79,7 +93,7 @@ def main():
     from ..officegraph import OfficeGraph
     office_graph = OfficeGraph.from_pickles(floors_to_load = args.floors)
     builder = OfficeGraphBuilder(office_graph)
-    builder.set_build_mode(mode=args.task_type)
+    builder.set_build_mode(mode=args.task_type, measurement_variable=args.measurement_variable)
     logger.info(f"Builder initialized with build mode '{builder.build_mode}'.")
 
     # ============================
@@ -98,25 +112,26 @@ def main():
     builder.build_weekly_blocks()
 
     # Get weather data
-    logger.info("Loading and processing weather data...")
-    builder.get_weather_data(weather_csv_path=args.weather_csv_path)
+    if not args.skip_incorporating_weather:
+        logger.info("Loading and processing weather data...")
+        builder.get_weather_data(weather_csv_path=args.weather_csv_path)
     
-    if builder.build_mode in ("workhour_classification", "consumption_forecast"):
+    # Targets
+    if builder.build_mode == "workhour_classification":
         # Get classification labels
         logger.info("Generating work hour classification labels...")
         builder.get_classification_labels(country_code=args.country_code)
-        
+    elif builder.build_mode == "consumption_forecast":
         # Get forecasting values
         logger.info("Loading and processing consumption data...")
         builder.get_forecasting_values(consumption_dir=args.consumption_dir)
-
-    # Processing measurements
-    logger.info("Processing measurements...")
     
     # Bucket measurements by device and property
+    logger.info("Processing measurements...")
     builder.bucket_measurements_by_device_property()
         
     # Build full feature DataFrame
+    logger.info("Building full feature DataFrame...")
     builder.build_full_feature_df()
 
     # ============================
@@ -159,6 +174,7 @@ def main():
 
     # Build vertical adjacency
     builder.build_vertical_adjacency(
+        mode=args.adjacency_type,
         min_overlap_area=0.05,
         min_weight=0
     )
@@ -166,15 +182,15 @@ def main():
     # Combined horizontal + vertical adjacency
     builder.build_combined_room_to_room_adjacency()
 
+    # Calculate information propagation masks and apply them
+    logger.info("Building masked adjacency matrices for information propagation...")
+    builder.build_masked_adjacencies()
+    
     # Build outside adjacency
     if not args.skip_incorporating_weather:
         logger.info("Calculating outside adjacency...")
         builder.build_outside_adjacency(mode=args.adjacency_type)
-
-    # Calculate information propagation masks and apply them
-    logger.info("Building masked adjacency matrices for information propagation...")
-    builder.build_masked_adjacencies()
-
+    
     # ============================
     # DATA BUILDING
     # ============================
@@ -197,12 +213,8 @@ def main():
             heterogeneous_stgcn_input = builder.prepare_hetero_stgcn_input()
             torch_tensors = builder.convert_hetero_to_torch_tensors(heterogeneous_stgcn_input)
 
-            if args.task_type == "measurement_forecast":
-                file_name = f"stgcn_input_{args.adjacency_type}_{args.interval}_{args.graph_type}_{args.measurement_type}.pt"
-            else:
-                file_name = f"stgcn_input_{args.adjacency_type}_{args.interval}_{args.graph_type}.pt"
-
-            full_output_path = os.path.join("data/processed", file_name)
+            fname = get_data_filename()
+            full_output_path = os.path.join("data/processed", fname)
             torch.save(torch_tensors, full_output_path)
             logger.info(f"Saved tensors to {full_output_path} with default parameters.")
 
@@ -210,8 +222,8 @@ def main():
         elif args.graph_type == "homogeneous":
             builder.build_room_feature_df()
 
-            if args.task_type == "measurement_forecast":
-                builder.get_targets_and_mask_for_a_variable(args.measurement_type)
+            if builder.build_mode == "measurement_forecast":
+                builder.get_targets_and_mask_for_a_variable(stat=args.measurement_variable_stat)
 
             # Incorporate weather data as outside space if specified
             if not args.skip_incorporating_weather:
@@ -222,11 +234,8 @@ def main():
             logger.info("Generating feature arrays for homogeneous graph...")
             builder.build_feature_array()
 
-            if args.task_type == "measurement_forecast":
-                file_name = f"stgcn_input_{args.adjacency_type}_{args.interval}_{args.graph_type}_{args.measurement_type}.pt"
-            else:
-                file_name = f"stgcn_input_{args.adjacency_type}_{args.interval}_{args.graph_type}.pt"
-            full_output_path = os.path.join("data/processed", file_name)
+            fname = get_data_filename()
+            full_output_path = os.path.join("data/processed", fname)
 
             # Prepare numpy input
             logger.info("Preparing homogeneous numpy input...")

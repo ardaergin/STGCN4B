@@ -170,10 +170,13 @@ def add_base_modelling_args(parser):
     parser.add_argument('--task_type', type=str, default='consumption_forecast',
                       choices=['workhour_classification', 'consumption_forecast', 'measurement_forecast'], 
                       help='Task type')
-    parser.add_argument('--measurement_type', type=str, default='Temperature',
+    parser.add_argument('--measurement_variable', type=str, default='Temperature',
                       choices=['Temperature', 'Humidity', 'CO2Level'],
                       help='If task_type is "measurement_forecast", then, which measurement type to forecast.')
-        
+    parser.add_argument('--measurement_variable_stat', type=str, default='mean',
+                    choices=['mean', 'max', 'min'],
+                    help='Which statistic to use for creating targets for the measurement variable.')
+
     # Device specification
     parser.add_argument('--device', type=str,
                         default='cpu',
@@ -192,16 +195,28 @@ def add_base_modelling_args(parser):
                         default=5, 
                         help='Number of blocks per stratum for the data splitter.')
 
-    # Experimental Setup
+    ########## Experimental Setup ##########
     parser.add_argument('--n_outer_splits', type=int,
-                         default=2, # For minimal testing
+                         default=10,
                          help='Number of outer loop train-test splits for nested CV.')
+    # Optuna general args
     parser.add_argument('--n_optuna_trials', type=int, 
-                        default=2, # For minimal testing
+                        default=20,
                         help='Number of Optuna trials for HPO.')
     parser.add_argument('--optuna_crash_mode', type=str, default='safe',
                         choices=['fail_fast', 'safe'], 
                         help="weather to add 'study.optimize(..., catch=(Exception,))'.")
+    
+    # Arguments for configuring Optuna's MedianPruner
+    parser.add_argument('--n-startup-trials', type=int, default=5,
+                        help='Number of trials to complete before pruning is activated. '
+                             'These first trials will always run to completion.')
+    parser.add_argument('--n-warmup-steps', type=int, default=20,
+                        help="Number of steps (epochs in this case) to complete within a trial "
+                             "before it can be pruned. This prevents pruning on initial noisy performance.")
+    parser.add_argument('--interval-steps', type=int, default=1,
+                        help='Interval (in steps/epochs) at which to check for pruning possibilities '
+                             'after the warmup period is over.')
 
 
 def add_STGCN_args(parser):

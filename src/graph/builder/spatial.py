@@ -504,10 +504,70 @@ class SpatialBuilderMixin:
     # Vertical Adjacency
     #############################
 
+    def calculate_binary_vertical_adjacency(
+            self,
+            min_overlap_area: float = 0.1
+            ) -> pd.DataFrame:
+            """
+            Build a full-building binary vertical adjacency matrix.
+            A[i,j] = 1 if room i (on floor f) and room j (on floor f+1 or f-1)
+            have an overlap area greater than min_overlap_area. Otherwise 0.
 
+            Args:
+                min_overlap_area (float): The minimum area (in square meters) of polygon
+                                        intersection to be considered an overlap.
+
+            Returns:
+                pd.DataFrame: A binary adjacency matrix for the entire building.
+            """
+            # Prepare index/columns in the canonical order established during initialization
+            room_strs = [str(uri) for uri in self.room_uris]
+            # Initialize an empty adjacency matrix with zeros
+            adj_df = pd.DataFrame(0, index=room_strs, columns=room_strs, dtype=int)
+
+            # Iterate over all rooms in their canonical order
+            for i, uri1 in enumerate(self.room_uris):
+                # Get the floor number and polygon for the first room
+                f1 = self.room_to_floor.get(uri1)
+                poly1 = self.polygons.get(f1, {}).get(uri1)
+                
+                # Skip if the room has no valid polygon
+                if poly1 is None:
+                    continue
+
+                # Check for adjacency on the floor above and below
+                for delta in [-1, 1]:
+                    f2 = f1 + delta
+                    # Continue if the adjacent floor doesn't exist
+                    if f2 not in self.polygons:
+                        continue
+
+                    # Iterate through all rooms on the adjacent floor
+                    for uri2 in self.floor_to_rooms.get(f2, []):
+                        poly2 = self.polygons[f2].get(uri2)
+                        
+                        # Skip if the second room has no valid polygon
+                        if poly2 is None:
+                            continue
+
+                        # Calculate the area of intersection between the two room polygons
+                        try:
+                            overlap_area = poly1.intersection(poly2).area
+                        except Exception as e:
+                            logger.warning(f"Error calculating vertical overlap for {uri1}-{uri2}: {e}")
+                            overlap_area = 0.0
+
+                        # If the overlap is significant, mark them as adjacent
+                        if overlap_area > min_overlap_area:
+                            adj_df.at[str(uri1), str(uri2)] = 1
+                            # The relationship is symmetric in a binary context
+                            adj_df.at[str(uri2), str(uri1)] = 1
+
+            return adj_df
+    
     def calculate_proportional_vertical_adjacency(
         self,
-        min_overlap_area: float = 0.0,
+        min_overlap_area: float = 0.1,
         min_weight: float = 0.0
     ) -> pd.DataFrame:
         """
@@ -558,38 +618,55 @@ class SpatialBuilderMixin:
         return adj_df
 
     def build_vertical_adjacency(
-        self,
-        min_overlap_area: float = 0.05,
-        min_weight: float = 0.0
-    ) -> None:
-        """
-        Build and store the combined vertical adjacency matrix for the entire building.
-        Stores:
-          - self.combined_vertical_adj_df
-          - self.vertical_adj_matrix  (NumPy array)
-          - self.adj_matrix_room_uris      (list of URIRefs)
-        """
-        logger.info("Building vertical adjacency for entire building...")
-        # Calculate full-building vertical adjacency
-        v_df = self.calculate_proportional_vertical_adjacency(
-            min_overlap_area=min_overlap_area,
-            min_weight=min_weight
-        )
+            self,
+            mode: str = "weighted",
+            min_overlap_area: float = 0.1,
+            min_weight: float = 0.0
+        ) -> None:
+            """
+            Build and store the combined vertical adjacency matrix for the entire building.
+            
+            Args:
+                mode (str): The type of adjacency to calculate.
+                            - 'weighted': A[i,j] = overlap_area(i, j) / area(i). Non-symmetric.
+                            - 'binary': A[i,j] = 1 if overlap_area(i, j) > min_overlap_area. Symmetric.
+                min_overlap_area (float): Minimum overlap area to consider a connection.
+                                        Used by both proportional and binary modes.
+                min_weight (float): Minimum weight for the proportional mode if overlap is small but non-zero.
+                                    (Not used in 'binary' mode).
+            
+            Stores the result in:
+            - self.combined_vertical_adj_df
+            - self.vertical_adj_matrix  (NumPy array)
+            - self.adj_matrix_room_uris (list of URIRefs)
+            """
+            logger.info(f"Building '{mode}' vertical adjacency for entire building...")
+            
+            # Select the appropriate calculation function based on the mode
+            if mode == "weighted":
+                v_df = self.calculate_proportional_vertical_adjacency(
+                    min_overlap_area=min_overlap_area,
+                    min_weight=min_weight
+                )
+            elif mode == "binary":
+                v_df = self.calculate_binary_vertical_adjacency(
+                    min_overlap_area=min_overlap_area
+                )
+            else:
+                raise ValueError(f"Unknown mode '{mode}'. Use 'weighted' or 'binary'.")
+            
+            # Store the results
+            self.vertical_adj_type = mode
+            self.combined_vertical_adj_df = v_df
+            self.vertical_adj_matrix = v_df.values
+            self.adj_matrix_room_uris = list(self.room_uris)
 
-        # Store
-        self.combined_vertical_adj_df = v_df
-        self.vertical_adj_matrix = v_df.values
-        # room_uris in the same canonical order
-        self.adj_matrix_room_uris = list(self.room_uris)
-
-        total_connections = (v_df > 0).sum().sum()
-        logger.info(
-            f"Built vertical adjacency matrix {v_df.shape} with "
-            f"{int(total_connections)} non-zero connections"
-        )
-        return None
-
-
+            total_connections = (v_df > 0).sum().sum()
+            logger.info(
+                f"Built '{mode}' vertical adjacency matrix {v_df.shape} with "
+                f"{int(total_connections)} non-zero connections."
+            )
+            return None
 
     #############################
     # Combined Adjacency

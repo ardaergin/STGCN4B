@@ -2,6 +2,7 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 import logging
+from sklearn.metrics import roc_curve, auc, precision_recall_curve
 
 logger = logging.getLogger(__name__)
 
@@ -104,42 +105,44 @@ class ResultHandler:
             f.write(f"MAPE: {self.metrics['mape']:.2f}%\n")
 
     def _plot_classification(self):
-        """Generates the main 2x2 plot for classification results."""
-        plt.figure(figsize=(12, 10))
+        """
+        Generates a revised, more informative 2x2 plot for classification results.
+        Includes ROC Curve, PR Curve, Confusion Matrix, and a summary metrics table.
+        """
+        plt.figure(figsize=(14, 12))
         
-        # Loss Curves
+        # --- 1. ROC Curve ---
         plt.subplot(2, 2, 1)
-        plt.plot(self.history['train_loss'], label='Training Loss', color='blue')
-        if self.history.get('val_loss'):
-            plt.plot(self.history['val_loss'], label='Validation Loss', color='red')
-        plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.title('Loss Curves')
-        plt.legend(); plt.grid(True, linestyle='--', alpha=0.6)
-        
-        # Accuracy Curve
-        plt.subplot(2, 2, 2)
-        if 'val_metrics' in self.history and self.history['val_metrics'].get('accuracy'):
-            plt.plot(self.history['val_metrics']['accuracy'], label='Validation Accuracy', color='green')
-        plt.axhline(y=self.metrics['accuracy'], color='r', linestyle='--', label=f"Test Accuracy: {self.metrics['accuracy']:.4f}")
-        baseline = max(sum(self.metrics['labels']), len(self.metrics['labels']) - sum(self.metrics['labels'])) / len(self.metrics['labels'])
-        plt.axhline(y=baseline, color='grey', linestyle=':', label=f'Baseline: {baseline:.4f}')
-        plt.xlabel('Epoch'); plt.ylabel('Accuracy'); plt.title('Accuracy Curve')
-        plt.legend(); plt.grid(True, linestyle='--', alpha=0.6)
+        fpr, tpr, _ = roc_curve(self.metrics['labels'], self.metrics['probabilities'])
+        roc_auc = self.metrics['roc_auc']
+        plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.4f})')
+        plt.plot([0, 1], [0, 1], color='navy', lw=2, linestyle='--')
+        plt.xlim([0.0, 1.0])
+        plt.ylim([0.0, 1.05])
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title('Receiver Operating Characteristic (ROC)')
+        plt.legend(loc="lower right")
+        plt.grid(True, linestyle='--', alpha=0.6)
 
-        # F1-Score Curve
+        # --- 2. Precision-Recall Curve ---
+        plt.subplot(2, 2, 2)
+        precision, recall, _ = precision_recall_curve(self.metrics['labels'], self.metrics['probabilities'])
+        avg_precision = self.metrics['auc_pr']
+        plt.plot(recall, precision, color='blue', lw=2, label=f'PR curve (AP = {avg_precision:.4f})')
+        plt.xlabel('Recall')
+        plt.ylabel('Precision')
+        plt.title('Precision-Recall Curve')
+        plt.legend(loc="upper right")
+        plt.grid(True, linestyle='--', alpha=0.6)
+
+        # --- 3. Confusion Matrix ---
         plt.subplot(2, 2, 3)
-        if self.history.get('val_metrics', {}).get('f1'):
-            plt.plot(self.history['val_metrics']['f1'], label='Validation F1-score', color='purple')
-        plt.axhline(y=self.metrics['f1'], color='r', linestyle='--', label=f"Test F1-score: {self.metrics['f1']:.4f}")
-        plt.xlabel('Epoch'); plt.ylabel('F1-score'); plt.title('F1-score Curve')
-        plt.legend(); plt.grid(True, linestyle='--', alpha=0.6)
-        
-        # Confusion Matrix
-        plt.subplot(2, 2, 4)
         conf_mat = self.metrics['confusion_matrix']
         labels = ['Non-Work', 'Work']
         im = plt.imshow(conf_mat, interpolation='nearest', cmap=plt.cm.Blues)
         plt.title('Confusion Matrix')
-        plt.colorbar(im)
+        plt.colorbar(im, fraction=0.046, pad=0.04)
         tick_marks = np.arange(len(labels))
         plt.xticks(tick_marks, labels, rotation=45)
         plt.yticks(tick_marks, labels)
@@ -152,9 +155,34 @@ class ResultHandler:
                 plt.text(j, i, format(conf_mat[i, j], 'd'),
                          ha="center", va="center",
                          color="white" if conf_mat[i, j] > thresh else "black")
+
+        # --- 4. Key Metrics Table ---
+        plt.subplot(2, 2, 4)
+        plt.axis('off') # Hide the axes
+        plt.title('Final Test Metrics', pad=20)
         
-        plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, 'stgcn_classification_results.png'), dpi=300, bbox_inches='tight')
+        baseline = max(sum(self.metrics['labels']), len(self.metrics['labels']) - sum(self.metrics['labels'])) / len(self.metrics['labels'])
+        
+        metrics_data = [
+            ["Accuracy", f"{self.metrics['accuracy']:.4f}"],
+            ["Balanced Acc.", f"{self.metrics['balanced_accuracy']:.4f}"],
+            ["F1-score", f"{self.metrics['f1']:.4f}"],
+            ["Precision", f"{self.metrics['precision']:.4f}"],
+            ["Recall", f"{self.metrics['recall']:.4f}"],
+            ["AUC-ROC", f"{self.metrics['roc_auc']:.4f}"],
+            ["AUC-PR", f"{self.metrics['auc_pr']:.4f}"],
+            ["Threshold", f"{self.metrics['threshold']:.4f}"],
+            ["Baseline Acc.", f"{baseline:.4f}"]
+        ]
+        
+        table = plt.table(cellText=metrics_data, colLabels=['Metric', 'Value'],
+                          loc='center', cellLoc='left', colWidths=[0.4, 0.3])
+        table.auto_set_font_size(False)
+        table.set_fontsize(12)
+        table.scale(1.2, 1.2)
+        
+        plt.tight_layout(pad=3.0)
+        plt.savefig(os.path.join(self.output_dir, 'stgcn_classification_results_revised.png'), dpi=300, bbox_inches='tight')
         plt.close()
 
 

@@ -1,9 +1,4 @@
-from .spatial import SpatialBuilderMixin
-from .temporal import TemporalBuilderMixin
-from .homo_graph import HomogGraphBuilderMixin
-from .main import OfficeGraphBuilder
-
-__all__ = ["SpatialBuilderMixin", 
+__all__ = ["OfficeGraphBuilder",
+           "SpatialBuilderMixin", 
            "TemporalBuilderMixin", 
-           "HomogGraphBuilderMixin",
-           "OfficeGraphBuilder"]
+           "HomogGraphBuilderMixin"]

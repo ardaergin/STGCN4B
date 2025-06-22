@@ -4,9 +4,9 @@
 #SBATCH --gpus=1
 #SBATCH --job-name=stgcn
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=9
-#SBATCH --mem=64G
-#SBATCH --time=01:00:00
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=16G
+#SBATCH --time=03:00:00
 #SBATCH --output=output/experiments/slurm_output_%A.out
 #SBATCH --error=output/experiments/slurm_error_%A.err
 
@@ -33,6 +33,9 @@ python -c "import holidays" 2>/dev/null || pip install --user holidays
 python -c "import shapely" 2>/dev/null || pip install --user shapely
 python -c "import tqdm" 2>/dev/null || pip install --user tqdm
 python -c "import optuna" 2>/dev/null || pip install --user optuna
+python -c "import seaborn" 2>/dev/null || pip install --user seaborn
+python -c "import plotly" 2>/dev/null || pip install --user plotly
+python -c "import kaleido" 2>/dev/null || pip install --user kaleido
 
 # Set PyTorch optimization flags
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
@@ -47,7 +50,7 @@ mkdir -p $TMPDIR/data/processed
 
 ##### Dynamically copying the required file to scratch #####
 echo "Determining required data file..."
-REQUIRED_FILE=$(srun python -m src.utils.get_data_filename "$@")
+REQUIRED_FILE=$(srun python -m src.utils.filename_util "$@")
 
 # Checking if it returned a filename
 if [ -z "$REQUIRED_FILE" ]; then

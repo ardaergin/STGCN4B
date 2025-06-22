@@ -148,7 +148,7 @@ class HomogGraphBuilderMixin:
         self.room_feature_df = wide
         return wide
     
-    def get_targets_and_mask_for_a_variable(self, variable:str = "Temperature", stat: str = "mean"):
+    def get_targets_and_mask_for_a_variable(self, stat: str = "mean"):
         """
         Pivots `room_feature_df` to produce two matrices aligned with `adj_matrix_room_uris`:
           1. Target values: Pivoted from the "{variable}_{stat}" column (e.g., "Temperature_mean").
@@ -162,6 +162,9 @@ class HomogGraphBuilderMixin:
         if not hasattr(self, "room_feature_df"):
             raise ValueError("room_feature_df not found. Run build_room_feature_df() first.")
         df = self.room_feature_df
+
+        # Set measurement variable
+        variable = self.measurement_variable
 
         # 1. Create the target values matrix
         value_column = f"{variable}_{stat}"
@@ -493,12 +496,16 @@ class HomogGraphBuilderMixin:
         }
 
         # Add task-specific targets and masks
-        if self.build_mode == "measurement_forecast":
-            numpy_input["measurement_values"] = self.measurement_values
+        if self.build_mode == "workhour_classification":
+            numpy_input["workhour_labels"] = self.workhour_labels
+        elif self.build_mode == "consumption_forecast":
+            numpy_input["consumption_values"] = self.consumption_values
+        elif self.build_mode == "measurement_forecast":
+            target_name = f"{self.measurement_variable}_values"
+            numpy_input[target_name] = self.measurement_values
             numpy_input["target_mask"] = self.measurement_mask
         else:
-            numpy_input["consumption_values"] = self.consumption_values
-            numpy_input["workhour_labels"] = self.workhour_labels
+            raise ValueError(f"Unknown build_mode: {self.build_mode}")
             
         # Ensure output directory exists
         os.makedirs(os.path.dirname(output_path), exist_ok=True)

@@ -12,6 +12,11 @@ from optuna.pruners import MedianPruner
 from copy import deepcopy
 from typing import Dict, Any, List, Tuple
 
+import seaborn as sns
+import matplotlib.pyplot as plt
+import plotly
+
+from ....utils.filename_util import get_data_filename
 from ....utils.block_split import StratifiedBlockSplitter
 from ....utils.train_utils import ResultHandler
 from .graph_loader import load_data
@@ -58,6 +63,11 @@ class ExperimentRunner:
             output: 
         """
         self.args = args
+        self.median_pruning = {
+            "n_startup_trials": args.n_startup_trials,
+            "n_warmup_steps": args.n_warmup_steps,
+            "interval_steps": args.interval_steps
+        }
 
         # Central lists to store all detailed records
         self.cv_records: List[Dict[str, Any]] = []
@@ -83,10 +93,8 @@ class ExperimentRunner:
         args = self.args
 
         # Deriving file name from arguments
-        if args.task_type == "measurement_forecast":
-            fname = f"stgcn_input_{args.adjacency_type}_{args.interval}_{args.graph_type}_{args.measurement_type}.pt"
-        else:
-            fname = f"stgcn_input_{args.adjacency_type}_{args.interval}_{args.graph_type}.pt"
+        fname = get_data_filename()
+        self.data_filename = fname
         path = os.path.join(args.data_dir, "processed", fname)
         
         # Loading the file
@@ -126,12 +134,15 @@ class ExperimentRunner:
             # Masks
             "target_mask": numpy_input.get("target_mask", None)
         }
-        if args.task_type == "measurement_forecast":
-            self.input_dict["targets"] = numpy_input["measurement_values"]
+        if args.task_type == "workhour_classification":
+            self.input_dict["targets"] = numpy_input["workhour_labels"]
         elif args.task_type == "consumption_forecast":
             self.input_dict["targets"] = numpy_input["consumption_values"]
+        elif args.task_type == "measurement_forecast":
+            target_name = f"{self.measurement_variable}_values"
+            self.input_dict["targets"] = numpy_input[target_name]
         else:
-            self.input_dict["targets"] = numpy_input["workhour_labels"]
+            raise ValueError(f"Unknown task type: {args.task_type}")
 
         logger.info("NumPy data loaded and ready for processing.")
 
@@ -247,8 +258,8 @@ class ExperimentRunner:
         direction = "maximize" if self.args.task_type == "workhour_classification" else "minimize"
         
         # Pruning
-        pruner = MedianPruner(n_startup_trials=10, n_warmup_steps=20, interval_steps=1)
-
+        pruner = MedianPruner(**self.median_pruning)
+        
         # build a URI in your results folder
         db_path = os.path.join(self.main_output_dir, "optuna_study.db")
         storage = f"sqlite:///{db_path}"
@@ -283,17 +294,19 @@ class ExperimentRunner:
         trial_args = deepcopy(self.args)
 
         # --- General Training Hyperparameters ---
-        trial_args.lr = trial.suggest_float("lr", 1e-4, 1e-3, log=True)
-        trial_args.weight_decay_rate = trial.suggest_float("weight_decay_rate", 1e-5, 1e-4, log=True)
+        trial_args.lr = trial.suggest_float("lr", 5e-5, 1e-3, log=True)
+        trial_args.weight_decay_rate = trial.suggest_float("weight_decay_rate", 1e-5, 1e-2, log=True)
         trial_args.optimizer = trial.suggest_categorical("optimizer", ["adam", "adamw"])
+        trial_args.droprate = trial.suggest_float("droprate", 0.1, 0.6)
+        trial_args.enable_bias = trial.suggest_categorical("enable_bias", [True, False])
 
         # --- STGCN Architecture Hyperparameters ---
-        trial_args.n_his = trial.suggest_int("n_his", 12, 24, step=12) # e.g., 12 or 24 hours
-        trial_args.stblock_num = trial.suggest_int("stblock_num", 2, 3)
+        trial_args.graph_conv_type = trial.suggest_categorical("graph_conv_type", ["cheb_graph_conv", "graph_conv"])
+        trial_args.act_func = trial.suggest_categorical("act_func", ["glu", "relu", "silu"])
+        trial_args.stblock_num = trial.suggest_categorical("stblock_num", [2, 3, 4])
+        trial_args.n_his = trial.suggest_categorical("n_his", [12, 18, 24, 30, 36])
         trial_args.Kt = trial.suggest_categorical("Kt", [2, 3])
         trial_args.Ks = trial.suggest_categorical("Ks", [2, 3])
-        trial_args.act_func = trial.suggest_categorical("act_func", ["glu", "relu"])
-        trial_args.droprate = trial.suggest_float("droprate", 0.3, 0.5)
 
         # We don't tune epochs directly. We set a max value and let early stopping find the best.
         # This is the max number of epochs the model is allowed to run for in each CV fold.
@@ -444,6 +457,80 @@ class ExperimentRunner:
         summary_df.to_csv(summary_path)
         
         logger.info("\n--- Aggregated Metrics (Mean ± Std) ---\n" + summary_df.to_string(float_format="%.4f") + "\n" + "---" * 20)
+
+        # 4. Save the name of the data file used for this experiment
+        data_source_path = os.path.join(self.final_results_dir, "data_source.txt")
+        with open(data_source_path, 'w') as f:
+            f.write(f"Experiment data was sourced from the following file:\n")
+            f.write(f"{self.data_filename}\n")
+        logger.info(f"Saved data source filename to {data_source_path}")
+
+        # 5. Generate and save Optuna analysis visualizations
+        if not cv_df.empty:
+            self._generate_optuna_visualizations(cv_df)
+        else:
+            logger.warning("CV dataframe is empty, skipping Optuna visualizations.")
+
+    def _generate_optuna_visualizations(self, cv_df: pd.DataFrame):
+        """
+        Generates and saves plots related to the Optuna hyperparameter study.
+
+        This method produces:
+        - A violin plot of the validation metric distribution (validation_metric_distribution.png).
+        - Interactive HTML plots from Optuna for the first outer loop's study:
+        - Optimization history (optuna_optimization_history.html).
+        - Hyperparameter importances (optuna_param_importances.html).
+        - Slice plot (optuna_slice_plot.html).
+        """
+        logger.info("--- Generating Optuna Analysis Visualizations ---")
+        optuna_analysis_dir = os.path.join(self.final_results_dir, "optuna_analysis")
+        os.makedirs(optuna_analysis_dir, exist_ok=True)
+        logger.info(f"Saving Optuna plots to: {optuna_analysis_dir}")
+
+        # 1. Plot the distribution of validation metrics across all folds and trials
+        plt.figure(figsize=(12, 8))
+        sns.violinplot(data=cv_df, x='validation_metric', inner='quartile', color='lightblue')
+        sns.stripplot(data=cv_df, x='validation_metric', color='darkblue', alpha=0.4, jitter=0.1)
+        metric_name = "F1 Score" if self.args.task_type == "workhour_classification" else "Loss (MSE)"
+        plt.title(f'Distribution of Validation {metric_name} Across All CV Folds & Trials', fontsize=16)
+        plt.xlabel(f'Validation {metric_name}', fontsize=12)
+        plt.grid(True, linestyle='--', alpha=0.6)
+        plt.tight_layout()
+        dist_path = os.path.join(optuna_analysis_dir, 'validation_metric_distribution.png')
+        plt.savefig(dist_path, dpi=300)
+        plt.close()
+        logger.info(f"Saved validation metric distribution plot to {dist_path}")
+
+        # 2. Generate and save standard Optuna plots from the first outer loop's study
+        logger.info("Loading study 'outer_loop_0' to generate standard Optuna plots...")
+        try:
+            db_path = os.path.join(self.main_output_dir, "optuna_study.db")
+            storage = f"sqlite:///{db_path}"
+            study_to_plot = optuna.load_study(study_name="outer_loop_0", storage=storage)
+            
+            # Plot Optimization History
+            history_fig = optuna.visualization.plot_optimization_history(study_to_plot)
+            history_path = os.path.join(optuna_analysis_dir, 'optuna_optimization_history.html')
+            history_fig.write_html(history_path)
+            logger.info(f"Saved optimization history plot to {history_path}")
+
+            # Plot Hyperparameter Importances
+            if len(study_to_plot.trials) > 1:
+                importance_fig = optuna.visualization.plot_param_importances(study_to_plot)
+                importance_path = os.path.join(optuna_analysis_dir, 'optuna_param_importances.html')
+                importance_fig.write_html(importance_path)
+                logger.info(f"Saved parameter importances plot to {importance_path}")
+            else:
+                logger.warning("Skipping parameter importance plot: not enough trials.")
+
+            # Plot Slice
+            slice_fig = optuna.visualization.plot_slice(study_to_plot)
+            slice_path = os.path.join(optuna_analysis_dir, 'optuna_slice_plot.html')
+            slice_fig.write_html(slice_path)
+            logger.info(f"Saved slice plot to {slice_path}")
+
+        except Exception as e:
+            logger.error(f"Could not generate Optuna plots. Error: {e}")
 
 def main():
     """
