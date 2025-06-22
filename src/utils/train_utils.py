@@ -50,8 +50,9 @@ class ResultHandler:
         # Loss Curves
         plt.subplot(2, 2, 1)
         plt.plot(self.history['train_loss'], label='Training Loss', color='blue')
-        if self.history.get('val_loss'):
-            plt.plot(self.history['val_loss'], label='Validation Loss', color='red')
+        val_loss = self.history.get('val_loss')
+        if val_loss is not None:
+            plt.plot(val_loss, label='Validation Loss', color='red')
         plt.xlabel('Epoch'); plt.ylabel('Loss (MSE)'); plt.title('Loss Curves')
         plt.legend(); plt.grid(True, linestyle='--', alpha=0.6)
         
@@ -107,12 +108,51 @@ class ResultHandler:
     def _plot_classification(self):
         """
         Generates a revised, more informative 2x2 plot for classification results.
-        Includes ROC Curve, PR Curve, Confusion Matrix, and a summary metrics table.
+        Includes Loss curve(s), Confusion Matrix, ROC Curve, PR Curve.
         """
         plt.figure(figsize=(14, 12))
         
-        # --- 1. ROC Curve ---
+        # --- 1. Loss curves (training, and valid if avaiable) ---
         plt.subplot(2, 2, 1)
+        plt.plot(self.history['train_loss'], label='Training Loss', color='blue')
+        val_loss = self.history.get('val_loss')
+        if val_loss is not None:
+            plt.plot(val_loss, label='Validation Loss', color='red')
+        plt.xlabel('Epoch'); plt.ylabel('Loss'); plt.title('Loss Curves')
+        plt.legend(); plt.grid(True, linestyle='--', alpha=0.6)
+
+        # --- 2. Confusion Matrix ---
+        plt.subplot(2, 2, 2)
+        conf_mat = self.metrics['confusion_matrix']
+        labels = ['Non-Work', 'Work']
+        im = plt.imshow(conf_mat, interpolation='nearest', cmap=plt.cm.Blues)
+        plt.title('Confusion Matrix')
+        plt.colorbar(im, fraction=0.046, pad=0.04)
+        tick_marks = np.arange(len(labels))
+        plt.xticks(tick_marks, labels, rotation=45, ha="right")
+        plt.yticks(tick_marks, labels)
+        plt.ylabel('True label')
+        plt.xlabel('Predicted label')
+
+        # Calculate row-wise normalization (percentages of each true class)
+        # Add a small epsilon (1e-6) to avoid division by zero for rows with no samples
+        conf_mat_norm = conf_mat.astype('float') / (conf_mat.sum(axis=1)[:, np.newaxis] + 1e-6)
+
+        # Loop over data dimensions and create text annotations.
+        thresh = conf_mat.max() / 2.
+        for i in range(conf_mat.shape[0]):
+            for j in range(conf_mat.shape[1]):
+                count = conf_mat[i, j]
+                percent = conf_mat_norm[i, j]
+                # Format text string to include count and percentage
+                text_label = f"{count:d}\n({percent:.1%})"
+                plt.text(j, i, text_label,
+                         ha="center", va="center",
+                         color="white" if count > thresh else "black",
+                         fontsize=11)
+
+        # --- 3. ROC Curve ---
+        plt.subplot(2, 2, 3)
         fpr, tpr, _ = roc_curve(self.metrics['labels'], self.metrics['probabilities'])
         roc_auc = self.metrics['roc_auc']
         plt.plot(fpr, tpr, color='darkorange', lw=2, label=f'ROC curve (area = {roc_auc:.4f})')
@@ -125,8 +165,8 @@ class ResultHandler:
         plt.legend(loc="lower right")
         plt.grid(True, linestyle='--', alpha=0.6)
 
-        # --- 2. Precision-Recall Curve ---
-        plt.subplot(2, 2, 2)
+        # --- 4. Precision-Recall Curve ---
+        plt.subplot(2, 2, 4)
         precision, recall, _ = precision_recall_curve(self.metrics['labels'], self.metrics['probabilities'])
         avg_precision = self.metrics['auc_pr']
         plt.plot(recall, precision, color='blue', lw=2, label=f'PR curve (AP = {avg_precision:.4f})')
@@ -136,56 +176,10 @@ class ResultHandler:
         plt.legend(loc="upper right")
         plt.grid(True, linestyle='--', alpha=0.6)
 
-        # --- 3. Confusion Matrix ---
-        plt.subplot(2, 2, 3)
-        conf_mat = self.metrics['confusion_matrix']
-        labels = ['Non-Work', 'Work']
-        im = plt.imshow(conf_mat, interpolation='nearest', cmap=plt.cm.Blues)
-        plt.title('Confusion Matrix')
-        plt.colorbar(im, fraction=0.046, pad=0.04)
-        tick_marks = np.arange(len(labels))
-        plt.xticks(tick_marks, labels, rotation=45)
-        plt.yticks(tick_marks, labels)
-        plt.ylabel('True label')
-        plt.xlabel('Predicted label')
-
-        thresh = conf_mat.max() / 2.
-        for i in range(conf_mat.shape[0]):
-            for j in range(conf_mat.shape[1]):
-                plt.text(j, i, format(conf_mat[i, j], 'd'),
-                         ha="center", va="center",
-                         color="white" if conf_mat[i, j] > thresh else "black")
-
-        # --- 4. Key Metrics Table ---
-        plt.subplot(2, 2, 4)
-        plt.axis('off') # Hide the axes
-        plt.title('Final Test Metrics', pad=20)
-        
-        baseline = max(sum(self.metrics['labels']), len(self.metrics['labels']) - sum(self.metrics['labels'])) / len(self.metrics['labels'])
-        
-        metrics_data = [
-            ["Accuracy", f"{self.metrics['accuracy']:.4f}"],
-            ["Balanced Acc.", f"{self.metrics['balanced_accuracy']:.4f}"],
-            ["F1-score", f"{self.metrics['f1']:.4f}"],
-            ["Precision", f"{self.metrics['precision']:.4f}"],
-            ["Recall", f"{self.metrics['recall']:.4f}"],
-            ["AUC-ROC", f"{self.metrics['roc_auc']:.4f}"],
-            ["AUC-PR", f"{self.metrics['auc_pr']:.4f}"],
-            ["Threshold", f"{self.metrics['threshold']:.4f}"],
-            ["Baseline Acc.", f"{baseline:.4f}"]
-        ]
-        
-        table = plt.table(cellText=metrics_data, colLabels=['Metric', 'Value'],
-                          loc='center', cellLoc='left', colWidths=[0.4, 0.3])
-        table.auto_set_font_size(False)
-        table.set_fontsize(12)
-        table.scale(1.2, 1.2)
-        
         plt.tight_layout(pad=3.0)
         plt.savefig(os.path.join(self.output_dir, 'stgcn_classification_results_revised.png'), dpi=300, bbox_inches='tight')
         plt.close()
-
-
+        
     def _save_classification_metrics(self):
         """Saves classification metrics to a text file."""
         baseline = max(sum(self.metrics['labels']), len(self.metrics['labels']) - sum(self.metrics['labels'])) / len(self.metrics['labels'])
