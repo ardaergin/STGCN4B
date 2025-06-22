@@ -22,10 +22,10 @@ from ....utils.train_utils import ResultHandler
 from .processor import NumpyDataProcessor
 from .graph_loader import load_data
 
-def setup_model(args, data, device):
+def setup_model(args, data):
     """Set up the STGCN model and training components."""
     logger.info(f"Setting up model for the task type '{args.task_type}'...")
-    # device   = data['device']
+    device   = data['device']
     logger.info(f"Device: {device}")
     n_nodes = data['n_nodes']
     logger.info(f"Number of nodes: {n_nodes}")
