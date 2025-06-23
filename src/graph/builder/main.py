@@ -222,14 +222,14 @@ def main():
         elif args.graph_type == "homogeneous":
             builder.build_room_feature_df()
 
-            if builder.build_mode == "measurement_forecast":
-                builder.get_targets_and_mask_for_a_variable(stat=args.measurement_variable_stat)
-
             # Incorporate weather data as outside space if specified
             if not args.skip_incorporating_weather:
                 logger.info("Integrating outside node with weather data into homogeneous graph...")
                 builder.incorporate_weather_as_an_outside_room()
-
+                
+            if builder.build_mode == "measurement_forecast":
+                builder.get_targets_and_mask_for_a_variable(stat=args.measurement_variable_stat)
+            
             # Feature matrices
             logger.info("Generating feature arrays for homogeneous graph...")
             builder.build_feature_array()
