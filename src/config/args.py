@@ -222,12 +222,11 @@ def add_base_modelling_args(parser):
     parser.add_argument('--n_warmup_steps', type=int, default=20,
                         help="Number of steps (epochs in this case) to complete within a trial "
                              "before it can be pruned. This prevents pruning on initial noisy performance.")
-    parser.add_argument('--interval_steps', type=int, default=1,
+    parser.add_argument('--interval_steps', type=int, default=3,
                         help='Interval (in steps/epochs) at which to check for pruning possibilities '
                              'after the warmup period is over.')
-    parser.add_argument('--n_jobs', type=int, 
-                        default=1,
-                        help="Number of parallel Optuna worker processes (passed as `n_jobs` to study.optimize).")
+    parser.add_argument('--max_epochs', type=int, default=100, 
+                        help='Number of epochs')
 
 
 def add_STGCN_args(parser):
