@@ -323,11 +323,11 @@ class HomogGraphBuilderMixin:
         if not weather_cols:
             raise ValueError("No columns found in weather_df; cannot add empty weather features.")
 
-        # (5) Add each weather_col to every existing row, initialized to 0.0
+        # (5) Add each weather_col to every existing row, initialized to np.nan
         for wcol in weather_cols:
             if wcol in df.columns:
                 raise ValueError(f"Column {wcol!r} already exists in room_feature_df.")
-            df[wcol] = 0.0
+            df[wcol] = np.nan
 
         # (6) Build new rows for outside_uri, one per bucket
         new_rows = []
@@ -336,9 +336,9 @@ class HomogGraphBuilderMixin:
                 'room_uri':   outside_uri,
                 'bucket_idx': b
             }
-            # set all original features = 0.0
+            # set all original features = np.nan
             for fc in orig_cols:
-                row_dict[fc] = 0.0
+                row_dict[fc] = np.nan
             # set weather features from weather_df
             for wcol in weather_cols:
                 row_dict[wcol] = float(weather_df.at[b, wcol])

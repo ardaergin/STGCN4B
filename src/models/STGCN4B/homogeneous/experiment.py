@@ -167,8 +167,13 @@ class ExperimentRunner:
         processor = NumpyDataProcessor()
 
         ##### X #####
-        processor.fit_features(train_feature_slice)
-        norm_feature_array = processor.transform_features(self.input_dict["feature_array"])
+        processor.fit_features(
+            train_array=train_feature_slice,
+            feature_names=self.input_dict["feature_names"],
+            method=args.normalization_method,
+            features_to_skip_norm=args.skip_normalization_for
+            )
+        norm_feature_array = processor.transform_features(full_array=self.input_dict["feature_array"])
         norm_feature_array[np.isnan(norm_feature_array)] = 0.0
 
         # NOTE: I used to create dictionary of T tensors. 
@@ -179,11 +184,15 @@ class ExperimentRunner:
         if self.args.task_type == "workhour_classification":
             targets_numpy = self.input_dict["targets"]
         else: # Forecasting tasks
-            processor.fit_target(train_target_slice, train_mask_slice)
-            targets_numpy = processor.transform_target(self.input_dict["targets"])
+            processor.fit_target(
+                train_targets=train_target_slice, 
+                train_mask=train_mask_slice,
+                method='median'
+                )
+            targets_numpy = processor.transform_target(targets=self.input_dict["targets"])
 
-        # For measurement forecast task, we impute to target
-        # This is fine, since we will mask these imputations later
+        # NOTE: For measurement forecast task, we impute to target
+        #       This is fine, since we will mask these imputations later
         if self.args.task_type == "measurement_forecast":
             targets_numpy[np.isnan(targets_numpy)] = 0.0
 

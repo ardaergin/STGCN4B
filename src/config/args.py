@@ -198,6 +198,21 @@ def add_base_modelling_args(parser):
                         default=5, 
                         help='Number of blocks per stratum for the data splitter.')
 
+    # Normalization
+    parser.add_argument('--normalization_method', type=str,
+                        default='median',
+                        choices=['mean', 'median'],
+                        help='Normalization method')
+    parser.add_argument('--skip_normalization_for', nargs='*', 
+        default=['_sin', '_cos', 'wc_', 
+                 'has_measurement'
+                 'hasWindows', 'has_multiple_windows', 
+                 'window_direction_sin', 'window_direction_cos', 
+                 'isProperRoom', 
+                 'norm_area_minmax', 'norm_area_prop', 
+                 ],
+        help='List of (sub-)strings for feature names that should NOT be normalized.')
+    
     ########## Experimental Setup ##########
     parser.add_argument('--n_experiments', type=int,
                         default=10,
