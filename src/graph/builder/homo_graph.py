@@ -478,6 +478,7 @@ class HomogGraphBuilderMixin:
         numpy_input = {
             # Data indices in block format
             "blocks": self.blocks,
+            "block_size": self.block_size,
 
             # Main data (X)
             "feature_array": self.feature_array,

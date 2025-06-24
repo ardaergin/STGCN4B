@@ -21,6 +21,7 @@ class BlockAwareSTGCNDataset(Dataset):
         feature_tensor: torch.Tensor of shape (T, R, F)
         blocks: List of Lists, each sublist contains bucket‐indices for one block
         targets: torch.Tensor of shape (T,) giving label/target for each bucket
+        target_mask: torch.Tensor of shape (T,), binary mask for the target 
         n_his: history length (number of past buckets)
         n_pred: prediction length (number of future buckets)
     """
@@ -30,9 +31,9 @@ class BlockAwareSTGCNDataset(Dataset):
         feature_tensor: torch.Tensor,
         blocks: List[List[int]],
         targets: torch.Tensor,
+        target_mask: torch.Tensor,
         n_his: int,
-        n_pred: int,
-        target_mask: torch.Tensor = None
+        n_pred: int
     ):
         self.feature_tensor = feature_tensor
         self.blocks = blocks
@@ -105,6 +106,7 @@ def homo_collate(batch):
 
 def load_data(args,
               blocks: Dict[int, Dict[str, List[int]]],
+              block_size: int,
               feature_tensor: torch.Tensor,
               targets,
               target_mask,
@@ -118,6 +120,10 @@ def load_data(args,
 
     This function is designed for efficiency, avoiding disk I/O by operating
     on data that is already loaded.
+
+    VERY IMPORTANT: This function assumes that all blocks in the dataset have the same size.
+                    If the blocks have varying sizes, this batch size will not align perfectly 
+                    with the boundaries of other blocks. So ensure equal block sizes.
     """    
     # 1) Partition into train/val/test block‐lists
     def _blocks(ids):
@@ -138,9 +144,9 @@ def load_data(args,
         feature_tensor,
         train_block_lists,
         targets,
+        target_mask,
         args.n_his,
-        args.n_pred,
-        target_mask=target_mask
+        args.n_pred
     )
     val_ds = None
     if val_block_lists:
@@ -148,23 +154,21 @@ def load_data(args,
             feature_tensor,
             val_block_lists,
             targets,
+            target_mask,
             args.n_his,
-            args.n_pred,
-            target_mask=target_mask
+            args.n_pred
         )
     test_ds = BlockAwareSTGCNDataset(
         feature_tensor,
         test_block_lists,
         targets,
+        target_mask,
         args.n_his,
-        args.n_pred,
-        target_mask=target_mask
+        args.n_pred
     )
 
     # 3) Determine windows_per_block for batch_size
-    #    We can pick the first train block to determine the number of windows
-    first_block_len = len(train_ds.blocks[0])
-    windows_per_block = first_block_len - (args.n_his + args.n_pred) + 1
+    windows_per_block = block_size - (args.n_his + args.n_pred) + 1
     logger.info(f"Calculated batch size: {windows_per_block}")
 
     # 4) Create DataLoaders (no shuffling; windows are pre‐segmented per block)

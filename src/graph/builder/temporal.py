@@ -81,6 +81,7 @@ class TemporalBuilderMixin:
         # Then per week (6-day if sundays excluded, 7-day if included)
         days_per_block = 7 if self.use_sundays else 6
         block_size = buckets_per_day * days_per_block
+        self.block_size = block_size
 
         logger.info(f"Using {days_per_block}-day blocks, {block_size} buckets at {self.interval} each.")
 

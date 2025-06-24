@@ -118,7 +118,8 @@ class ExperimentRunner:
             
             # Data indices in block format
             "blocks": numpy_input["blocks"],
-
+            "block_size": numpy_input["block_size"],
+            
             # Main data as NumPy arrays
             "feature_array": numpy_input["feature_array"], # Shape (T, R, F)
             "feature_names": numpy_input["feature_names"],
@@ -211,6 +212,7 @@ class ExperimentRunner:
         loaders = load_data(
             args,
             blocks=self.input_dict["blocks"],
+            block_size=self.input_dict["block_size"],
             feature_tensor=norm_feature_tensor,
             targets=final_targets,
             target_mask=final_mask,
