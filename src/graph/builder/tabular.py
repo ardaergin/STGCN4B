@@ -1,7 +1,7 @@
+import os 
 import pandas as pd
 import numpy as np
 from typing import Optional, List
-from sklearn.impute import SimpleImputer, KNNImputer
 import joblib
 
 # Logging setup
@@ -13,57 +13,75 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-from ...data.Loader.tabular_dataset import TabularDataset
-
 class TabularBuilderMixin:
 
+    ############################################################
+    # Building the base dataframe for building-wide prediction tasks:
+    # - workhour_classification
+    # - consumption_forecast
+    # 
+    # For these tasks, every row should represent a time bucket
 
-    ##############################
-    # Building the base dataframe
-    ##############################
+    # On the other hand, for building the base dataframe for measurement_forecast task,
+    # every row should represent a time_bucket-room_uri pair. This structure is already there 
+    # in self.room_feature_df
+    ############################################################
 
     # Only with aggregated with per property type per bucket
     def build_aggregated_tabular_feature_df(self, store: bool = False) -> pd.DataFrame:
         """
-        Build per-bucket, per-property-type aggregate features.
+        Builds per-bucket, building-wide aggregate features for each property type.
+
         For each bucket and property_type, computes:
             - mean of 'mean'
             - mean of 'std'
             - max of 'max'
             - min of 'min'
-            # - sum of 'sum'
             - sum of 'count'
             - sum of 'has_measurement'
-        Returns a wide-format DataFrame with 'bucket_idx' and columns like '{property_type}_{stat}'.
+            - max of 'has_measurement'
+
+        The resulting DataFrame has one row per `bucket_idx` and wide-format
+        columns like `{property_type}_{stat}` (e.g., 'Temperature_mean',
+        'Temperature_n_devices').
+
+        The final DataFrame is stored in `self.tabular_feature_df` or returned.
         """
         if not hasattr(self, 'full_feature_df'):
             raise ValueError("full_feature_df not found; ensure build_full_feature_df() was called.")
-
         df = self.full_feature_df.copy()
 
-        # Define aggregation functions per feature
-        agg_funcs = {
-            'mean': 'mean',
-            'std': 'mean',
-            'max': 'max',
-            'min': 'min',
-            # 'sum': 'sum',
-            'count': 'sum',
-            'has_measurement': 'sum'
-        }
-
-        # Group by bucket and property
-        grouped = (
-            df.groupby(['bucket_idx', 'property_type'])
-            .agg(agg_funcs)
-            .reset_index()
+        # Use pivot_table directly for a cleaner implementation
+        pivot = pd.pivot_table(
+            df,
+            index='bucket_idx',
+            columns='property_type',
+            values=['mean', 'std', 'max', 'min', 'count', 'has_measurement'],
+            aggfunc={
+                'mean': 'mean',
+                'std': 'mean',
+                'max': 'max',
+                'min': 'min',
+                'count': 'sum',
+                'has_measurement': ['sum', 'max']
+            }
         )
 
-        # Pivot to wide
-        pivot = grouped.pivot(index='bucket_idx', columns='property_type')
-        # Flatten MultiIndex: (stat, property) -> property_stat
-        pivot.columns = [f"{prop}_{stat}" for stat, prop in pivot.columns]
+        # Flatten the multi-level columns
+        new_cols = []
+        for col in pivot.columns:
+            # col is a tuple, e.g., ('mean', 'Temperature') or ('has_measurement', 'sum', 'Temperature')
+            if col[0] == 'has_measurement':  # Special case with 3 levels
+                agg_type, prop_type = col[1], col[2]
+                stat_name = 'n_devices' if agg_type == 'sum' else 'has_measurement'
+                new_cols.append(f"{prop_type}_{stat_name}")
+            else:  # Standard case with 2 levels
+                stat, prop_type = col[0], col[1]
+                new_cols.append(f"{prop_type}_{stat}")
+        pivot.columns = new_cols
         pivot_df = pivot.reset_index()
+
+        logger.info(f"Created aggregated tabular feature DataFrame. Shape: {pivot_df.shape}")
 
         # Store the DataFrame if requested
         if store:
@@ -76,19 +94,21 @@ class TabularBuilderMixin:
     # With floor aggregation
     def build_floor_aggregated_tabular_feature_df(self, store: bool = False) -> pd.DataFrame:
         """
-        Build per-bucket, per-floor, per-property-type aggregate features.
-        For each bucket, floor and property_type, computes:
+        Builds per-bucket, per-floor, per-property-type aggregate features.
+        
+        For each bucket and property_type, computes:
             - mean of 'mean'
             - mean of 'std'
             - max of 'max'
             - min of 'min'
             - sum of 'count'
             - sum of 'has_measurement'
-        Returns a wide-format DataFrame with 'bucket_idx' and columns like '{floor}_{property_type}_{stat}'.
+            - max of 'has_measurement'
+        
+        The final DataFrame is stored in `self.tabular_feature_df` or returned.
         """
         if not hasattr(self, 'full_feature_df'):
             raise ValueError("full_feature_df not found; ensure build_full_feature_df() was called.")
-
         df = self.full_feature_df.copy()
 
         # 1) build a mapping from device_uri (string) to floor_number (int)
@@ -96,10 +116,11 @@ class TabularBuilderMixin:
         for dev_uri, dev in self.office_graph.devices.items():
             dev_str = str(dev_uri)
             room_uri = getattr(dev, 'room', None)
-            if room_uri is None:
+            room_obj = self.office_graph.rooms.get(room_uri)
+            if room_obj is None:
                 continue
             # Room.floor is a floor URI; look up its Floor object
-            floor_uri = self.office_graph.rooms[room_uri].floor
+            floor_uri = room_obj.floor
             floor_obj = self.office_graph.floors.get(floor_uri)
             if floor_obj is None:
                 continue
@@ -110,52 +131,55 @@ class TabularBuilderMixin:
         df = df.dropna(subset=['floor_number'])
         df['floor_number'] = df['floor_number'].astype(int)
 
-        # 3) define the same aggs we use elsewhere
-        agg_funcs = {
-            'mean': 'mean',
-            'std': 'mean',
-            'max': 'max',
-            'min': 'min',
-            'count': 'sum',
-            'has_measurement': 'sum'
-        }
-
-        # 4) group by bucket, floor, property
-        grouped = (
-            df
-            .groupby(['bucket_idx', 'floor_number', 'property_type'])
-            .agg(agg_funcs)
-            .reset_index()
-        )
-
-        # 5) pivot to wide form
-        pivot = grouped.pivot_table(
+        # 3) Use a single pivot_table call to aggregate and reshape
+        pivot = pd.pivot_table(
+            df,
             index='bucket_idx',
             columns=['floor_number', 'property_type'],
-            values=list(agg_funcs.keys())
+            values=['mean', 'std', 'max', 'min', 'count', 'has_measurement'],
+            aggfunc={
+                'mean': 'mean',
+                'std': 'mean',
+                'max': 'max',
+                'min': 'min',
+                'count': 'sum',
+                'has_measurement': ['sum', 'max']
+            }
         )
 
-        # 6) flatten MultiIndex columns: (stat, floor, prop) → "floor_prop_stat"
-        pivot.columns = [
-            f"{floor}_{prop}_{stat}"
-            for stat, floor, prop in pivot.columns
-        ]
-        result = pivot.reset_index()
+        # 4) Flatten the multi-level columns
+        # col is now a tuple like ('mean', 0, 'Temperature') or ('has_measurement', 'sum', 0, 'Temperature')
+        new_cols = []
+        for col in pivot.columns:
+            if col[0] == 'has_measurement':
+                agg_type, floor, prop = col[1], col[2], col[3]
+                stat_name = 'n_devices' if agg_type == 'sum' else 'has_measurement'
+                new_cols.append(f"F{floor}_{prop}_{stat_name}")
+            else:
+                stat, floor, prop = col[0], col[1], col[2]
+                new_cols.append(f"F{floor}_{prop}_{stat}")
 
-        # 7) store or return
+        pivot.columns = new_cols
+        pivot_df = pivot.reset_index()
+
+        # 5) Store or return
         if store:
-            self.tabular_feature_df = result
+            self.tabular_feature_df = pivot_df
+            logger.info(f"Stored floor-aggregated tabular feature DataFrame. Shape: {pivot_df.shape}")
             return None
         else:
-            return result
+            return pivot_df
 
     # With full features, i.e., all measurements as seperate columns
     def build_full_tabular_feature_df(self, store: bool = False) -> pd.DataFrame:
         """
-        Pivot the normalized full_feature_df so that each time bucket is a row and
-        each (device_uri, property_type, feature) combination becomes its own column.
-        Returns:
-            A wide-format DataFrame with 'bucket_idx' as one column and device-property features as others.
+        Pivot the full_feature_df to a wide format where each time bucket is a row.
+
+        Each (device_uri, property_type, feature) combination becomes its own column.
+        This creates a very wide, sparse DataFrame suitable for models that can
+        handle high dimensionality.
+        
+        The final DataFrame is stored in `self.tabular_feature_df` or returned.
         """
         if not hasattr(self, 'full_feature_df'):
             raise ValueError("full_feature_df not found; ensure build_full_feature_df() was called.")
@@ -166,60 +190,26 @@ class TabularBuilderMixin:
         feature_cols = [c for c in df.columns if c not in id_cols]
 
         # Pivot to wide format
-        wide = df.pivot_table(
+        pivot = df.pivot_table(
             index='bucket_idx',
             columns=['device_uri', 'property_type'],
             values=feature_cols
-            # fill_value is omitted, missing entries stay as NaN.
         )
         # Flatten MultiIndex columns
-        wide.columns = [f"{dev}_{prop}_{feat}" for dev, prop, feat in wide.columns]
-        wide = wide.reset_index()
+        pivot.columns = [f"{dev}_{prop}_{feat}" for feat, dev, prop in pivot.columns]
+        pivot_df = pivot.reset_index()
 
         # Store the DataFrame if requested
         if store:
-            self.tabular_feature_df = wide
+            self.tabular_feature_df = pivot_df
             return None
         # Else, return the DataFrame
         else:
-            return wide
-
-    def build_combined_tabular_feature_df(self, store: bool = False) -> pd.DataFrame:
-        """
-        Build both the full and aggregated feature DataFrames and merge them.
-
-        Steps:
-          1. Build the full-feature wide DataFrame.
-          2. Build the aggregated-per-property wide DataFrame.
-          3. Merge on 'bucket_idx' to get one DataFrame with both sets of features.
-
-        Args:
-            store (bool): If True, saves the result to self.tabular_feature_df and returns None.
-                          If False, returns the merged DataFrame.
-
-        Returns:
-            pd.DataFrame or None: The merged DataFrame if store=False, otherwise None.
-        """
-        # Build the full wide-feature table (no side effect)
-        full_df = self.build_full_tabular_feature_df(store=False)
-
-        # Build the aggregated table (no side effect)
-        agg_df = self.build_aggregated_tabular_feature_df(store=False)
-
-        # Merge on bucket_idx
-        combined = full_df.merge(agg_df, on='bucket_idx', how='left')
-
-        if store:
-            self.tabular_feature_df = combined
-            return None
-        else:
-            return combined
-
-
+            return pivot_df
+    
     ############################################################
     ################ Integrating existing data #################
     ############################################################
-
 
     ##############################
     # Integration: Weather
@@ -227,17 +217,15 @@ class TabularBuilderMixin:
 
     def integrate_weather_features(self) -> None:
         """
-        Merge weather features into the tabular feature DataFrame on bucket_idx.
-        Args:
-            weather_dict: Optional dict mapping bucket_idx -> {weather_feature: value}.
-                          If None, uses self.weather_data_dict.
-        Returns:
-            DataFrame with weather columns appended.
+        Merge weather features into self.tabular_feature_df on bucket_idx.
+        Requires self.tabular_feature_df, self.weather_data_dict, and self.time_buckets to exist.
         """
-        if not hasattr(self, 'tabular_feature_df'):
-            raise ValueError("tabular_feature_df not found; call build_tabular_feature_df() first.")
+        if not hasattr(self, 'time_buckets'):
+            raise ValueError("time_buckets not found; ensure initialize_time_parameters() was called.")
         if not hasattr(self, 'weather_data_dict'):
             raise ValueError("weather_data_dict not found; call get_weather_data() first.")
+        if not hasattr(self, 'tabular_feature_df'):
+            raise ValueError("tabular_feature_df not found. Get it first.")
 
         # Convert weather dict to DataFrame
         weather_df = pd.DataFrame.from_dict(self.weather_data_dict, orient='index')
@@ -250,7 +238,6 @@ class TabularBuilderMixin:
             on='bucket_idx',
             how='left'
         )
-        # There should be no NaNs in weather data, so no need to fillna
 
         # Store
         self.tabular_feature_df = merged
@@ -263,17 +250,15 @@ class TabularBuilderMixin:
 
     def integrate_consumption_target(self) -> None:
         """
-        Merge consumption values as the target column into tabular_with_weather_df.
-        Requires self.consumption_values and self.time_buckets to exist.
-
-        Updates the 
+        Merge consumption values as the target column into self.tabular_feature_df on bucket_idx.
+        Requires self.tabular_feature_df, self.consumption_values, and self.time_buckets to exist.
         """
         if not hasattr(self, 'time_buckets'):
             raise ValueError("time_buckets not found; ensure initialize_time_parameters() was called.")
-        if not hasattr(self, 'tabular_feature_df'):
-            raise ValueError("tabular_feature_df not found; call integrate_weather_features() first.")
         if not hasattr(self, 'consumption_values'):
             raise ValueError("consumption_values not found; call get_forecasting_values() first.")
+        if not hasattr(self, 'tabular_feature_df'):
+            raise ValueError("tabular_feature_df not found. Get it first.")
 
         # Build consumption DataFrame
         n = len(self.time_buckets)
@@ -287,12 +272,10 @@ class TabularBuilderMixin:
             on='bucket_idx',
             how='left'
         )
-        # There are no NaNs in consumption, so no need to fillna
 
         self.tabular_feature_df = merged
         return None
-
-
+    
     ##############################
     # Integration: Time features
     ##############################
@@ -300,10 +283,12 @@ class TabularBuilderMixin:
     def add_time_features(self) -> None:
         """
         Extract cyclical time features (hour, day of week) from the time buckets.
-        Adds 'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos' to tabular_feature_df or its variants.
+        Adds 'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos' to tabular_feature_df.
         """
         if not hasattr(self, 'time_buckets'):
             raise ValueError("time_buckets not found; ensure initialize_time_parameters() was called.")
+        if not hasattr(self, 'tabular_feature_df'):
+            raise ValueError("tabular_feature_df not found. Get it first.")
 
         # Map bucket_idx to start timestamp
         ts_map = {i: tb[0] for i, tb in enumerate(self.time_buckets)}
@@ -324,6 +309,49 @@ class TabularBuilderMixin:
         df.drop(columns=['timestamp'], inplace=True)
         return None
     
+    ##############################
+    # Integration: Room features
+    ##############################
+    
+    def add_static_room_features(self) -> None:
+        """
+        Adds static room attributes (e.g., area, hasWindows) to the tabular feature DataFrame.
+
+        This method is only applicable for tasks where the DataFrame has a 'room_uri' column,
+        such as 'measurement_forecast'. It creates a lookup table of static features for each
+        room and merges them into the main feature set.
+        """
+        if not hasattr(self, 'tabular_feature_df'):
+            raise ValueError("`tabular_feature_df` not found. Build it first.")
+        
+        logger.info(f"Adding {len(self.static_room_attributes)} static room features...")
+
+        # 1. Create a list of dictionaries, one for each room in your graph.
+        room_data = []
+        for room_uri, room_obj in self.office_graph.rooms.items():
+            features = {'room_uri': room_uri}
+            for attr_string in self.static_room_attributes:
+                val = self._get_nested_attr(room_obj, attr_string, default=np.nan)
+                features[attr_string] = val
+            room_data.append(features)
+
+        if not room_data:
+            logger.warning("Could not gather any static room data.")
+            return None
+
+        # 2. Convert the list of dicts into a clean DataFrame.
+        static_features_df = pd.DataFrame(room_data)
+
+        # 3. Merge this static data into the main feature DataFrame.
+        self.tabular_feature_df = pd.merge(
+            self.tabular_feature_df,
+            static_features_df,
+            on='room_uri',
+            how='left'  # Use a left merge to keep all rows from the original df.
+        )
+
+        logger.info("Successfully merged static room features.")
+        return None
     
     ############################################################
     ############# Block-aware feature engineering ##############
@@ -334,7 +362,7 @@ class TabularBuilderMixin:
         Internal helper: map each bucket_idx to its block_id so we can group by block.
         """
         if not hasattr(self, 'blocks'):
-            raise ValueError("self.blocks not found, ensure split_time_buckets() was called.")
+            raise ValueError("self.blocks not found, ensure build_weekly_blocks() was called.")
         
         if not hasattr(self, "_block_map"):
             self._block_map = {
@@ -345,8 +373,9 @@ class TabularBuilderMixin:
         return df["bucket_idx"].map(self._block_map)
 
     def add_moving_average_features(self,
-                                    windows: List[int] = [3, 6, 12, 24],
+                                    windows: List[int],
                                     shift_amount: int = 0,
+                                    extra_grouping_cols: Optional[List[str]] = None,
                                     cols: Optional[List[str]] = None,
                                     use_only_original_columns: bool = False
                                     ) -> None:
@@ -360,23 +389,35 @@ class TabularBuilderMixin:
         
         Args:
             windows: list of window sizes, e.g. [3, 24].
-            cols: which columns to average; defaults to all numeric features.
             shift_amount: how many steps to shift before averaging.
                         - 0: include current bucket (avg over [t-w+1,...,t])
                         - 1: exclude current (avg over [t-w,...,t-1])
                         etc.
+            extra_grouping_cols: any additional grouping columns (like 'room_uri'), additional to ['block_id'].
+            cols: which columns to average; defaults to all numeric features.
+            use_only_original_columns: whether to only consider columns that were present in the original `tabular_feature_df` 
+                                        (i.e., not columns generated by previous calls to `add_moving_average_features` or `add_lag_features`).
+                                        This prevents creating MAs of MAs or MAs of lags.
 
         Returns:
             None. Alters the tabular_feature_df in-place with additional columns `<col>_ma_<w>_sh<shift_amount>`.
         """
         # Get the feature DataFrame
         if not hasattr(self, 'tabular_feature_df'):
-            raise ValueError("tabular_feature_df not found; call build_tabular_feature_df() first.")
+            raise ValueError("tabular_feature_df not found. Get it first.")
         df = self.tabular_feature_df.copy()
 
         # Assign block ID to df
         df["block_id"] = self._assign_block_id(df)
-        df.sort_values(['block_id', 'bucket_idx'], inplace=True)
+
+        # Grouping
+        grouping = ['block_id']
+        if extra_grouping_cols:
+            grouping.extend(extra_grouping_cols)
+        logger.info(f"Adding moving average features, grouping by: {grouping}")
+
+        # Sorting based on grouping + bucket_idx
+        df.sort_values(grouping + ['bucket_idx'], inplace=True)
 
         # Pick which columns to do moving average
         if cols is None:
@@ -394,7 +435,7 @@ class TabularBuilderMixin:
 
         # compute everything into a dict of Series
         moving_average_dict = {}
-        gb = df.groupby('block_id')
+        gb = df.groupby(grouping)
         for w in windows:
             for col in cols:
                 series = (gb[col]
@@ -412,13 +453,14 @@ class TabularBuilderMixin:
         df.drop(columns='block_id', inplace=True)
 
         # Defragment
-        self.tabular_feature_df = df.copy()
+        self.tabular_feature_df = df
         return None
 
     def add_lag_features(self,
-                        lags: List[int] = [1, 2, 3, 4],
+                        lags: List[int],
+                        extra_grouping_cols: Optional[List[str]] = None,
                         cols: Optional[List[str]] = None,
-                        use_only_original_columns: bool = False
+                        use_only_original_columns: bool = False,
                         ) -> None:
         """
         For each col in `cols` (default: all numeric except 'bucket_idx'), 
@@ -429,20 +471,32 @@ class TabularBuilderMixin:
 
         Args:
             lags: list of integers, e.g. [1, 24]
+            extra_grouping_cols: any additional grouping columns (like 'room_uri'), additional to ['block_id'].
             cols: which columns to lag; defaults to all numeric features.
+            use_only_original_columns: whether to only consider columns that were present in the original `tabular_feature_df` 
+                                        (i.e., not columns generated by previous calls to `add_moving_average_features` or `add_lag_features`).
+                                        This prevents creating MAs of MAs or MAs of lags.
         
         Returns:
             None. Alters the tabular_feature_df in-place with additional columns `<col>_lag_<k>`.
         """
         # Get the feature DataFrame
         if not hasattr(self, 'tabular_feature_df'):
-            raise ValueError("tabular_feature_df not found; call build_tabular_feature_df() first.")
+            raise ValueError("tabular_feature_df not found. Get it first.")
         df = self.tabular_feature_df.copy()
 
         # Assign block ID to df
         df["block_id"] = self._assign_block_id(df)
-        df.sort_values(['block_id', 'bucket_idx'], inplace=True)
-        
+
+        # Grouping
+        grouping = ['block_id']
+        if extra_grouping_cols:
+            grouping.extend(extra_grouping_cols)
+        logger.info(f"Adding moving average features, grouping by: {grouping}")
+
+        # Sorting based on grouping + bucket_idx
+        df.sort_values(grouping + ['bucket_idx'], inplace=True)
+
         # Pick which columns to lag
         if cols is None:
             # start from every numeric column except bucket_idx/block_id
@@ -459,7 +513,7 @@ class TabularBuilderMixin:
 
         # For each lag and each column
         lag_dict = {}
-        gb = df.groupby("block_id")
+        gb = df.groupby(grouping)
         for k in lags:
             for col in cols:
                 lag_series = gb[col].shift(k).reset_index(level=0, drop=True)
@@ -473,99 +527,247 @@ class TabularBuilderMixin:
         df.drop(columns='block_id', inplace=True)
 
         # Defragment
-        self.tabular_feature_df = df.copy()
-        return None
-
-
-    ############################################################
-    ####################### Imputation #########################
-    ############################################################
-
-    def impute_to_tabular(self,
-                method: str = 'simple',
-                strategy: str = 'mean',
-                columns: list = None,
-                imputer_kwargs: dict = None) -> None:
-        """
-        Impute missing values in a DataFrame of features, fitting only on the training split.
-
-        Args:
-            df: Optional DataFrame to impute. If None, uses self.tabular_feature_df.
-            method: One of {'simple', 'knn'}.
-            strategy: For SimpleImputer, one of {'mean', 'median', 'most_frequent', 'constant'}.
-            columns: List of column names to impute. Defaults to all numeric except 'bucket_idx'.
-            imputer_kwargs: Additional keyword args passed to the chosen imputer.
-
-        Returns:
-            The imputed DataFrame.
-        """
-
-        # 1) Obtain DataFrame
-        if not hasattr(self, 'tabular_feature_df'):
-            raise ValueError('No tabular_feature_df available for imputation.')
-        df = self.tabular_feature_df.copy()
-
-        # 2) Determine columns to impute
-        if columns is None:
-            num_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            # Exclude 'bucket_idx' and 'consumption' (target variable) if present
-            if 'bucket_idx' in num_cols:
-                num_cols.remove('bucket_idx')
-            if 'consumption' in num_cols:
-                num_cols.remove('consumption')
-            columns = num_cols
-
-        # 3) Instantiate chosen imputer
-        imputer_kwargs = imputer_kwargs or {}
-        if method == 'simple':
-            imputer = SimpleImputer(strategy=strategy, **imputer_kwargs)
-        elif method == 'knn':
-            imputer = KNNImputer(**imputer_kwargs)
-        else:
-            raise ValueError(f"Unknown imputation method '{method}'")
-
-        # 4) Fit imputer on training split
-        if not hasattr(self, 'train_indices'):
-            raise ValueError('train_indices not set; call split_time_buckets first.')
-        train_idx = self.train_indices
-        X_train = df.iloc[train_idx][columns]
-        imputer.fit(X_train)
-
-        # 5) Transform all splits
-        df[columns] = imputer.transform(df[columns])
-
-        # 6) Write back in place
         self.tabular_feature_df = df
         return None
-
+    
     ############################################################
-    ################ Preparing Tabular Input ###################
+    ################### Preparing Targets ######################
     ############################################################
 
-    def create_and_save_tabular_dataset(self, save_path = "data/processed/tabular_dataset.joblib"):
+    def create_target_consumption(self, horizon: int = 1) -> None:
         """
-        Convenience wrapper: build the final DataFrame (with features + target),
-        then wrap into TabularDataset with the existing train/val/test indices.
-        
+        Creates the future consumption target by shifting the consumption values
+        backwards within each block to prevent data leakage.
+
+        This method adds a new 'target_consumption' column to `self.tabular_feature_df`.
+        Rows where the target could not be created (i.e., the last `horizon` rows
+        of each block) will have NaN and must be dropped before training.
+
         Args:
-            task. "forecasting" (consumption values), or "classification" (workhour labels)
+            horizon (int): The number of time steps into the future to predict.
+                        Defaults to 1 (predict the next time step).
         """
+        if not hasattr(self, 'tabular_feature_df') or 'consumption' not in self.tabular_feature_df.columns:
+            raise ValueError("Run `integrate_consumption_target` first to add the 'consumption' column.")
+        
+        logger.info(f"Creating block-aware consumption target for horizon={horizon}...")
+
         df = self.tabular_feature_df.copy()
 
-        # Create the consumption df
-        consumption_df = df[["bucket_idx", "consumption"]].copy()
-        consumption_df["block_id"] = self._assign_block_id(consumption_df)
-        consumption_df.sort_values(['block_id', 'bucket_idx'], inplace=True)
+        # 1. Assign block ID for grouping
+        df['block_id'] = self._assign_block_id(df)
 
-        dataset = TabularDataset(
-            features_df=df,
-            consumption_df = consumption_df,
-            workhour_labels = self.workhour_labels,
-            train_idx=self.train_indices,
-            val_idx=self.val_indices,
-            test_idx=self.test_indices,
-            blocks=self.blocks
-        )
+        # 2. Group by block and shift to get the future value
+        #    .shift(-horizon) pulls future values into the current row.
+        df['target_consumption'] = df.groupby('block_id')['consumption'].shift(-horizon)
 
-        dataset.save(path=save_path)
+        # 3. Drop the helper column
+        df.drop(columns='block_id', inplace=True)
+        
+        # 4. Report on the number of NaNs created
+        nan_count = df['target_consumption'].isna().sum()
+        logger.info(f"Created 'target_consumption'. Found {nan_count} rows with NaN targets (these should be dropped).")
+        
+        self.tabular_df = df
+        return None
+    
+    def create_target_measurement(self, stat: str = "mean", horizon: int = 1) -> None:
+        """
+        Creates the future measurement target for a specific variable (e.g., Temperature).
+        
+        This is done by shifting the measurement values backwards within each block AND for
+        each room to prevent data leakage. It adds a 'target_measurement' column.
+
+        Args:
+            stat (str): The statistic of the measurement variable to use as the target (e.g., 'mean').
+            horizon (int): The number of time steps into the future to predict. Defaults to 1.
+        """
+        if not hasattr(self, 'tabular_feature_df') or 'room_uri' not in self.tabular_feature_df.columns:
+            raise ValueError("This method is for measurement forecasting and requires 'room_uri' in the DataFrame.")
+        
+        # The source column from which we create the target
+        source_column = f"{self.measurement_variable}_{stat}"
+        if source_column not in self.tabular_feature_df.columns:
+            raise ValueError(f"Source column '{source_column}' not found in the DataFrame.")
+            
+        logger.info(f"Creating block-aware measurement target from '{source_column}' for horizon={horizon}...")
+
+        df = self.tabular_feature_df.copy()
+
+        # 1. Assign block ID for grouping
+        df['block_id'] = self._assign_block_id(df)
+
+        # 2. IMPORTANT: Group by both block and room, then shift
+        df['target_measurement'] = df.groupby(['block_id', 'room_uri'])[source_column].shift(-horizon)
+
+        # 3. Drop the helper column
+        df.drop(columns='block_id', inplace=True)
+
+        # 4. Report on the number of NaNs
+        nan_count = df['target_measurement'].isna().sum()
+        logger.info(f"Created 'target_measurement'. Found {nan_count} total rows with NaN targets.")
+
+        self.tabular_df = df
+        return None
+
+    ############################################################
+    #################### Master Function #######################
+    ############################################################
+
+    def build_tabular_df(self, forecast_horizon: int = 1):
+        """
+        This is the final, all-in-one function to build tabular data depending on the 'build_mode' (or 'task_type').
+        1) Handles building the base DataFrame, appropriate to the task type
+        2) Does feature engineering.
+        3) Adds the appropriate target column to the DataFrame, and cleans the rows where target is NaN.
+        """
+
+        ##### Building the base DataFrame #####
+
+        if self.build_mode == "workhour_classification":
+            # We have only a single floor (floor 7) for this task
+            # So we can just build the full, then also get the aggregates
+            full_df = self.build_full_tabular_feature_df(store=False)
+            agg_df = self.build_aggregated_tabular_feature_df(store=False)
+            combined_df = full_df.merge(agg_df, on='bucket_idx', how='left')
+            self.tabular_feature_df = combined_df
+        
+        elif self.build_mode == "consumption_forecast":
+            # This is building-level consumption. 
+            # Using all devices (160), and adding MA and lag, etc. would be too much features
+            # Per-floor level aggregation is the best for this scenario
+            # And like before, just add the aggregates
+            per_floor_df = self.build_floor_aggregated_tabular_feature_df(store=False)
+            agg_df = self.build_aggregated_tabular_feature_df(store=False)
+            combined_df = per_floor_df.merge(agg_df, on='bucket_idx', how='left')
+            self.tabular_feature_df = combined_df
+
+            # For this specific task, we can add consumption already
+            # We want to also create time and lag feature for this
+            self.integrate_consumption_target()
+
+        else: # self.build_mode == "measurement_forecast":
+            self.tabular_feature_df = self.room_feature_df.copy()
+
+
+        ##### Feature engineering #####
+
+        if self.build_mode == "measurement_forecast":
+            # For this task, we also have "room_uri" as an additional grouping col
+            extra_grouping_col = "room_uri"
+        else:
+            extra_grouping_col = None
+        
+        # Adding weather features here so we get also their MAs and lags 
+        self.integrate_weather_features()
+
+        # MA & Lag
+        self.add_lag_features(
+            extra_grouping_cols=extra_grouping_col,
+            lags=[1, 2, 3, 8, 12, 16, 24])
+        
+        self.add_moving_average_features(
+            extra_grouping_cols=extra_grouping_col,
+            windows=[3, 6, 12, 24],
+            shift_amount=0)
+
+        # NOTE 1: We can add the time features after taking MA & lag,
+        #         as we should not really take the lag of the time-related features
+
+        # NOTE 2: We should exclude time-related columns for the workhour_classification
+        #         as time features are direct leakage for the classifying classifying
+        #         whether an hour is work hour or not.
+        if self.build_mode != "workhour_classification":
+            self.add_time_features()
+        
+        # Feature engineering: add static room features for measurement_forecast task
+        if self.build_mode == "measurement_forecast":
+            self.add_static_room_features()
+
+            # Dealing with categorical features
+            for col in ['room_uri', 'isProperRoom',
+                        'hasWindows', 'has_multiple_windows']:
+                self.tabular_feature_df[col] = self.tabular_feature_df[col].astype(str).astype('category')
+
+            # Coding floor both as a category and as a numeric
+            self.tabular_feature_df["floor_num"] = self.tabular_feature_df["floor"].astype(int)
+            self.tabular_feature_df["floor_cat"] = self.tabular_feature_df["floor"].astype("category")
+            self.tabular_feature_df = self.tabular_feature_df.drop("floor", axis=1)
+
+            # NOTE: For measurement_forecast, the has_measurement columns are binary
+            #       So, turning them to categorical make sense.
+            #       This is not the case for other build_mode / task types, 
+            #       as we summed over them, and they are continuous in those cases.
+            #       So, I am only doing it here, in this if branch.
+            has_measurement_cols = [c for c in self.tabular_feature_df.columns
+                                    if "has_measurement" in c]
+            self.tabular_feature_df[has_measurement_cols] = (
+                self.tabular_feature_df[has_measurement_cols]
+                    .astype("category")
+            )
+
+        ##### Target preparation #####
+        # 1. Create the appropriate target column based on the task
+        if self.build_mode == "workhour_classification":
+            if not hasattr(self, 'workhour_labels'):
+                raise ValueError("workhour_labels attribute not found for classification task.")
+            self.target_col_name = 'workhour_labels'
+            self.tabular_df = self.tabular_feature_df.copy()
+            self.tabular_df[self.target_col_name] = self.workhour_labels
+        
+        elif self.build_mode == "consumption_forecast":
+            self.target_col_name = 'target_consumption'
+            self.create_target_consumption(horizon=forecast_horizon)
+            # The function above creates the new self.tabular_df
+
+        elif self.build_mode == "measurement_forecast":
+            self.target_col_name = 'target_measurement'
+            self.create_target_measurement(horizon=forecast_horizon)
+            # The function above creates the new self.tabular_df
+        
+        else:
+            raise ValueError(f"Unknown build_mode: {self.build_mode}")
+        
+        df = self.tabular_df
+
+        # 2. CRITICAL: Drop all rows where the target is NaN.
+        # For both consumption_forecast & measurement_forecast, we have:
+        # - end-of-block NaNs
+        # For measurement_forecast, we have:
+        # - missing measurements in certain time buckets, so NaNs in target cols.
+        initial_rows = len(df)
+        df.dropna(subset=[self.target_col_name], inplace=True)
+        logger.info(f"Dropped {initial_rows - len(df)} rows with NaN targets. {len(df)} rows remaining.")
+
+        # Defragmented copy
+        self.tabular_df = df.copy() 
+
+        if df.empty:
+            raise ValueError("No valid data rows remaining after dropping NaN targets.")
+        
+        return None
+
+    def save_tabular_df(self, output_path: str, horizon: int = 1) -> None:
+        """
+        Saves tabular_df.
+        """
+        if not hasattr(self, 'tabular_df'):
+            raise ValueError("tabular_df not found. Run build_tabular_df() first.")
+        
+        logger.info(f"Saving tabular data for task: {self.build_mode}")
+
+        # 3. Create the final payload to save
+        tabular_input = {
+            "df": self.tabular_df,
+            "target_col_name": self.target_col_name,
+            "blocks": self.blocks,
+            "task_type": self.build_mode
+        }
+        
+        # Ensure output directory exists
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        
+        # Save the dictionary using joblib
+        joblib.dump(tabular_input, output_path)
+        logger.info(f"Successfully saved final DataFrame to {output_path}")
         return None

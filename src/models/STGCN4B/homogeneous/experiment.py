@@ -14,7 +14,7 @@ from ....utils.filename_util import get_data_filename
 from ....utils.block_split import StratifiedBlockSplitter
 from ....utils.train_utils import ResultHandler
 from .graph_loader import load_data
-from .processor import NumpyDataProcessor
+from .processor import STGCNDataProcessor
 from .train import setup_model, train_model, evaluate_model, find_optimal_threshold
 
 # Set up the main logging
@@ -22,15 +22,14 @@ import logging, sys
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+    handlers=[logging.StreamHandler(sys.stdout)])
 logger = logging.getLogger(__name__)
 
 # Suppress Optuna's INFO messages to keep the logs cleaner
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 
-class ExperimentRunner:
+class STGCNExperimentRunner:
     """
     Orchestrates a single machine learning experiment.
 
@@ -50,7 +49,7 @@ class ExperimentRunner:
 
     def __init__(self, args: Any):
         """
-        Initializes the ExperimentRunner for a single experiment instance.
+        Initializes the STGCNExperimentRunner for a single experiment instance.
 
         Args:
             args: A configuration object (e.g., from argparse) containing all
@@ -94,7 +93,7 @@ class ExperimentRunner:
         args = self.args
 
         # Deriving file name from arguments
-        fname = get_data_filename()
+        fname = get_data_filename(self.args)
         self.data_filename = fname
         path = os.path.join(args.data_dir, "processed", fname)
         
@@ -151,7 +150,7 @@ class ExperimentRunner:
     def _process_and_load_data(self, args,
                             train_block_ids: List[int], val_block_ids: List[int], test_block_ids: List[int],
                             splitter: StratifiedBlockSplitter
-                            )-> Tuple[Dict, NumpyDataProcessor, torch.Tensor]:
+                            )-> Tuple[Dict, STGCNDataProcessor, torch.Tensor]:
         """
         Handles all data processing for a given fold using the fast NumPy workflow.
         Returns the final data loaders and the fitted processor.
@@ -165,7 +164,7 @@ class ExperimentRunner:
         train_mask_slice = self.input_dict["target_mask"][train_indices] if self.input_dict["target_mask"] is not None else None
 
         # --- 2. Fit processor, transform full arrays, and impute ---
-        processor = NumpyDataProcessor()
+        processor = STGCNDataProcessor()
 
         ##### X #####
         processor.fit_features(
@@ -451,7 +450,7 @@ class ExperimentRunner:
                               model: torch.nn.Module, 
                               test_loader: DataLoader, 
                               best_trial: optuna.trial.FrozenTrial,
-                              processor: NumpyDataProcessor):
+                              processor: STGCNDataProcessor):
         """Evaluates the final, retrained model on the hold-out test set."""
         if self.args.task_type == "workhour_classification":
             # Retrieve the optimal threshold found during CV for the best trial.
@@ -470,12 +469,12 @@ def main():
     """
     Main entry point to run a single experiment.
     
-    This function parses command-line arguments and starts the ExperimentRunner.
+    This function parses command-line arguments and starts the STGCNExperimentRunner.
     """
     from ....config.args import parse_args
     args = parse_args()
     
-    runner = ExperimentRunner(args)
+    runner = STGCNExperimentRunner(args)
     runner.run_experiment()
 
 if __name__ == '__main__':

@@ -1,7 +1,8 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_curve, precision_recall_curve
+from sklearn.metrics import roc_curve, precision_recall_curve, confusion_matrix
+import seaborn as sns
 
 import logging
 logger = logging.getLogger(__name__)
@@ -10,13 +11,21 @@ class ResultHandler:
     """
     A class to handle plotting and saving of model training and evaluation results.
     It dispatches to the correct plotting methods based on the task type.
+
+    Optional `model` argument for model-specific plots (e.g., feature importance for LGBM).
     """
-    def __init__(self, output_dir: str, task_type: str, history: dict, metrics: dict):
+    def __init__(self, 
+                 output_dir: str, 
+                 task_type: str, 
+                 history: dict, 
+                 metrics: dict,
+                 model=None):
         """Initializes the ResultPlotter with all necessary data."""
         self.output_dir = output_dir
         self.task_type = task_type
         self.history = history
         self.metrics = metrics
+        self.model = model
 
     def process(self):
         """
@@ -35,6 +44,10 @@ class ResultHandler:
             self._save_classification_metrics()
         else:
             raise ValueError(f"Unknown task type for plotting: {self.task_type}")
+
+        # Model-specific plot for LGBM
+        if self.model and hasattr(self.model, 'get_feature_importance'):
+            self._plot_feature_importance()
 
         logger.info(f"Results saved to {self.output_dir}")
 
@@ -81,7 +94,7 @@ class ResultHandler:
         plt.grid(True, linestyle='--', alpha=0.6)
         
         plt.tight_layout()
-        plt.savefig(os.path.join(self.output_dir, 'stgcn_forecasting_results.png'), dpi=300, bbox_inches='tight')
+        plt.savefig(os.path.join(self.output_dir, 'forecasting_results.png'), dpi=300, bbox_inches='tight')
         plt.close()
 
     def _plot_forecasting_timeseries(self):
@@ -93,12 +106,12 @@ class ResultHandler:
         plt.plot(indices, self.metrics['predictions'][:sample_size], label='Predicted', marker='x', markersize=4, alpha=0.7)
         plt.xlabel('Time Step'); plt.ylabel('Value'); plt.title('Predicted vs Actual (Sample)')
         plt.legend(); plt.grid(True, linestyle='--', alpha=0.6)
-        plt.savefig(os.path.join(self.output_dir, 'stgcn_forecasting_timeseries.png'), dpi=300, bbox_inches='tight')
+        plt.savefig(os.path.join(self.output_dir, 'forecasting_timeseries.png'), dpi=300, bbox_inches='tight')
         plt.close()
 
     def _save_forecasting_metrics(self):
         """Saves forecasting metrics to a text file."""
-        with open(os.path.join(self.output_dir, 'stgcn_forecasting_metrics.txt'), 'w') as f:
+        with open(os.path.join(self.output_dir, 'forecasting_metrics.txt'), 'w') as f:
             f.write(f"Test Loss (MSE): {self.metrics['test_loss']:.4f}\n")
             f.write(f"RMSE: {self.metrics['rmse']:.4f}\n")
             f.write(f"MAE: {self.metrics['mae']:.4f}\n")
@@ -122,6 +135,9 @@ class ResultHandler:
         plt.legend(); plt.grid(True, linestyle='--', alpha=0.6)
 
         # --- 2. Confusion Matrix ---
+        if 'confusion_matrix' not in self.metrics and 'labels' in self.metrics:
+            self.metrics['confusion_matrix'] = confusion_matrix(self.metrics['labels'], self.metrics['predictions'])
+
         plt.subplot(2, 2, 2)
         conf_mat = self.metrics['confusion_matrix']
         labels = ['Non-Work', 'Work']
@@ -177,13 +193,35 @@ class ResultHandler:
         plt.grid(True, linestyle='--', alpha=0.6)
 
         plt.tight_layout(pad=3.0)
-        plt.savefig(os.path.join(self.output_dir, 'stgcn_classification_results_revised.png'), dpi=300, bbox_inches='tight')
+        plt.savefig(os.path.join(self.output_dir, 'classification_results_revised.png'), dpi=300, bbox_inches='tight')
         plt.close()
-        
+
+    def _plot_feature_importance(self):
+        """Generates and saves a feature importance plot for tree-based models."""
+        logger.info("Generating feature importance plot...")
+        try:
+            # Use the get_feature_importance method from the wrapper
+            importance_df = self.model.get_feature_importance(importance_type='gain')
+            
+            # Select top 30 features for readability
+            top_features = importance_df.head(30)
+            
+            plt.figure(figsize=(10, 12))
+            sns.barplot(x='importance', y='feature', data=top_features, palette='viridis')
+            plt.title('Top 30 Feature Importances (Gain)')
+            plt.xlabel('Importance (Gain)')
+            plt.ylabel('Feature')
+            plt.tight_layout()
+            plt.savefig(os.path.join(self.output_dir, 'lgbm_feature_importance.png'), dpi=300, bbox_inches='tight')
+            plt.close()
+
+        except Exception as e:
+            logger.error(f"Could not generate feature importance plot: {e}")
+
     def _save_classification_metrics(self):
         """Saves classification metrics to a text file."""
         baseline = max(sum(self.metrics['labels']), len(self.metrics['labels']) - sum(self.metrics['labels'])) / len(self.metrics['labels'])
-        with open(os.path.join(self.output_dir, 'stgcn_classification_metrics.txt'), 'w') as f:
+        with open(os.path.join(self.output_dir, 'classification_metrics.txt'), 'w') as f:
             f.write(f"Test Loss: {self.metrics['test_loss']:.4f}\n")
             f.write(f"Test Accuracy: {self.metrics['accuracy']:.4f}\n")
             f.write(f"Balanced Accuracy: {self.metrics['balanced_accuracy']:.4f}\n")

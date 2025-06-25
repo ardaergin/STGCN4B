@@ -123,7 +123,7 @@ def add_OfficeGraph_args(parser):
     ##############################
     #  Graph
     ##############################
-    parser.add_argument('--data_to_build', type=str, default='graph',
+    parser.add_argument('--model_family', type=str, default='graph',
                         choices=['graph', 'tabular'],
                         help='Graph type')
     

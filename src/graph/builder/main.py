@@ -1,5 +1,8 @@
 import os
 import torch
+import functools
+import numpy as np
+from typing import Any
 
 # Logging setup
 import logging, sys
@@ -16,8 +19,8 @@ from .temporal_viz import TemporalVisualizerMixin
 from .spatial import SpatialBuilderMixin
 from .spatial_viz import SpatialVisualizerMixin
 from .homo_graph import HomogGraphBuilderMixin
-from .hetero_graph import HeteroGraphBuilderMixin
-# from .tabular import TabularBuilderMixin
+# from .hetero_graph import HeteroGraphBuilderMixin
+from .tabular import TabularBuilderMixin
 from ...utils.filename_util import get_data_filename
 
 
@@ -27,8 +30,8 @@ class OfficeGraphBuilder(
     TemporalBuilderMixin,
     TemporalVisualizerMixin,
     HomogGraphBuilderMixin,
-    HeteroGraphBuilderMixin,
-    # TabularBuilderMixin
+    # HeteroGraphBuilderMixin,
+    TabularBuilderMixin
     ):
     """
     Consolidated class to build and manipulate graphs from OfficeGraph data,
@@ -50,16 +53,10 @@ class OfficeGraphBuilder(
             }
         self.used_property_types = ["Temperature", "CO2Level", "Humidity"]
         
-        # (Static) Room Attributes to use for modeling
-        self.static_room_attributes = [
-            'hasWindows', 'has_multiple_windows', 
-            'window_direction_sin', 'window_direction_cos', 
-            # 'hasBackWindows', 'hasFrontWindows', 'hasRightWindows', 'hasLeftWindows', 
-            'isProperRoom', 
-            'norm_area_minmax', # 'norm_area_prop', 
-            # 'polygons_doc.width', 'polygons_doc.height', 'polygons_doc.centroid',
-            # 'polygons_doc.compactness', 'polygons_doc.rect_fit', 'polygons_doc.aspect_ratio', 'polygons_doc.perimeter'
-            ]
+        # Static Room class attributes to use for modeling, default 'standard' preset:
+        self.static_room_attributes = ['floor', 'hasWindows', 'has_multiple_windows', 
+                                       'window_direction_sin', 'window_direction_cos', 
+                                       'isProperRoom', 'norm_area_minmax']
         
     def set_build_mode(self, mode: str, measurement_variable=None):
         """
@@ -73,7 +70,15 @@ class OfficeGraphBuilder(
             raise ValueError(f"Invalid build mode '{mode}'. Valid options are: {valid_options}")
         else:
             self.build_mode = mode
-        
+
+        # Workhour classification task checks & setup
+        if mode == "workhour_classification":
+            logger.info("Workhour classification mode set. Removing 'floor' from static attributes.")
+            self.static_room_attributes = [
+                attr for attr in self.static_room_attributes if attr != 'floor'
+            ]
+
+        # Measurement forecast task checks & setup
         if mode == "measurement_forecast" and measurement_variable is None:
             raise ValueError("measurement_variable must be specified for 'measurement_forecast' mode.")
         valid_measurement_variables = ["Temperature", "CO2Level", "Humidity"]
@@ -84,6 +89,24 @@ class OfficeGraphBuilder(
         
         return None
 
+    def _get_nested_attr(self, obj: Any, attr_string: str, default: Any = np.nan) -> Any:
+        """
+        Private helper to safely access nested attributes and dictionary keys.
+
+        Used especially to access the nested attributes for the Room class instances.
+        """
+        try:
+            attributes = attr_string.split('.')
+            def _reducer(current_obj, part):
+                if isinstance(current_obj, dict):
+                    return current_obj.get(part)
+                else:
+                    return getattr(current_obj, part)
+            final_value = functools.reduce(_reducer, attributes, obj)
+            return final_value if final_value is not None else default
+        except (AttributeError, TypeError):
+            return default
+
 def main():
     # Argument parser
     from ...config.args import parse_args
@@ -92,7 +115,29 @@ def main():
     # Loading OfficeGraph data
     from ..officegraph import OfficeGraph
     office_graph = OfficeGraph.from_pickles(floors_to_load = args.floors)
+
+    # Setting up the builder
     builder = OfficeGraphBuilder(office_graph)
+
+    # Presets for static room attributes
+    static_attr_presets = {
+        'minimal': ['floor', 'isProperRoom', 'norm_area_minmax'],
+        'standard': ['floor', 'hasWindows', 'has_multiple_windows', 'window_direction_sin', 'window_direction_cos', 
+                    'isProperRoom', 'norm_area_minmax'],
+        'all': ['floor', 
+                'hasWindows', 'has_multiple_windows', 
+                'window_direction_sin', 'window_direction_cos', 
+                'hasBackWindows', 'hasFrontWindows', 'hasRightWindows', 'hasLeftWindows', 
+                'isProperRoom', 
+                'norm_area_minmax', 'norm_area_prop', 
+                'polygons_doc.centroid',
+                'polygons_doc.width', 'polygons_doc.height',
+                'polygons_doc.compactness', 'polygons_doc.rect_fit', 'polygons_doc.aspect_ratio', 'polygons_doc.perimeter']
+    }
+    # Setting static room attributes based on preset
+    builder.static_room_attributes = static_attr_presets[args.static_attr_preset]
+
+    # Setting build mode based on task type
     builder.set_build_mode(mode=args.task_type, measurement_variable=args.measurement_variable)
     logger.info(f"Builder initialized with build mode '{builder.build_mode}'.")
 
@@ -137,23 +182,6 @@ def main():
     # ============================
     # SPATIAL SETUP
     # ============================
-    # Presets for static room attributes
-    static_attr_presets = {
-        'minimal': ['isProperRoom', 'norm_area_minmax'],
-        'standard': ['hasWindows', 'has_multiple_windows', 'window_direction_sin', 'window_direction_cos', 
-                    'isProperRoom', 'norm_area_minmax'],
-        'all': ['hasWindows', 'has_multiple_windows', 
-                'window_direction_sin', 'window_direction_cos', 
-                'hasBackWindows', 'hasFrontWindows', 'hasRightWindows', 'hasLeftWindows', 
-                'isProperRoom', 
-                'norm_area_minmax', 'norm_area_prop', 
-                'polygons_doc.centroid',
-                'polygons_doc.width', 'polygons_doc.height',
-                'polygons_doc.compactness', 'polygons_doc.rect_fit', 'polygons_doc.aspect_ratio', 'polygons_doc.perimeter']
-    }
-    # Setting static room attributes based on preset
-    builder.static_room_attributes = static_attr_presets[args.static_attr_preset]
-
     logger.info("Setting up spatial components...")
     
     # Initialize room polygons
@@ -198,10 +226,10 @@ def main():
     # Ensure output directory exists
     os.makedirs(args.output_dir, exist_ok=True)
     
-    if args.data_to_build == "tabular":
+    if args.model_family == "tabular":
         raise NotImplementedError("In progress.")
 
-    elif args.data_to_build == "graph":
+    elif args.model_family == "graph":
 
         # Heterogeneous Graph Builder
         if args.graph_type == "heterogeneous":
@@ -213,7 +241,7 @@ def main():
             heterogeneous_stgcn_input = builder.prepare_hetero_stgcn_input()
             torch_tensors = builder.convert_hetero_to_torch_tensors(heterogeneous_stgcn_input)
 
-            fname = get_data_filename()
+            fname = get_data_filename(args)
             full_output_path = os.path.join("data/processed", fname)
             torch.save(torch_tensors, full_output_path)
             logger.info(f"Saved tensors to {full_output_path} with default parameters.")
@@ -234,7 +262,7 @@ def main():
             logger.info("Generating feature arrays for homogeneous graph...")
             builder.build_feature_array()
 
-            fname = get_data_filename()
+            fname = get_data_filename(args)
             full_output_path = os.path.join("data/processed", fname)
 
             # Prepare numpy input
