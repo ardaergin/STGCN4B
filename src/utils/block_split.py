@@ -114,22 +114,7 @@ class StratifiedBlockSplitter:
         self.output_dir = output_dir
         os.makedirs(self.output_dir, exist_ok=True)
         self.save_filename = os.path.join(self.output_dir, f"{self.seed}.json")
-
-    def _save_block_split(self, split_type: str,
-                        train_ids: List[int], val_ids: List[int], test_ids: List[int]
-                        ) -> None:
-        """
-        Internal helper: save block IDs to JSON under self.output_dir.
-        """
-        os.makedirs(self.output_dir, exist_ok=True)
-        fname = f"{split_type}_{self.seed}.json"
-        path = os.path.join(self.output_dir, fname)
-        payload = {"train_blocks": train_ids, "val_blocks": val_ids, "test_blocks": test_ids}
-        with open(path, "w") as fp:
-            json.dump(payload, fp, indent=2)
-        logger.info(f"Saved {split_type} to {path}")
-        return None
-    
+        
     def _save_block_split(self, split_type: str,
                         train_ids: List[int], val_ids: List[int], test_ids: List[int]
                         ) -> None:
