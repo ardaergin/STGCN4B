@@ -2,6 +2,7 @@ import numpy as np
 from datetime import datetime
 import pandas as pd
 import logging
+from rdflib import URIRef
 
 # Logging setup
 import logging, sys
@@ -431,4 +432,104 @@ class TemporalBuilderMixin:
         logger.info("=" * 40)
 
         self.full_feature_df = full_df
+        return None
+    
+    def build_room_feature_df(self) -> None:
+        """
+        Transforms device-level data into a room-level feature matrix.
+
+        This method pivots the `self.full_feature_df` (keyed by device, property,
+        and time bucket) into a wide-format DataFrame where each row represents a
+        unique room and time bucket (`room_uri`, `bucket_idx`).
+
+        For each property type (e.g., "Temperature"), it generates a set of features
+        by aggregating data from all devices of that type within a single room.
+        This creates distinct columns such as:
+        - `Temperature_mean`, `Temperature_std`, `Temperature_max`, `Temperature_min`
+        - `Temperature_count` (total number of measurements)
+        - `Temperature_n_active_devices` (count of devices with measurements)
+        - `Temperature_has_measurement` (a binary indicator: 1 if any device reported data, 0 otherwise)
+
+        Aggregation Rules:
+        - `mean`, `std`, `max`, `min`: The mean of the statistic across all active devices in the room.
+        - `count`: The sum of measurement counts from all devices.
+        - `has_measurement`:
+            - `sum` -> `n_active_devices`: The number of devices reporting data.
+            - `max` -> `has_measurement`: A binary flag indicating if the room had any data for that property.
+
+        The final DataFrame is stored in `self.room_feature_df`.
+        """
+        # 1) Ensure full_feature_df exists
+        if not hasattr(self, 'full_feature_df'):
+            raise ValueError("full_feature_df not found. Run build_full_feature_df() first.")
+        df = self.full_feature_df.copy()
+        
+        logger.info(f"Starting build_room_feature_df with {len(df)} rows in full_feature_df.")
+
+        # 2) Map each device_uri → room_uri
+        #    (device_uri is a string, so convert to URIRef and look up device_obj.room)
+        def _map_device_to_room(dev_str: str):
+            try:
+                dev_ref = URIRef(dev_str)
+                device_obj = self.office_graph.devices.get(dev_ref)
+                if device_obj is None:
+                    raise KeyError(f"Device {dev_str} not in office_graph.devices")
+                return device_obj.room
+            except Exception as e:
+                raise RuntimeError(f"Cannot map device_uri '{dev_str}' to a room: {e}")
+
+        df['room_uri'] = df['device_uri'].apply(_map_device_to_room)
+        unique_devices = df['device_uri'].nunique()
+        unique_rooms_mapped = df['room_uri'].nunique()
+        logger.info(f"Mapped {unique_devices} unique device_uris into {unique_rooms_mapped} distinct rooms.")
+
+        # Using pivot_table to aggregate and pivot
+        wide = pd.pivot_table(
+            df,
+            index=['room_uri', 'bucket_idx'],
+            columns='property_type',
+            values=['mean', 'std', 'max', 'min', 'count', 'has_measurement'],
+            aggfunc={
+                'mean': 'mean', 
+                'std': 'mean', 
+                'max': 'mean', 
+                'min': 'mean',
+                'count': 'sum', 
+                'has_measurement': ['sum', 'max']
+            }
+        )
+
+        # Flatten the multi-level columns
+        # col is a tuple, e.g., ('mean', 'Temperature') or ('has_measurement', 'sum', 'Temperature')
+        new_cols = []
+        for col in wide.columns:
+            if col[0] == 'has_measurement': # The special case
+                stat = col[1]  # 'sum' or 'max'
+                prop = col[2]  # 'Temperature'
+                stat_name = 'n_devices' if stat == 'sum' else 'has_measurement'
+                new_cols.append(f"{prop}_{stat_name}")
+            else: # The standard case
+                stat = col[0]
+                prop = col[1]
+                new_cols.append(f"{prop}_{stat}")
+        wide.columns = new_cols
+
+        wide = wide.reset_index()
+
+        # Store the resulting DataFrame
+        self.room_feature_df = wide
+
+        # Informative logging about DataFrame structure
+        logger.info(f"Built room_feature_df DataFrame for measured rooms. Shape: {wide.shape}")
+
+        num_unique_rooms = wide['room_uri'].nunique()
+        num_unique_buckets = wide['bucket_idx'].nunique()
+        total_columns = wide.shape[1]
+        column_names = wide.columns.tolist()
+
+        logger.info(f"room_feature_df contains {num_unique_rooms} unique rooms and {num_unique_buckets} unique buckets.")
+        logger.info(f"room_feature_df has {total_columns} columns. Column names:")
+        for col in column_names:
+            logger.info(f"  • {col}")
+
         return None

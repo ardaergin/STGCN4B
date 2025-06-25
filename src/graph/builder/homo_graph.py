@@ -21,132 +21,39 @@ class HomogGraphBuilderMixin:
       - `self.adj_matrix_room_uris` lists the room URIs in the same order as rows/columns of that matrix.
     """
 
-    def build_room_feature_df(self) -> pd.DataFrame:
+    def expand_room_feature_df(self) -> None:
         """
-        Transform `self.full_feature_df` (which is keyed by device_uri, property_type, bucket_idx)
-        into a per-(room_uri, bucket_idx) DataFrame where each distinct property_type has its
-        own set of six columns:
-
-            {property_type}_mean,
-            {property_type}_std,
-            {property_type}_max,
-            {property_type}_min,
-            {property_type}_count,
-            {property_type}_has_measurement
-
-        Aggregation rules when multiple devices of the same property live in one room:
-            - "mean", "std", "max", "min"  →  take the mean across devices
-            - "count", "has_measurement"   →  take the sum across devices
-        
-        Returns:
-            A pandas.DataFrame with columns:
-            ['room_uri', 'bucket_idx',
-             '<prop1>_mean', '<prop1>_std', '<prop1>_max', '<prop1>_min', '<prop1>_count', '<prop1>_has_measurement',
-             '<prop2>_mean', …, etc. ],
-            one row per (room_uri, bucket_idx).
+        Helper function to take the DataFrame of measured rooms and expand
+        it to include all rooms defined in the graph, filling missing ones with NaNs.
+        This is required for the STGCN pipeline.
         """
-        # 1) Ensure full_feature_df exists
-        if not hasattr(self, 'full_feature_df'):
-            raise ValueError("full_feature_df not found. Run build_full_feature_df() first.")
-        df = self.full_feature_df.copy()
-        logger.info(f"Starting build_room_feature_df with {len(df)} rows in full_feature_df.")
+        if not hasattr(self, "room_feature_df"):
+            raise ValueError("Run build_room_feature_df() first.")
 
-        # 2) Map each device_uri → room_uri
-        #    (device_uri is a string, so convert to URIRef and look up device_obj.room)
-        def _map_device_to_room(dev_str: str):
-            try:
-                dev_ref = URIRef(dev_str)
-                device_obj = self.office_graph.devices.get(dev_ref)
-                if device_obj is None:
-                    raise KeyError(f"Device {dev_str} not in office_graph.devices")
-                return device_obj.room
-            except Exception as e:
-                raise RuntimeError(f"Cannot map device_uri '{dev_str}' to a room: {e}")
+        logger.info("Expanding feature DataFrame to include all graph nodes for STGCN...")
 
-        df['room_uri'] = df['device_uri'].apply(_map_device_to_room)
-        unique_devices = df['device_uri'].nunique()
-        unique_rooms_mapped = df['room_uri'].nunique()
-        logger.info(f"Mapped {unique_devices} unique device_uris into {unique_rooms_mapped} distinct rooms.")
-
-        # 3) Aggregate per (room_uri, property_type, bucket_idx)
-        #    - "mean", "std", "max", "min" → mean across devices
-        #    - "count", "has_measurement"  → sum across devices
-        aggregated = (
-            df.groupby(['room_uri', 'property_type', 'bucket_idx'])
-              .agg({
-                  'mean': 'mean',
-                  'std': 'mean',
-                  'max': 'mean',
-                  'min': 'mean',
-                  'count': 'sum',
-                  'has_measurement': 'sum'
-              })
-              .reset_index()
-        )
-        logger.info(f"Aggregated into {len(aggregated)} rows over (room_uri, property_type, bucket_idx). "
-                    f"There are {aggregated['property_type'].nunique()} distinct property_types after aggregation.")
-
-        # 4) Pivot so that each property_type becomes its own set of six columns.
-        #    First, set a MultiIndex on (room_uri, bucket_idx, property_type), keeping only the six stats.
-        aggregated = aggregated.set_index(
-            ['room_uri', 'bucket_idx', 'property_type'],
-            drop=False
-        )[['mean', 'std', 'max', 'min', 'count', 'has_measurement']]
-
-        #    Now unstack by property_type. The DataFrame's index becomes (room_uri, bucket_idx),
-        #    and its columns are a MultiIndex like:
-        #        ("mean",            propA),
-        #        ("std",             propA),
-        #        …,
-        #        ("has_measurement", propA),
-        #        ("mean",            propB),  etc.
-        wide = aggregated.unstack(level='property_type')
-        logger.info("Unstacked property_type into separate columns. "
-                    f"Resulting wide table has {wide.shape[1]} MultiIndex columns before flattening.")
-
-        # 5) Flatten the MultiIndex columns into single strings "{property}_{stat}".
-        #    For every (stat, prop) in the MultiIndex, we rename to "prop_stat".
-        flat_columns = []
-        for stat, prop in wide.columns:
-            flat_columns.append(f"{prop}_{stat}")
-        wide.columns = flat_columns
-
-        # 6) Reset index so that 'room_uri' and 'bucket_idx' return as ordinary columns.
-        wide = wide.reset_index()
-        logger.info(f"After flattening, wide table has {wide.shape[0]} rows and {wide.shape[1]} columns (including 'room_uri' and 'bucket_idx').")
-
-        # 7) Re-index to ensure every room × every bucket appears.
-        #    If a room had no measurements in a bucket, those columns will now be 0.0.
+        # Re-index to ensure every room × every bucket appears.
+        # If a room had no measurements in a bucket, those columns will now be NaN.
         all_rooms   = list(self.office_graph.rooms.keys())      # every room URIRef, regardless of measurements
         all_buckets = list(range(len(self.time_buckets)))       # 0..T-1
-
+        
         full_index = pd.MultiIndex.from_product(
             [all_rooms, all_buckets],
             names=["room_uri", "bucket_idx"]
         )
-
-        wide = (
-            wide
+        
+        # Re-index the DataFrame of measured rooms to the full index
+        expanded_df = (
+            self.room_feature_df
             .set_index(["room_uri", "bucket_idx"])  # make these two levels the index
             .reindex(full_index)                    # add missing (room, bucket) pairs
             .reset_index()                           # restore columns 'room_uri' & 'bucket_idx'
         )
-        logger.info(f"Reindexed to full (room, bucket) grid: {len(all_rooms)} rooms × {len(all_buckets)} buckets = {len(wide)} total rows.")
+        self.room_feature_df = expanded_df
 
-        # 8) Informative logging about final DataFrame structure
-        num_unique_rooms = wide['room_uri'].nunique()
-        num_unique_buckets = wide['bucket_idx'].nunique()
-        total_columns = wide.shape[1]
-        column_names = wide.columns.tolist()
+        logger.info(f"Reindexed to full (room, bucket) grid: {len(all_rooms)} rooms x {len(all_buckets)} buckets = {len(expanded_df)} total rows.")
 
-        logger.info(f"Final room_feature_df contains {num_unique_rooms} unique rooms and {num_unique_buckets} unique buckets.")
-        logger.info(f"room_feature_df has {total_columns} columns. Column names:")
-        for col in column_names:
-            logger.info(f"  • {col}")
-
-        # 9) Store and return
-        self.room_feature_df = wide
-        return wide
+        return None
     
     def get_targets_and_mask_for_a_variable(self, stat: str = "mean"):
         """
@@ -432,9 +339,9 @@ class HomogGraphBuilderMixin:
             for i, room_uri in enumerate(self.adj_matrix_room_uris):
                 room_obj = self.office_graph.rooms.get(room_uri)
                 if room_obj:
-                    for j, feat in enumerate(static_feature_names):
-                        val = getattr(room_obj, feat, 0.0)
-                        static_mat[i, j] = float(val) if val is not None else 0.0
+                    for j, feat_string in enumerate(static_feature_names):
+                        val = self._get_nested_attr(room_obj, feat_string, default=0.0)
+                        static_mat[i, j] = float(val) if val is not None and not np.isnan(val) else 0.0
         
         # Tile static features across the time dimension
         static_array = np.tile(static_mat, (T, 1, 1)) # Shape -> (T, R, F_static)
