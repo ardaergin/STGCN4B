@@ -207,8 +207,10 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
             model.eval()
             running_val_loss = 0.0
             total_valid_points_val = 0
-            all_preds = []
-            all_targets = []
+            # Forecasting:
+            all_preds, all_targets = [], []
+            # Classification:
+            all_probs, all_targets_class = [], [] 
             
             with torch.no_grad():
                 for X_batch, y_batch, mask_batch in val_loader:
@@ -223,9 +225,9 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
                         loss_val = criterion(outputs.squeeze(), y_batch.squeeze().float())
                         running_val_loss += loss_val.item() * x.size(0)
                         total_valid_points_val += x.size(0)
-                        preds = (torch.sigmoid(outputs.squeeze()) > 0.5).int()
-                        all_preds.extend(preds.cpu().tolist())
-                        all_targets.extend(y_batch.cpu().tolist())
+                        probs = torch.sigmoid(outputs.squeeze())
+                        all_probs.extend(probs.cpu().tolist())
+                        all_targets_class.extend(y_batch.squeeze().cpu().tolist())
                     else: # Forecasting tasks
                         preds, targets, mask = get_preds_targets_mask(outputs, y_batch, mask_batch, args.task_type)
                         # Manually calculate squared error and apply mask
@@ -247,13 +249,23 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
 
             # Append epoch metrics to the history dictionary
             epoch_metrics = {}
-            if len(all_targets) > 0:
-                if args.task_type == "workhour_classification":
-                    epoch_metrics['accuracy'] = accuracy_score(all_targets, all_preds)
-                    epoch_metrics['f1'] = f1_score(all_targets, all_preds, zero_division=0)
-                else: # Forecasting
+            if args.task_type == "workhour_classification":
+                if len(all_targets_class) > 0:
+                    # Check if more than one class is present to calculate AUC
+                    if len(np.unique(all_targets_class)) > 1:
+                        epoch_metrics['val_auc'] = roc_auc_score(all_targets_class, all_probs)
+                    else:
+                        epoch_metrics['val_auc'] = 0.5 # Neutral score if only one class is present
+
+                    # For logging, we can still compute metrics at the 0.5 threshold
+                    preds_at_half = [1 if p >= 0.5 else 0 for p in all_probs]
+                    epoch_metrics['accuracy'] = accuracy_score(all_targets_class, preds_at_half)
+                    epoch_metrics['f1'] = f1_score(all_targets_class, preds_at_half, zero_division=0)
+            else: # Forecasting
+                if len(all_targets) > 0:
                     epoch_metrics['r2'] = r2_score(all_targets, all_preds)
                     epoch_metrics['mae'] = mean_absolute_error(all_targets, all_preds)
+
             for metric_name, metric_val in epoch_metrics.items():
                 history['val_metrics'].setdefault(metric_name, []).append(metric_val)
 
@@ -261,7 +273,7 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
             if trial:
                 # For classification, we prune based on the primary metric (e.g., F1-score)
                 if args.task_type == "workhour_classification":
-                    metric_to_report = history['val_metrics'].get('f1', [-1])[-1]
+                    metric_to_report = epoch_metrics.get('val_auc', 0.0)
                 # For forecasting, we prune based on validation loss
                 else:
                     metric_to_report = epoch_val_loss
@@ -284,7 +296,13 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
             )
 
             # Check early stopping
-            early_stopping(epoch_val_loss, model, epoch + 1)
+            if args.task_type == "workhour_classification":
+                # We want to MAXIMIZE AUC, so we MINIMIZE (-AUC) for the early stopping class
+                current_auc = epoch_metrics.get('val_auc', 0.0)
+                early_stopping(-current_auc, model, epoch + 1)
+            else:
+                early_stopping(epoch_val_loss, model, epoch + 1)
+            
             if early_stopping.early_stop:
                 logger.info("Early stopping triggered")
                 break
@@ -300,6 +318,12 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
         logger.info(f"Loading best model from epoch {early_stopping.best_epoch}")
         model.load_state_dict(early_stopping.best_model_state)
     
+        # Add best AUC to history for the objective function
+        if args.task_type == "workhour_classification":
+            best_epoch_idx = early_stopping.best_epoch - 1
+            best_auc = history['val_metrics']['val_auc'][best_epoch_idx]
+            history['best_val_auc'] = best_auc
+
     return model, history
 
 def evaluate_model(args, model, test_loader, processor: NumpyDataProcessor, threshold=0.5):
@@ -425,51 +449,3 @@ def find_optimal_threshold(model, val_loader):
     optimal_threshold = thresholds[optimal_idx] if optimal_idx != -1 else 0.5
     logger.info(f"Optimal classification threshold: {optimal_threshold:.4f}")
     return optimal_threshold
-
-def main():
-    """Main function to run the STGCN model."""
-    # Parse arguments
-    args = parse_args()
-    
-    # Set random seed
-    torch.manual_seed(args.seed)
-    np.random.seed(args.seed)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(args.seed)
-        
-    # Prepare data
-    data = load_data(args)
-    
-    # Setup model
-    model, criterion, optimizer, scheduler, early_stopping = setup_model(args, data)
-    
-    # Train model
-    model, history = train_model(
-        args, model, criterion, optimizer, scheduler, early_stopping,
-        data['train_loader'], data['val_loader']
-    )
-    
-    # Evaluate model
-    if args.task_type == "workhour_classification":
-        optimal_threshold = find_optimal_threshold(model, data['val_loader'])
-        metrics = evaluate_model(args, model, data['test_loader'], threshold=optimal_threshold)
-    else:
-        metrics = evaluate_model(args, model, data['test_loader'])
-    
-    # Plot results
-    plotter = ResultHandler(args, history, metrics)
-    plotter.process()
-
-    # Save model
-    if args.task_type == "measurement_forecast":
-        fname = f"stgcn_model_{args.adjacency_type}_{args.interval}_{args.graph_type}_{args.measurement_type}.pt"
-    else:
-        fname = f"torch_input_{args.adjacency_type}_{args.interval}_{args.graph_type}.pt"
-
-    torch.save(model.state_dict(), os.path.join(args.output_dir, fname))
-    
-    logger.info("Done!")
-
-
-if __name__ == "__main__":
-    main()

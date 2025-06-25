@@ -378,7 +378,7 @@ class STGCNExperimentRunner:
             fold_actual_epochs.append(early_stopping.best_epoch)
 
             if self.args.task_type == "workhour_classification":
-                metric_val = max(history['val_metrics'].get('f1', [0]))
+                metric_val = history.get('best_val_auc', 0.0)
             else:
                 metric_val = min(history.get('val_loss', [np.inf]))
             fold_metrics.append(metric_val)
