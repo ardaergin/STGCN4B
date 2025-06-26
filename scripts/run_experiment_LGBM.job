@@ -4,7 +4,7 @@
 #SBATCH --partition=rome
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
+#SBATCH --mem=64G
 #SBATCH --time=01:00:00
 #SBATCH --array=0-9
 #SBATCH --output=output/experiments/slurm_output_%A_%a.out # %A=job ID, %a=array task ID
@@ -38,6 +38,7 @@ mkdir -p $TMPDIR/data/processed
 echo "Determining required data file..."
 REQUIRED_FILE=$(srun python -m src.utils.filename_util \
     --model_family tabular \
+    --model LightGBM \
     "$@")
 
 # Checking if it returned a filename
@@ -84,6 +85,7 @@ srun python -m src.models.LightGBM.experiment \
   --output_dir $TASK_OUTPUT_DIR \
   --experiment_id ${SLURM_ARRAY_TASK_ID} \
   --model_family tabular \
+  --model LightGBM \
   "$@"
 
 echo "Cleaning up scratch space..."

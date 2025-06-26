@@ -185,7 +185,7 @@ class LGBMExperimentRunner:
         study.optimize(
             lambda trial: self._objective(trial, splitter),
             n_trials=self.args.n_optuna_trials,
-            n_jobs=-1, # <<< PARALLEL HPO
+            n_jobs=5, # <<< PARALLEL HPO
             catch=(Exception,)
         )
         return study
