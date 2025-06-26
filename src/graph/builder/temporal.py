@@ -500,18 +500,26 @@ class TemporalBuilderMixin:
         )
 
         # Flatten the multi-level columns
-        # col is a tuple, e.g., ('mean', 'Temperature') or ('has_measurement', 'sum', 'Temperature')
         new_cols = []
         for col in wide.columns:
-            if col[0] == 'has_measurement': # The special case
-                stat = col[1]  # 'sum' or 'max'
-                prop = col[2]  # 'Temperature'
-                stat_name = 'n_devices' if stat == 'sum' else 'has_measurement'
-                new_cols.append(f"{prop}_{stat_name}")
-            else: # The standard case
-                stat = col[0]
-                prop = col[1]
-                new_cols.append(f"{prop}_{stat}")
+            # col is always a 3-tuple: (value_name, aggfunc_name, prop_type)
+            if isinstance(col, tuple) and len(col) == 3:
+                value, aggfunc, prop = col
+            else:
+                raise ValueError(f"Unexpected column structure: {col}")
+            
+            # The special case
+            if value == 'has_measurement': 
+                # sum → number of devices, max → binary flag
+                name = f"{prop}_{'n_devices' if aggfunc=='sum' else 'has_measurement'}"
+            
+            # The standard case
+            else:
+                # mean, std, max, min → just prop_stat
+                name = f"{prop}_{value}"
+
+            new_cols.append(name)
+            
         wide.columns = new_cols
 
         wide = wide.reset_index()
