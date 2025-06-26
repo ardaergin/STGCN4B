@@ -331,8 +331,14 @@ class TabularBuilderMixin:
         for room_uri, room_obj in self.office_graph.rooms.items():
             features = {'room_uri': room_uri}
             for attr_string in self.static_room_attributes:
-                val = self._get_nested_attr(room_obj, attr_string, default=np.nan)
-                features[attr_string] = val
+                if attr_string == "floor":
+                    floor_uri = room_obj.floor
+                    floor_obj = self.office_graph.floors.get(floor_uri)
+                    floor_num = getattr(floor_obj, "floor_number", np.nan)
+                    features["floor"] = floor_num
+                else:
+                    val = self._get_nested_attr(room_obj, attr_string, default=np.nan)
+                    features[attr_string] = val
             room_data.append(features)
 
         if not room_data:
@@ -441,8 +447,7 @@ class TabularBuilderMixin:
                 series = (gb[col]
                         .shift(shift_amount)
                         .rolling(window=w, min_periods=1)
-                        .mean()
-                        .reset_index(level=0, drop=True))
+                        .mean())
                 moving_average_dict[f"{col}_ma_{w}_sh{shift_amount}"] = series
 
         # Concatenate all columns in one go
@@ -492,7 +497,7 @@ class TabularBuilderMixin:
         grouping = ['block_id']
         if extra_grouping_cols:
             grouping.extend(extra_grouping_cols)
-        logger.info(f"Adding moving average features, grouping by: {grouping}")
+        logger.info(f"Adding lag features, grouping by: {grouping}")
 
         # Sorting based on grouping + bucket_idx
         df.sort_values(grouping + ['bucket_idx'], inplace=True)
@@ -516,7 +521,7 @@ class TabularBuilderMixin:
         gb = df.groupby(grouping)
         for k in lags:
             for col in cols:
-                lag_series = gb[col].shift(k).reset_index(level=0, drop=True)
+                lag_series = gb[col].shift(k)
                 lag_dict[f"{col}_lag_{k}"] = lag_series
 
         # Concatenate all columns in one go
@@ -656,30 +661,52 @@ class TabularBuilderMixin:
 
         ##### Feature engineering #####
 
+        # Adding weather features here so we get also their MAs and lags 
+        self.integrate_weather_features()
+
+        # Defining selective feature lists for lags and moving averages
+        base_cols = self.tabular_feature_df.select_dtypes("number").columns.tolist()
+        base_cols = [c for c in base_cols if c not in ('bucket_idx', 'block_id')]
+
+        # Tier 1: Core signals for both Lags and MAs
+        # All means, maxes, mins, and key weather variables
+        core_signals_for_lags_and_ma = [
+            c for c in base_cols if 
+            any(k in c for k in ['_mean', '_max', '_min']) or
+            c in ['temperature_2m', 'relative_humidity_2m', 'precipitation', 'wind_speed_10m', 'wind_speed_80m', 'cloud_cover']
+        ]
+        logger.info(f"Generating lags and MAs for {len(core_signals_for_lags_and_ma)} core signal columns.")
+
+        # Tier 2: Secondary signals for MA only
+        secondary_signals_for_ma_only = [
+            c for c in base_cols if 
+            any(k in c for k in ['_std', '_count', '_n_devices', '_has_measurement'])
+        ]
+        logger.info(f"Generating MAs only for {len(secondary_signals_for_ma_only)} secondary signal columns.")
+
         if self.build_mode == "measurement_forecast":
             # For this task, we also have "room_uri" as an additional grouping col
             extra_grouping_col = ["room_uri"]
         else:
             extra_grouping_col = None
-        
-        # Adding weather features here so we get also their MAs and lags 
-        self.integrate_weather_features()
 
         # Defaults for MAs & Lags
         if lags is None:
-            lags=[1, 2, 3, 8, 12, 16, 24]
+            lags=[1, 2, 3]
         if windows is None:
             windows=[3, 6, 12, 24]
 
         # Creating MAs & Lags
         self.add_lag_features(
             extra_grouping_cols=extra_grouping_col,
-            lags=lags)
+            lags=lags,
+            cols=core_signals_for_lags_and_ma)
         
         self.add_moving_average_features(
             extra_grouping_cols=extra_grouping_col,
             windows=windows,
-            shift_amount=shift_amount)
+            shift_amount=shift_amount,
+            cols=core_signals_for_lags_and_ma + secondary_signals_for_ma_only)
 
         # NOTE 1: We can add the time features after taking MA & lag,
         #         as we should not really take the lag of the time-related features
