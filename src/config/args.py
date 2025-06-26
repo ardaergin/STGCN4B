@@ -334,16 +334,21 @@ def add_LightGBM_args(parser):
     """
     Tabular‐specific arguments for LightGBM training/evaluation.
     """
-    parser.add_argument('--verbose',
-                        action='store_true',
-                        help='Enable verbose LightGBM output (shows eval logs)')
-    parser.add_argument('--n_estimators', type=int,
-                        default=1000,
-                        help='Number of boosting rounds')
-    parser.add_argument('--early_stopping_rounds', type=int,
-                        default=50,
-                        help='Rounds of early stopping')
+    # For TabularBuilderMixin
+    parser.add_argument('--lags', type=int, nargs='+',
+                        default=None,
+                        help='A space-separated list of lag features to create (e.g., --lags 1 2 8 24). Uses function default if not provided.')
 
+    parser.add_argument('--windows', type=int, nargs='+',
+                        default=None,
+                        help='A space-separated list of window sizes for moving averages (e.g., --windows 3 6 12). Uses function default if not provided.')
+    parser.add_argument('--shift-amount', type=int,
+                        default=1,
+                        help='The shift amount for moving average features. Default is 1.')
+
+    parser.add_argument('--forecast_horizon', type=int,
+                        default=1,
+                        help='The forecast horizon in hours. Default is 1.')
 
 
 def parse_args():

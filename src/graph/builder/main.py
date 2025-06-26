@@ -1,5 +1,4 @@
 import os
-import torch
 import functools
 import numpy as np
 from typing import Any
@@ -179,6 +178,9 @@ def main():
     logger.info("Building full feature DataFrame...")
     builder.build_full_feature_df()
 
+    # Building the per-room feature DataFrame
+    builder.build_room_feature_df()
+
     # ============================
     # SPATIAL SETUP
     # ============================
@@ -193,31 +195,32 @@ def main():
     
     # Normalize room areas
     builder.normalize_room_areas()
-    
-    # Build horizontal adjacency
-    builder.build_horizontal_adjacency(
-        mode=args.adjacency_type,
-        distance_threshold=args.distance_threshold
-    )
 
-    # Build vertical adjacency
-    builder.build_vertical_adjacency(
-        mode=args.adjacency_type,
-        min_overlap_area=0.05,
-        min_weight=0
-    )
-    
-    # Combined horizontal + vertical adjacency
-    builder.build_combined_room_to_room_adjacency()
+    if args.model_family == "graph":
+        # Build horizontal adjacency
+        builder.build_horizontal_adjacency(
+            mode=args.adjacency_type,
+            distance_threshold=args.distance_threshold
+        )
 
-    # Calculate information propagation masks and apply them
-    logger.info("Building masked adjacency matrices for information propagation...")
-    builder.build_masked_adjacencies()
-    
-    # Build outside adjacency
-    if not args.skip_incorporating_weather:
-        logger.info("Calculating outside adjacency...")
-        builder.build_outside_adjacency(mode=args.adjacency_type)
+        # Build vertical adjacency
+        builder.build_vertical_adjacency(
+            mode=args.adjacency_type,
+            min_overlap_area=0.05,
+            min_weight=0
+        )
+        
+        # Combined horizontal + vertical adjacency
+        builder.build_combined_room_to_room_adjacency()
+
+        # Calculate information propagation masks and apply them
+        logger.info("Building masked adjacency matrices for information propagation...")
+        builder.build_masked_adjacencies()
+        
+        # Build outside adjacency
+        if not args.skip_incorporating_weather:
+            logger.info("Calculating outside adjacency...")
+            builder.build_outside_adjacency(mode=args.adjacency_type)
     
     # ============================
     # DATA BUILDING
@@ -227,28 +230,42 @@ def main():
     os.makedirs(args.output_dir, exist_ok=True)
     
     if args.model_family == "tabular":
-        raise NotImplementedError("In progress.")
+        builder.build_tabular_df(
+            forecast_horizon=args.forecast_horizon,
+            lags=args.lags,
+            windows=args.windows,
+            shift_amount=args.shift_amount
+        )
+
+        # Get file name via helper
+        fname = get_data_filename(args)
+        full_output_path = os.path.join("data/processed", fname)
+
+        # Save
+        builder.save_tabular_df(output_path=full_output_path)
 
     elif args.model_family == "graph":
 
         # Heterogeneous Graph Builder
         if args.graph_type == "heterogeneous":
-            builder.build_base_hetero_graph()
-            builder.build_hetero_temporal_graphs()
+            raise NotImplementedError("Not implemented yet.")
+            # builder.build_base_hetero_graph()
+            # builder.build_hetero_temporal_graphs()
 
-            # Prepare torch input
-            logger.info("Preparing heterogeneous STGCN input...")
-            heterogeneous_stgcn_input = builder.prepare_hetero_stgcn_input()
-            torch_tensors = builder.convert_hetero_to_torch_tensors(heterogeneous_stgcn_input)
+            # # Prepare torch input
+            # logger.info("Preparing heterogeneous STGCN input...")
+            # heterogeneous_stgcn_input = builder.prepare_hetero_stgcn_input()
+            # torch_tensors = builder.convert_hetero_to_torch_tensors(heterogeneous_stgcn_input)
 
-            fname = get_data_filename(args)
-            full_output_path = os.path.join("data/processed", fname)
-            torch.save(torch_tensors, full_output_path)
-            logger.info(f"Saved tensors to {full_output_path} with default parameters.")
+            # fname = get_data_filename(args)
+            # full_output_path = os.path.join("data/processed", fname)
+            # torch.save(torch_tensors, full_output_path)
+            # logger.info(f"Saved tensors to {full_output_path} with default parameters.")
 
         # Homogeneous Graph Builder
         elif args.graph_type == "homogeneous":
-            builder.build_room_feature_df()
+            # Expanding the room_feature_df by adding also the empty room-bucket combinations
+            builder.expand_room_feature_df()
 
             # Incorporate weather data as outside space if specified
             if not args.skip_incorporating_weather:
@@ -261,7 +278,8 @@ def main():
             # Feature matrices
             logger.info("Generating feature arrays for homogeneous graph...")
             builder.build_feature_array()
-
+            
+            # Get file name via helper
             fname = get_data_filename(args)
             full_output_path = os.path.join("data/processed", fname)
 

@@ -614,7 +614,11 @@ class TabularBuilderMixin:
     #################### Master Function #######################
     ############################################################
 
-    def build_tabular_df(self, forecast_horizon: int = 1):
+    def build_tabular_df(self, 
+                         forecast_horizon: int = 1,
+                         lags: List[int] = None,
+                         windows: List[int] = None,
+                         shift_amount: int = 1):
         """
         This is the final, all-in-one function to build tabular data depending on the 'build_mode' (or 'task_type').
         1) Handles building the base DataFrame, appropriate to the task type
@@ -661,15 +665,21 @@ class TabularBuilderMixin:
         # Adding weather features here so we get also their MAs and lags 
         self.integrate_weather_features()
 
-        # MA & Lag
+        # Defaults for MAs & Lags
+        if lags is None:
+            lags=[1, 2, 3, 8, 12, 16, 24]
+        if windows is None:
+            windows=[3, 6, 12, 24]
+
+        # Creating MAs & Lags
         self.add_lag_features(
             extra_grouping_cols=extra_grouping_col,
-            lags=[1, 2, 3, 8, 12, 16, 24])
+            lags=lags)
         
         self.add_moving_average_features(
             extra_grouping_cols=extra_grouping_col,
-            windows=[3, 6, 12, 24],
-            shift_amount=0)
+            windows=windows,
+            shift_amount=shift_amount)
 
         # NOTE 1: We can add the time features after taking MA & lag,
         #         as we should not really take the lag of the time-related features
@@ -747,7 +757,7 @@ class TabularBuilderMixin:
         
         return None
 
-    def save_tabular_df(self, output_path: str, horizon: int = 1) -> None:
+    def save_tabular_df(self, output_path: str) -> None:
         """
         Saves tabular_df.
         """
