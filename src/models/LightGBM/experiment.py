@@ -33,10 +33,9 @@ from .model import LGBMWrapper
 import logging, sys
 logging.basicConfig(
     level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    format='%(asctime)s - PID:%(process)d - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)])
 logger = logging.getLogger(__name__)
-
 class LGBMExperimentRunner:
     """
     Orchestrates a machine learning experiment for a LightGBM model, designed
@@ -225,7 +224,7 @@ class LGBMExperimentRunner:
             X_val, y_val = self._get_split_data(self.input_dict['df'], val_ids, self.input_dict['blocks'])
 
             model = LGBMWrapper(**params)
-            model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+            model.fit(X_train, y_train, eval_set=[(X_val, y_val)], use_early_stopping=True, verbose=True)
 
             metric_name = list(model.evals_result_['valid_0'].keys())[0]
             metric_val = model.evals_result_['valid_0'][metric_name][model.best_iteration_ - 1]
@@ -295,8 +294,9 @@ class LGBMExperimentRunner:
         # NO early stopping here
         final_model.fit(X_train, y_train, 
                         eval_set=[(X_train, y_train)], 
-                        eval_names=['train'], 
-                        verbose=False)
+                        eval_names=['train'],
+                        use_early_stopping=False,
+                        verbose=True)
         
         # --- Evaluation on the unseen test set ---
         logger.info("Evaluating final model on the hold-out test set...")

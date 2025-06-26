@@ -7,19 +7,8 @@ from lightgbm import LGBMRegressor, LGBMClassifier, log_evaluation, early_stoppi
 
 from sklearn.base import BaseEstimator, RegressorMixin, ClassifierMixin
 
-# Plotting
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-
-
 # Logging setup
-import logging, sys
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+import logging
 logger = logging.getLogger(__name__)
 
 
@@ -122,6 +111,7 @@ class LGBMWrapper(BaseEstimator, RegressorMixin, ClassifierMixin):
             List[Tuple[Union[pd.DataFrame, np.ndarray], Union[pd.Series, np.ndarray]]]
         ] = None,
         eval_names: Optional[List[str]] = None,
+        use_early_stopping: bool = False,
         callbacks: Optional[List[Any]] = None,
         verbose: bool = True,
     ) -> "LGBMWrapper":
@@ -197,16 +187,28 @@ class LGBMWrapper(BaseEstimator, RegressorMixin, ClassifierMixin):
         if eval_names is not None:
             fit_kwargs["eval_names"] = eval_names
 
-        if callbacks is not None:
-            fit_kwargs["callbacks"] = callbacks
-        elif verbose and eval_set:
-            # default logging + early stopping
-            fit_kwargs["callbacks"] = [
-                log_evaluation(period=5),
-                early_stopping(stopping_rounds=self.early_stopping_rounds or 50,
-                               first_metric_only=True),
-            ]
-        
+        # Prepare a list of callbacks to use
+        active_callbacks = list(callbacks) if callbacks is not None else []
+
+        # If an eval_set is provided, always add early stopping
+        if eval_set and use_early_stopping:
+            # Check if an early stopping callback is already present
+            has_early_stopping = any(isinstance(cb, type(early_stopping(1))) for cb in active_callbacks)
+            if not has_early_stopping:
+                active_callbacks.append(
+                    early_stopping(
+                        stopping_rounds=self.early_stopping_rounds,
+                        first_metric_only=True
+                    )
+                )
+
+        # Add logging only if verbose is True and no other callbacks handle it
+        if verbose:
+             active_callbacks.append(log_evaluation(period=5)) # Log less frequently
+
+        if active_callbacks:
+            fit_kwargs["callbacks"] = active_callbacks
+
         # Fit underlying model
         self.model_.fit(X, y, eval_set=eval_set, **fit_kwargs)
 
