@@ -22,7 +22,6 @@ from sklearn.metrics import (
 from sklearn.metrics import (
     mean_absolute_error,
     mean_squared_error,
-    root_mean_squared_error,
     r2_score)
 
 from ...utils.filename_util import get_data_filename
@@ -301,11 +300,18 @@ class LGBMExperimentRunner:
             else:
                 mape = 0.0 # Assign 0 if all target values are zero
 
+            # Calculating other metrics
+            mse = mean_squared_error(y_test, preds)
+            rmse = np.sqrt(mse)
+            mae = mean_absolute_error(y_test, preds)
+            r2 = r2_score(y_test, preds)
+
             metrics = {
                 'test_loss': test_loss_mse,
-                'rmse': root_mean_squared_error(y_test, preds),
-                'mae': mean_absolute_error(y_test, preds),
-                'r2': r2_score(y_test, preds),
+                'mse':mse,
+                'rmse': rmse,
+                'mae': mae,
+                'r2': r2,
                 'mape': mape,
                 'predictions': preds,
                 'targets': y_test.values
