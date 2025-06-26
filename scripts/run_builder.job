@@ -61,7 +61,7 @@ echo "Temporary output will be written to $SCRATCH_OUTPUT_DIR"
 srun python -m src.graph.builder.main \
     --data_dir $SCRATCH_DATA_DIR \
     --output_dir $SCRATCH_OUTPUT_DIR \
-    --weather_csv_path $SCRATCH_DATA_DIR/weather/weather_data.csv \
+    --weather_csv_path $SCRATCH_DATA_DIR/weather/hourly_weather_2022_2023.csv \
     --consumption_dir $SCRATCH_DATA_DIR/consumption \
     "$@"
 
