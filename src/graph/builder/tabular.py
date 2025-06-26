@@ -658,7 +658,7 @@ class TabularBuilderMixin:
 
         if self.build_mode == "measurement_forecast":
             # For this task, we also have "room_uri" as an additional grouping col
-            extra_grouping_col = "room_uri"
+            extra_grouping_col = ["room_uri"]
         else:
             extra_grouping_col = None
         
