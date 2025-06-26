@@ -53,6 +53,10 @@ if [ ! -d "$SCRATCH_DATA_DIR/interim" ]; then
     exit 1
 fi
 
+# Set the number of threads for numexpr to match the CPUs requested from SLURM.
+echo "Setting NUMEXPR_NUM_THREADS to $SLURM_CPUS_PER_TASK"
+export NUMEXPR_NUM_THREADS=$SLURM_CPUS_PER_TASK
+
 # Run script pointing to scratch
 echo "Starting Python script..."
 echo "Input data is from $SCRATCH_DATA_DIR"

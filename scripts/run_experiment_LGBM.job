@@ -36,7 +36,9 @@ mkdir -p $TMPDIR/data/processed
 
 ##### Dynamically copying the required file to scratch #####
 echo "Determining required data file..."
-REQUIRED_FILE=$(srun python -m src.utils.filename_util "$@")
+REQUIRED_FILE=$(srun python -m src.utils.filename_util \
+    --model_family tabular \
+    "$@")
 
 # Checking if it returned a filename
 if [ -z "$REQUIRED_FILE" ]; then
@@ -64,6 +66,10 @@ if [ ! -f "$DEST_PATH" ]; then
     exit 1
 fi
 ##### Dynamically copying the required file to scratch #####
+
+# Set thread counts for libraries
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export NUMEXPR_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 # Set directories
 export DATA_DIR=$TMPDIR/data
