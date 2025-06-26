@@ -113,7 +113,7 @@ def main():
 
     # Loading OfficeGraph data
     from ..officegraph import OfficeGraph
-    office_graph = OfficeGraph.from_pickles(floors_to_load = args.floors)
+    office_graph = OfficeGraph.from_pickles(floors_to_load = args.floors, data_dir=args.data_dir)
 
     # Setting up the builder
     builder = OfficeGraphBuilder(office_graph)
@@ -239,7 +239,7 @@ def main():
 
         # Get file name via helper
         fname = get_data_filename(args)
-        full_output_path = os.path.join("data/processed", fname)
+        full_output_path = os.path.join(args.output_dir, fname)
 
         # Save
         builder.save_tabular_df(output_path=full_output_path)
@@ -281,7 +281,7 @@ def main():
             
             # Get file name via helper
             fname = get_data_filename(args)
-            full_output_path = os.path.join("data/processed", fname)
+            full_output_path = os.path.join(args.output_dir, fname)
 
             # Prepare numpy input
             logger.info("Preparing homogeneous numpy input...")
