@@ -30,8 +30,11 @@ def add_OfficeGraph_args(parser):
                         default='data', 
                         help='Path to OfficeGraph data directory')
     parser.add_argument('--output_dir', type=str, 
-                        default='./output', 
+                        default='output', 
                         help='Directory to save outputs')
+    parser.add_argument('--processed_data_dir', type=str, 
+                        default='data/processed', 
+                        help='Path to OfficeGraph data directory')
 
     ##############################
     #  Extraction arguments
@@ -53,7 +56,7 @@ def add_OfficeGraph_args(parser):
     parser.add_argument('--make_and_save_plots', action='store_true',
                         help='Do the plotting and save the plots (default: False)')
     parser.add_argument('--builder_plots_dir', type=str,
-                        default='output/builder',
+                        default='output/visualizations',
                         help='Directory to save plot images from the builder')
 
     ##############################

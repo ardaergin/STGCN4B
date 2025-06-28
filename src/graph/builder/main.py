@@ -104,17 +104,19 @@ def main():
 
     logger.info(f"Builder initialized with build mode '{builder.build_mode}'.")
 
-    # Ensure output directory exists
-    os.makedirs(args.output_dir, exist_ok=True)
+    os.makedirs(args.processed_data_dir, exist_ok=True)
+    if args.make_and_save_plots:
+        os.makedirs(args.builder_plots_dir, exist_ok=True) # For plots
 
-    # Missingness plots path
-    missing_plots_dir = os.path.join(args.output_dir, "missingness_plots")
-    os.makedirs(missing_plots_dir, exist_ok=True)
-    
-    if args.floors == [7]:
-        plot_suffix = "(floor 7)"
-    else:
-        plot_suffix = "(all floors)"
+        # Missingness plots path
+        missing_plots_dir = os.path.join(args.builder_plots_dir, "missingness_plots")
+        os.makedirs(missing_plots_dir, exist_ok=True)
+
+        # plot_suffix for missingness plots
+        if args.floors == [7]:
+            plot_suffix = "(floor 7)"
+        else:
+            plot_suffix = "(all floors)"
 
     # ============================
     # SPATIAL SETUP
@@ -250,7 +252,7 @@ def main():
 
         # Get file name via helper
         fname = get_data_filename(args)
-        full_output_path = os.path.join(args.output_dir, fname)
+        full_output_path = os.path.join(args.processed_data_dir, fname)
 
         # Save
         builder.save_tabular_df(output_path=full_output_path)
@@ -306,7 +308,7 @@ def main():
             
             # Get file name via helper
             fname = get_data_filename(args)
-            full_output_path = os.path.join(args.output_dir, fname)
+            full_output_path = os.path.join(args.processed_data_dir, fname)
 
             # Prepare numpy input
             logger.info("Preparing homogeneous numpy input...")
