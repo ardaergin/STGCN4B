@@ -253,8 +253,8 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
             )
 
         instance._update_metadata()
-
-        logger.info("Finished loading from pickle(s).")
+        
+        logger.info(f"Successfully loaded OfficeGraph from pickles. Summary:\n{instance}")
         
         return instance
     
