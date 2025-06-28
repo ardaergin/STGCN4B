@@ -290,6 +290,33 @@ def main():
             if args.make_and_save_plots:
                 plot_missing_values(builder.room_level_df, df_name=f"Room-level DF, Extended {plot_suffix}",
                                     save=True, output_dir=missing_plots_dir)
+                
+            ######################## DEBUG ########################
+            logger.info("######################## DEBUG ########################")
+            # 1. First, let's verify the column exists to avoid errors
+            if 'isProperRoom' in builder.room_level_df.columns:
+                
+                # 2. Create a boolean mask to find rows where 'isProperRoom' is NaN
+                nan_mask = builder.room_level_df['isProperRoom'].isnull()
+                
+                # 3. Select the 'room_URIRef' column from the filtered rows
+                problematic_rooms = builder.room_level_df.loc[nan_mask, 'room_URIRef']
+                
+                # 4. Get the unique room URIs (since a room appears in many time buckets)
+                unique_problematic_uris = problematic_rooms.unique()
+                
+                # 5. Display the result
+                if len(unique_problematic_uris) > 0:
+                    logger.info(f"Found {len(unique_problematic_uris)} room(s) where 'isProperRoom' is NaN:")
+                    for uri in unique_problematic_uris:
+                        logger.info(f"- {uri}")
+                else:
+                    logger.info("No rooms found where 'isProperRoom' is NaN.")
+                    
+            else:
+                logger.info("Column 'isProperRoom' not found in the DataFrame.")
+            logger.info("######################## DEBUG ########################")
+            ######################## DEBUG ########################
 
             # Incorporate weather data as outside space if specified
             if not args.skip_incorporating_weather:
