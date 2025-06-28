@@ -110,7 +110,7 @@ def main():
     # Missingness plots path
     missing_plots_dir = os.path.join(args.output_dir, "missingness_plots")
     os.makedirs(missing_plots_dir, exist_ok=True)
-    print(args.floors)
+    
     if args.floors == [7]:
         plot_suffix = "(floor 7)"
     else:
@@ -243,6 +243,8 @@ def main():
             integrate_weather=not args.skip_incorporating_weather
         )
         if args.make_and_save_plots:
+            plot_missing_values(builder.tabular_feature_df, df_name=f"Tabular Feature DF {plot_suffix}",
+                                save=True, output_dir=missing_plots_dir)
             plot_missing_values(builder.tabular_df, df_name=f"Tabular DF {plot_suffix}",
                                 save=True, output_dir=missing_plots_dir)
 

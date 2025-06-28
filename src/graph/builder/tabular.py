@@ -518,7 +518,10 @@ class TabularBuilderMixin:
         self.tabular_df.dropna(subset=[self.target_col_name], inplace=True)
         final_rows = len(self.tabular_df)
         logger.info(f"Dropped {initial_rows - final_rows} rows with NaN targets. {final_rows} rows remaining.")
-
+        if self.build_mode == "measurement_forecast":
+            logger.info(f"Unique rooms remaining: {self.tabular_df['room_number'].nunique()}")
+            logger.info(f"Unique rooms remaining: {self.tabular_df['floor'].nunique()}")
+        
         if self.tabular_df.empty:
             raise ValueError("No valid data rows remaining after dropping NaN targets.")
 

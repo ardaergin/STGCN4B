@@ -215,6 +215,8 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
         instance.graph = instance.create_empty_graph_with_namespace_bindings()
 
         for floor in floors_to_load:
+            logger.info("Starting to load floor %d...", floor)
+
             fname = f"officegraph_entities_floor_{floor}.pkl"
             pickle_path = os.path.join(data_dir, "interim", fname)
             try:
