@@ -198,3 +198,26 @@ class FloorDeviceRetriever(NamespaceMixin):
                     full_paths.append(os.path.join(subdir, file))
                     
         return full_paths
+
+
+def main():
+    retriever = FloorDeviceRetriever()
+
+    # Floor 7
+    floor_7_relationship_graph = retriever.get_device_room_floor_graph(7)
+    floor_7_filenames = retriever.get_device_filenames_from_graph(floor_7_relationship_graph)
+    print("***** Device URIs (Floor 7) *****")
+    for filename in floor_7_filenames:
+        print(filename)
+
+    # All floors
+    print("***** Device counts (all floors) *****")
+    for floor_num in range(8):
+        relationship_graph = retriever.get_device_room_floor_graph(floor_num)
+        filenames = retriever.get_device_filenames_from_graph(relationship_graph)
+        print(f"== Floor {floor_num} ==")
+        print("Device count:", len(filenames))
+
+if __name__ == "__main__":
+    main()
+
