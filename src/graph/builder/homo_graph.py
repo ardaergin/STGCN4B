@@ -16,48 +16,14 @@ logger = logging.getLogger(__name__)
 class HomogGraphBuilderMixin:
     """
     Assumes:
-      - `self.room_feature_df` (room‐level features per time bucket) has already been built.
+      - `self.room_level_df` (room‐level features per time bucket) has already been built.
       - `self.room_to_room_adj_matrix` (combined horizontal + vertical adjacency) already exists.
       - `self.adj_matrix_room_uris` lists the room URIs in the same order as rows/columns of that matrix.
     """
 
-    def expand_room_feature_df(self) -> None:
+    def get_targets_and_mask_for_a_variable(self):
         """
-        Helper function to take the DataFrame of measured rooms and expand
-        it to include all rooms defined in the graph, filling missing ones with NaNs.
-        This is required for the STGCN pipeline.
-        """
-        if not hasattr(self, "room_feature_df"):
-            raise ValueError("Run build_room_feature_df() first.")
-
-        logger.info("Expanding feature DataFrame to include all graph nodes for STGCN...")
-
-        # Re-index to ensure every room × every bucket appears.
-        # If a room had no measurements in a bucket, those columns will now be NaN.
-        all_rooms   = list(self.office_graph.rooms.keys())      # every room URIRef, regardless of measurements
-        all_buckets = list(range(len(self.time_buckets)))       # 0..T-1
-        
-        full_index = pd.MultiIndex.from_product(
-            [all_rooms, all_buckets],
-            names=["room_uri", "bucket_idx"]
-        )
-        
-        # Re-index the DataFrame of measured rooms to the full index
-        expanded_df = (
-            self.room_feature_df
-            .set_index(["room_uri", "bucket_idx"])  # make these two levels the index
-            .reindex(full_index)                    # add missing (room, bucket) pairs
-            .reset_index()                           # restore columns 'room_uri' & 'bucket_idx'
-        )
-        self.room_feature_df = expanded_df
-
-        logger.info(f"Reindexed to full (room, bucket) grid: {len(all_rooms)} rooms x {len(all_buckets)} buckets = {len(expanded_df)} total rows.")
-
-        return None
-    
-    def get_targets_and_mask_for_a_variable(self, stat: str = "mean"):
-        """
-        Pivots `room_feature_df` to produce two matrices aligned with `adj_matrix_room_uris`:
+        Pivots `room_level_df` to produce two matrices aligned with `adj_matrix_room_uris`:
           1. Target values: Pivoted from the "{variable}_{stat}" column (e.g., "Temperature_mean").
           2. Mask: Pivoted from the "{variable}_has_measurement" column, indicating which
              (time, room) pairs have valid ground-truth data.
@@ -66,18 +32,27 @@ class HomogGraphBuilderMixin:
           - self.measurement_values: (T, R) numpy array of target values.
           - self.measurement_mask:   (T, R) numpy array of 1s (has data) and 0s (no data).
         """
-        if not hasattr(self, "room_feature_df"):
-            raise ValueError("room_feature_df not found. Run build_room_feature_df() first.")
-        df = self.room_feature_df
-
+        if not hasattr(self, "measurement_variable"):
+            raise ValueError("self.measurement_variable not found. Run set_build_mode() first.")
+        if not hasattr(self, "measurement_variable_stat"):
+            raise ValueError("self.measurement_variable_stat not found. Run set_build_mode() first.")
+        
+        if self.build_mode != "measurement_forecast":
+            raise ValueError("This function is for measurement_forecast only.")
+        
+        if not hasattr(self, "room_level_df"):
+            raise ValueError("room_level_df not found. Run build_room_level_df() first.")
+        df = self.room_level_df
+        
         # Set measurement variable
         variable = self.measurement_variable
-
+        stat = self.measurement_variable_stat
+        
         # 1. Create the target values matrix
         value_column = f"{variable}_{stat}"
         value_pivot = (
             df.pivot(index="bucket_idx",
-                     columns="room_uri",
+                     columns="room_URIRef",
                      values=value_column)
             .sort_index(axis=1, key=lambda cols: cols.map(self.adj_matrix_room_uris.index))
         )
@@ -88,12 +63,12 @@ class HomogGraphBuilderMixin:
         # 2. Create the mask matrix from the 'has_measurement' column
         mask_column = f"{variable}_has_measurement"
         if mask_column not in df.columns:
-            raise ValueError(f"Mask column '{mask_column}' not found in room_feature_df. "
-                             "Ensure `build_room_feature_df` creates it.")
+            raise ValueError(f"Mask column '{mask_column}' not found in room_level_df. "
+                             "Ensure `build_room_level_df` creates it.")
 
         mask_pivot = (
             df.pivot(index="bucket_idx",
-                     columns="room_uri",
+                     columns="room_URIRef",
                      values=mask_column)
             .sort_index(axis=1, key=lambda cols: cols.map(self.adj_matrix_room_uris.index))
             .fillna(0.0) # Rooms with no entries at all get a mask value of 0.
@@ -115,7 +90,7 @@ class HomogGraphBuilderMixin:
         2) Appends one new “outside” node (URIRef) to both:
              • self.room_to_room_adj_matrix  (adding a new row = self.combined_outside_adj, new col = zeros)
              • self.adj_matrix_room_uris     (appending outside_uri)
-        3) Adds one row per bucket_idx to self.room_feature_df with room_uri=outside_uri:
+        3) Adds one row per bucket_idx to self.room_level_df with room_URIRef=outside_uri:
              • All “original” room‐feature columns = 0.0
              • New weather‐columns = values from weather_data for that bucket.
            Also adds those new weather‐columns (initially 0.0) to every existing room‐row.
@@ -128,8 +103,8 @@ class HomogGraphBuilderMixin:
             – self.adj_matrix_room_uris  is a list of length N,
             – self.room_to_room_adj_matrix is an N×N ndarray,
             – self.combined_outside_adj   is a length‐N 1D ndarray aligned with that list.
-          • build_room_feature_df() has already been called, so that
-            – self.room_feature_df exists with columns ['room_uri','bucket_idx', <orig_features…>].
+          • build_room_level_df() has already been called, so that
+            – self.room_level_df exists with columns ['room_URIRef','bucket_idx', <orig_features…>].
             - self.get_weather_data() has been called.
 
         After calling this, we can simply do:
@@ -139,7 +114,7 @@ class HomogGraphBuilderMixin:
         Side‐effects:
           • Mutates self.adj_matrix_room_uris  (appends outside_uri at end).
           • Mutates self.room_to_room_adj_matrix (to size (N+1)×(N+1)).
-          • Mutates self.room_feature_df        (adds new weather columns & new rows for outside).
+          • Mutates self.room_level_df        (adds new weather columns & new rows for outside).
           • Rebuilds self.masked_adjacencies accordingly.
         """
         # Creating an 'outside' URI
@@ -202,18 +177,18 @@ class HomogGraphBuilderMixin:
         logger.info(f"Appended {outside_uri} to adj_matrix_room_uris (new length: {len(self.adj_matrix_room_uris)}).")
 
         #
-        # ─── C) UPDATE room_feature_df ─────────────────────────────────────────────
+        # ─── C) UPDATE room_level_df ─────────────────────────────────────────────
         #
-        df = self.room_feature_df.copy()
+        df = self.room_level_df.copy()
 
-        # (1) Must have columns 'room_uri' and 'bucket_idx'
-        if 'room_uri' not in df.columns or 'bucket_idx' not in df.columns:
-            raise ValueError("self.room_feature_df must have columns 'room_uri' and 'bucket_idx' before integration.")
+        # (1) Must have columns 'room_URIRef' and 'bucket_idx'
+        if 'room_URIRef' not in df.columns or 'bucket_idx' not in df.columns:
+            raise ValueError("self.room_level_df must have columns 'room_URIRef' and 'bucket_idx' before integration.")
 
-        # (2) Original feature columns (everything except 'room_uri'/'bucket_idx')
-        orig_cols = [c for c in df.columns if c not in ('room_uri', 'bucket_idx')]
+        # (2) Original feature columns (everything except 'room_URIRef'/'bucket_idx')
+        orig_cols = [c for c in df.columns if c not in ('room_URIRef', 'bucket_idx')]
         if not orig_cols:
-            raise ValueError("No original feature‐columns found in room_feature_df.")
+            raise ValueError("No original feature‐columns found in room_level_df.")
 
         # (3) Get sorted bucket indices from df
         buckets = sorted(df['bucket_idx'].unique())
@@ -221,7 +196,7 @@ class HomogGraphBuilderMixin:
         missing = set(buckets) - set(weather_df.index)
         if missing:
             raise ValueError(
-                f"room_feature_df uses bucket_idx={buckets} but weather_df.index={list(weather_df.index)}. "
+                f"room_level_df uses bucket_idx={buckets} but weather_df.index={list(weather_df.index)}. "
                 f"Missing buckets in weather data: {missing}"
             )
 
@@ -233,14 +208,14 @@ class HomogGraphBuilderMixin:
         # (5) Add each weather_col to every existing row, initialized to np.nan
         for wcol in weather_cols:
             if wcol in df.columns:
-                raise ValueError(f"Column {wcol!r} already exists in room_feature_df.")
+                raise ValueError(f"Column {wcol!r} already exists in room_level_df.")
             df[wcol] = np.nan
 
         # (6) Build new rows for outside_uri, one per bucket
         new_rows = []
         for b in buckets:
             row_dict = {
-                'room_uri':   outside_uri,
+                'room_URIRef':   outside_uri,
                 'bucket_idx': b
             }
             # set all original features = np.nan
@@ -257,10 +232,10 @@ class HomogGraphBuilderMixin:
         df = pd.concat([df, new_df], ignore_index=True)
 
         # Overwrite
-        self.room_feature_df = df
+        self.room_level_df = df
 
-        logger.info(f"Updated room_feature_df: new shape {self.room_feature_df.shape}, {len(weather_cols)} weather columns added.")
-        logger.info(f"Added {len(new_rows)} rows for outside_uri to room_feature_df.")
+        logger.info(f"Updated room_level_df: new shape {self.room_level_df.shape}, {len(weather_cols)} weather columns added.")
+        logger.info(f"Added {len(new_rows)} rows for outside_uri to room_level_df.")
 
         #
         # ─── D) RE‐COMPUTE & PATCH INFORMATION‐PROPAGATION MASKS ───────────────────
@@ -298,77 +273,58 @@ class HomogGraphBuilderMixin:
 
     def build_feature_array(self) -> None:
         """
-        Converts the `room_feature_df` into a single, comprehensive 3D NumPy array
-        of shape (T, R, F_static + F_temporal) containing all feature data.
+        Converts the `room_level_df` into a single, comprehensive 3D NumPy array
+        of shape (T, R, F) containing all feature data.
 
-        This method should be called once during the initial data preparation phase.
         It stores the final array in `self.feature_array`.
 
         To turn these into feature matrices later, run:
         >>> self.feature_matrices = {t: processed_array[t] for t in range(T)}
         """
-        if not hasattr(self, "room_feature_df"):
-            raise ValueError("room_feature_df not found. Run build_room_feature_df() first.")
+        if not hasattr(self, "room_level_df"):
+            raise ValueError("room_level_df not found. Run build_room_level_df() first.")
+        df = self.room_level_df.copy()
         
-        df = self.room_feature_df
-        
-        # --- Dimensions ---
+        # Dimensions
         T = len(self.time_buckets)
-        R = len(self.adj_matrix_room_uris)
+        room_order = self.adj_matrix_room_uris
+        R = len(room_order)
 
-        # --- Temporal Features ---
-        temporal_cols = sorted([c for c in df.columns if c not in {"room_uri", "bucket_idx"}])
-        F_temporal = len(temporal_cols)
-        
-        # --- Static Features ---
-        static_feature_names = getattr(self, "static_room_attributes", [])
-        F_static = len(static_feature_names)
-
-        # Total features
-        self.feature_names = static_feature_names + temporal_cols
-        F = F_static + F_temporal
+        # F: Identify all feature columns. These are all columns except for identifiers.
+        identifier_cols = ['bucket_idx', 'room_URIRef']
+        feature_cols = sorted([c for c in df.columns if c not in identifier_cols])
+        F = len(feature_cols)
+        self.feature_names = feature_cols
         self.n_features = F
-        self.static_feature_count = F_static
-        self.temporal_feature_count = F_temporal
 
-        logger.info(f"Preparing to build feature array with dimensions T={T}, R={R}, F={F}")
-        
-        # --- Build Static Feature Matrix ---
-        static_mat = np.zeros((R, F_static), dtype=float)
-        if F_static > 0:
-            for i, room_uri in enumerate(self.adj_matrix_room_uris):
-                room_obj = self.office_graph.rooms.get(room_uri)
-                if room_obj:
-                    for j, feat_string in enumerate(static_feature_names):
-                        val = self._get_nested_attr(room_obj, feat_string, default=0.0)
-                        static_mat[i, j] = float(val) if val is not None and not np.isnan(val) else 0.0
-        
-        # Tile static features across the time dimension
-        static_array = np.tile(static_mat, (T, 1, 1)) # Shape -> (T, R, F_static)
+        logger.info(f"Preparing to build feature array with dimensions T={T} (buckets), R={R} (rooms), F={F} (features)")
 
-        # --- Build Temporal Feature Array ---
-        # Pivot the DataFrame to get a (T, R, F_temporal) structure directly
-        # Set index for easy slicing
-        df = df.set_index(['bucket_idx', 'room_uri'])
-        
-        # Create a complete index to ensure all (T, R) pairs are present
-        all_rooms = self.adj_matrix_room_uris
-        idx = pd.MultiIndex.from_product([range(T), all_rooms], names=['bucket_idx', 'room_uri'])
-        
-        # Reindex and sort to ensure canonical order
-        temporal_df = df[temporal_cols].reindex(idx).sort_index()
-        
-        # Reshape into a 3D NumPy array
-        temporal_array = temporal_df.values.reshape(T, R, F_temporal)
+        # Create a complete multi-index for all (bucket, room) pairs.
+        # This ensures every node in the graph has a feature vector at every time step.
+        full_index = pd.MultiIndex.from_product(
+            [range(T), room_order],
+            names=['bucket_idx', 'room_URIRef']
+        )
 
-        # --- Concatenate Static and Temporal Arrays ---
-        feature_array = np.concatenate([static_array, temporal_array], axis=2)
+        # Enforcing the exact room order from the adjacency matrix
+        df['room_URIRef'] = pd.Categorical(df['room_URIRef'], categories=room_order, ordered=True)
         
+        # Set the index and reindex to the full grid. This aligns all data.
+        # Introduces NaNs for any missing (bucket, room) combinations.
+        pivoted_df = (
+            df.set_index(['bucket_idx', 'room_URIRef'])
+            [feature_cols]
+            .reindex(full_index)
+        )
+
+        # Reshape the 2D DataFrame (T*R, F) into a 3D NumPy array (T, R, F).
+        feature_array = pivoted_df.values.reshape(T, R, F)
         self.feature_array = feature_array
+
         logger.info(f"Successfully built feature_array of shape {self.feature_array.shape}")
-        
+
         return None
-    
+        
     def prepare_and_save_numpy_input(self, output_path: str):
         """
         Gathers all pre-computed NumPy arrays and metadata and saves them to a
@@ -391,8 +347,6 @@ class HomogGraphBuilderMixin:
             "feature_array": self.feature_array,
             "feature_names": self.feature_names,
             "n_features": self.n_features,
-            "static_feature_count": self.static_feature_count,
-            "temporal_feature_count": self.temporal_feature_count,
 
             # Graph structure
             "room_uris": self.adj_matrix_room_uris,

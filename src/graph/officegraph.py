@@ -1,9 +1,11 @@
 import datetime
-import os, sys, pickle, argparse
-from typing import Dict, List, Tuple, Optional
+import functools
+import numpy as np
+import os, pickle
+from typing import Any, Dict, List, Tuple, Optional
 from rdflib import Graph, URIRef, RDF
 
-import logging
+import logging, sys
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -304,6 +306,80 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
         except (OSError, pickle.PicklingError) as e:
             logger.error("Failed to save OfficeGraph entities: %s", e)
             raise
+
+    ##############################
+    # Convenience helpers
+    ##############################
+
+    def _map_DeviceURIRef_to_RoomURIRef(self, dev_uriref: URIRef) -> URIRef:
+        device_obj = self.devices.get(dev_uriref)
+        if device_obj is None:
+            raise KeyError(f"Device with URI <{dev_uriref}> not found in self.devices.")
+        
+        room_uriref = device_obj.room
+        if room_uriref is None:
+            raise ValueError(f"Device <{dev_uriref}> does not have an associated room.")
+            
+        return room_uriref
+
+    def _map_RoomURIRef_to_FloorURIRef(self, room_uriref: URIRef) -> URIRef:
+        room_obj = self.rooms.get(room_uriref)
+        if room_obj is None:
+            raise KeyError(f"Room with URI <{room_uriref}> not found in self.rooms.")
+
+        floor_uriref = room_obj.floor
+        if floor_uriref is None:
+            raise ValueError(f"Room <{room_uriref}> does not have an associated floor.")
+
+        return floor_uriref
+
+    def _map_DeviceURIRef_to_FloorNumber(self, dev_uriref: URIRef) -> URIRef:
+        room_uriref = self._map_DeviceURIRef_to_RoomURIRef(dev_uriref)
+        floor_uriref = self._map_RoomURIRef_to_FloorURIRef(room_uriref)
+        floor_obj = self.floors.get(floor_uriref, None)
+        if floor_obj is None:
+            raise KeyError(f"Floor object with URI <{floor_uriref}> not found in self.floors.")
+        else: 
+            return floor_obj.floor_number
+    
+    def _map_RoomURIRef_to_RoomNumber(self, room_uriref: URIRef) -> str:
+        room_obj = self.rooms.get(room_uriref)
+        if room_obj is None:
+            raise KeyError(f"Room with URI <{room_uriref}> not found in self.rooms.")
+        
+        if not hasattr(room_obj, 'room_number') or room_obj.room_number is None:
+            raise AttributeError(f"Room <{room_uriref}> does not have a 'room_number' attribute.")
+            
+        return room_obj.room_number
+
+    def _map_FloorURIRef_to_FloorNumber(self, floor_uriref: URIRef) -> int:
+        floor_obj = self.floors.get(floor_uriref)
+        if floor_obj is None:
+            raise KeyError(f"Floor with URI <{floor_uriref}> not found in self.floors.")
+            
+        if not hasattr(floor_obj, 'floor_number') or floor_obj.floor_number is None:
+            raise AttributeError(f"Floor <{floor_uriref}> does not have a 'floor_number' attribute.")
+
+        return floor_obj.floor_number
+
+    @staticmethod
+    def _get_nested_attr(obj: Any, attr_string: str, default: Any = np.nan) -> Any:
+        """
+        Private helper to safely access nested attributes and dictionary keys.
+
+        Used especially to access the nested attributes for the Room class instances.
+        """
+        try:
+            attributes = attr_string.split('.')
+            def _reducer(current_obj, part):
+                if isinstance(current_obj, dict):
+                    return current_obj.get(part)
+                else:
+                    return getattr(current_obj, part)
+            final_value = functools.reduce(_reducer, attributes, obj)
+            return final_value if final_value is not None else default
+        except (AttributeError, TypeError):
+            return default
 
     def __str__(self):
         floors = ", ".join(str(f) for f in self.metadata.get('floors_to_load', []))

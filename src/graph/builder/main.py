@@ -1,7 +1,6 @@
 import os
-import functools
-import numpy as np
-from typing import Any
+
+from ...utils.missingness_plot import plot_missing_values
 
 # Logging setup
 import logging, sys
@@ -48,16 +47,16 @@ class OfficeGraphBuilder(
         # Property configuration
         self.ignored_property_types = {
             "DeviceStatus", "BatteryLevel", # unnecessary
-            "Contact", "thermostatHeatingSetpoint" # too few measurements
+            "Contact", "Motion", "thermostatHeatingSetpoint" # too few measurements
             }
         self.used_property_types = ["Temperature", "CO2Level", "Humidity"]
         
         # Static Room class attributes to use for modeling, default 'standard' preset:
-        self.static_room_attributes = ['floor', 'hasWindows', 'has_multiple_windows', 
+        self.static_room_attributes = ['hasWindows', 'has_multiple_windows', 
                                        'window_direction_sin', 'window_direction_cos', 
-                                       'isProperRoom', 'norm_area_minmax']
+                                       'isProperRoom', 'norm_areas_minmax']
         
-    def set_build_mode(self, mode: str, measurement_variable=None):
+    def set_build_mode(self, mode: str, measurement_variable=None, measurement_variable_stat=None):
         """
         Options for 'mode':
             - "workhour_classification"
@@ -69,66 +68,69 @@ class OfficeGraphBuilder(
             raise ValueError(f"Invalid build mode '{mode}'. Valid options are: {valid_options}")
         else:
             self.build_mode = mode
-
-        # Workhour classification task checks & setup
-        if mode == "workhour_classification":
-            logger.info("Workhour classification mode set. Removing 'floor' from static attributes.")
-            self.static_room_attributes = [
-                attr for attr in self.static_room_attributes if attr != 'floor'
-            ]
-
+        
         # Measurement forecast task checks & setup
         if mode == "measurement_forecast" and measurement_variable is None:
             raise ValueError("measurement_variable must be specified for 'measurement_forecast' mode.")
+        if mode == "measurement_forecast" and measurement_variable_stat is None:
+            raise ValueError("measurement_stat must be specified for 'measurement_forecast' mode.")
+        
         valid_measurement_variables = ["Temperature", "CO2Level", "Humidity"]
         if mode == "measurement_forecast" and measurement_variable not in valid_measurement_variables:
             raise ValueError(f"Invalid measurement variable '{measurement_variable}'. Valid options are: {valid_measurement_variables}")
         else:
             self.measurement_variable = measurement_variable
+            self.measurement_variable_stat = measurement_variable_stat
         
         return None
-
-    def _get_nested_attr(self, obj: Any, attr_string: str, default: Any = np.nan) -> Any:
-        """
-        Private helper to safely access nested attributes and dictionary keys.
-
-        Used especially to access the nested attributes for the Room class instances.
-        """
-        try:
-            attributes = attr_string.split('.')
-            def _reducer(current_obj, part):
-                if isinstance(current_obj, dict):
-                    return current_obj.get(part)
-                else:
-                    return getattr(current_obj, part)
-            final_value = functools.reduce(_reducer, attributes, obj)
-            return final_value if final_value is not None else default
-        except (AttributeError, TypeError):
-            return default
 
 def main():
     # Argument parser
     from ...config.args import parse_args
     args = parse_args()
-
+    
     # Loading OfficeGraph data
     from ..officegraph import OfficeGraph
     office_graph = OfficeGraph.from_pickles(floors_to_load = args.floors, data_dir=args.data_dir)
-
+    
     # Setting up the builder
     builder = OfficeGraphBuilder(office_graph)
+    
+    # Setting build mode based on task type
+    builder.set_build_mode(
+        mode=args.task_type, 
+        measurement_variable=args.measurement_variable, 
+        measurement_variable_stat=args.measurement_variable_stat)
+
+    logger.info(f"Builder initialized with build mode '{builder.build_mode}'.")
+
+    # Ensure output directory exists
+    os.makedirs(args.output_dir, exist_ok=True)
+
+    # Missingness plots path
+    missing_plots_dir = os.path.join(args.output_dir, "missingness_plots")
+    os.makedirs(missing_plots_dir, exist_ok=True)
+    print(args.floors)
+    if args.floors == [7]:
+        plot_suffix = "(floor 7)"
+    else:
+        plot_suffix = "(all floors)"
+
+    # ============================
+    # SPATIAL SETUP
+    # ============================
+    logger.info("Setting up spatial components...")
 
     # Presets for static room attributes
     static_attr_presets = {
-        'minimal': ['floor', 'isProperRoom', 'norm_area_minmax'],
-        'standard': ['floor', 'hasWindows', 'has_multiple_windows', 'window_direction_sin', 'window_direction_cos', 
-                    'isProperRoom', 'norm_area_minmax'],
-        'all': ['floor', 
-                'hasWindows', 'has_multiple_windows', 
+        'minimal': ['isProperRoom', 'norm_areas_minmax'],
+        'standard': ['hasWindows', 'has_multiple_windows', 'window_direction_sin', 'window_direction_cos', 
+                    'isProperRoom', 'norm_areas_minmax'],
+        'all': ['hasWindows', 'has_multiple_windows', 
                 'window_direction_sin', 'window_direction_cos', 
                 'hasBackWindows', 'hasFrontWindows', 'hasRightWindows', 'hasLeftWindows', 
                 'isProperRoom', 
-                'norm_area_minmax', 'norm_area_prop', 
+                'norm_areas_minmax', 'norm_areas_prop', 
                 'polygons_doc.centroid',
                 'polygons_doc.width', 'polygons_doc.height',
                 'polygons_doc.compactness', 'polygons_doc.rect_fit', 'polygons_doc.aspect_ratio', 'polygons_doc.perimeter']
@@ -136,56 +138,6 @@ def main():
     # Setting static room attributes based on preset
     builder.static_room_attributes = static_attr_presets[args.static_attr_preset]
 
-    # Setting build mode based on task type
-    builder.set_build_mode(mode=args.task_type, measurement_variable=args.measurement_variable)
-    logger.info(f"Builder initialized with build mode '{builder.build_mode}'.")
-
-    # ============================
-    # TEMPORAL SETUP
-    # ============================
-    logger.info("Setting up temporal parameters...")
-
-    # Initialize time parameters
-    builder.initialize_time_parameters(
-        start_time=args.start_time,
-        end_time=args.end_time,
-        interval=args.interval,
-        use_sundays=args.use_sundays
-    )
-    # Split time buckets
-    builder.build_weekly_blocks()
-
-    # Get weather data
-    if not args.skip_incorporating_weather:
-        logger.info("Loading and processing weather data...")
-        builder.get_weather_data(weather_csv_path=args.weather_csv_path)
-    
-    # Targets
-    if builder.build_mode == "workhour_classification":
-        # Get classification labels
-        logger.info("Generating work hour classification labels...")
-        builder.get_classification_labels(country_code=args.country_code)
-    elif builder.build_mode == "consumption_forecast":
-        # Get forecasting values
-        logger.info("Loading and processing consumption data...")
-        builder.get_forecasting_values(consumption_dir=args.consumption_dir)
-    
-    # Bucket measurements by device and property
-    logger.info("Processing measurements...")
-    builder.bucket_measurements_by_device_property()
-        
-    # Build full feature DataFrame
-    logger.info("Building full feature DataFrame...")
-    builder.build_full_feature_df()
-
-    # Building the per-room feature DataFrame
-    builder.build_room_feature_df()
-
-    # ============================
-    # SPATIAL SETUP
-    # ============================
-    logger.info("Setting up spatial components...")
-    
     # Initialize room polygons
     builder.initialize_room_polygons(
         polygon_type=args.polygon_type,
@@ -223,19 +175,76 @@ def main():
             builder.build_outside_adjacency(mode=args.adjacency_type)
     
     # ============================
+    # TEMPORAL SETUP
+    # ============================
+    logger.info("Setting up temporal parameters...")
+
+    # Initialize time parameters
+    builder.initialize_time_parameters(
+        start_time=args.start_time,
+        end_time=args.end_time,
+        interval=args.interval,
+        use_sundays=args.use_sundays
+    )
+    # Split time buckets
+    builder.build_weekly_blocks()
+
+    # Get weather data
+    if not args.skip_incorporating_weather:
+        logger.info("Loading and processing weather data...")
+        builder.get_weather_data(weather_csv_path=args.weather_csv_path)
+    
+    # Targets
+    if builder.build_mode == "workhour_classification":
+        # Get classification labels
+        logger.info("Generating work hour classification labels...")
+        builder.get_workhour_labels(country_code=args.country_code)
+    elif builder.build_mode == "consumption_forecast":
+        # Get forecasting values
+        logger.info("Loading and processing consumption data...")
+        builder.get_consumption_values(consumption_dir=args.consumption_dir)
+    
+    # Building the device-level feature DataFrame
+    builder.build_device_level_df()
+
+    # Building the room-level feature DataFrame
+    builder.build_room_level_df()
+    
+    # Building the floor-level feature DataFrame    
+    builder.build_floor_level_df()
+
+    # Building the building-level feature DataFrame
+    builder.build_building_level_df()
+
+    # Missingness plots for all 4 of these DFs
+    if args.make_and_save_plots:
+        plot_missing_values(builder.device_level_df, df_name=f"Device-level DF {plot_suffix}",
+                            save=True, output_dir=missing_plots_dir)
+        plot_missing_values(builder.room_level_df, df_name=f"Room-level DF {plot_suffix}",
+                            save=True, output_dir=missing_plots_dir)
+        plot_missing_values(builder.floor_level_df, df_name=f"Floor-level DF {plot_suffix}",
+                            save=True, output_dir=missing_plots_dir)
+        plot_missing_values(builder.building_level_df, df_name=f"Building-level DF {plot_suffix}",
+                            save=True, output_dir=missing_plots_dir)
+        
+    # ============================
     # DATA BUILDING
     # ============================
     
-    # Ensure output directory exists
-    os.makedirs(args.output_dir, exist_ok=True)
-    
     if args.model_family == "tabular":
+        if args.task_type == "measurement_forecast":
+            builder.add_static_room_features()
+
         builder.build_tabular_df(
             forecast_horizon=args.forecast_horizon,
             lags=args.lags,
             windows=args.windows,
-            shift_amount=args.shift_amount
+            shift_amount=args.shift_amount,
+            integrate_weather=not args.skip_incorporating_weather
         )
+        if args.make_and_save_plots:
+            plot_missing_values(builder.tabular_df, df_name=f"Tabular DF {plot_suffix}",
+                                save=True, output_dir=missing_plots_dir)
 
         # Get file name via helper
         fname = get_data_filename(args)
@@ -261,19 +270,33 @@ def main():
             # full_output_path = os.path.join("data/processed", fname)
             # torch.save(torch_tensors, full_output_path)
             # logger.info(f"Saved tensors to {full_output_path} with default parameters.")
+            # 
+            # # Save graph schema
+            # schema_path = os.path.join(args.output_dir, f"hetero_graph_schema_{args.interval}.txt")
+            # schema = builder.visualize_hetero_graph_schema(save_path=schema_path)
+            # logger.info("Saved heterogeneous graph schema")
 
         # Homogeneous Graph Builder
         elif args.graph_type == "homogeneous":
-            # Expanding the room_feature_df by adding also the empty room-bucket combinations
-            builder.expand_room_feature_df()
+            # Expanding the room_level_df by adding also the empty room-bucket combinations
+            builder.expand_room_level_df()
+
+            # Adding static attributes
+            builder.add_static_room_features()
+            if args.make_and_save_plots:
+                plot_missing_values(builder.room_level_df, df_name=f"Room-level DF, Extended {plot_suffix}",
+                                    save=True, output_dir=missing_plots_dir)
 
             # Incorporate weather data as outside space if specified
             if not args.skip_incorporating_weather:
                 logger.info("Integrating outside node with weather data into homogeneous graph...")
                 builder.incorporate_weather_as_an_outside_room()
-                
+                if args.make_and_save_plots:
+                    plot_missing_values(builder.room_level_df, df_name=f"Room-level DF, Extended with Weather {plot_suffix}",
+                        save=True, output_dir=missing_plots_dir)
+
             if builder.build_mode == "measurement_forecast":
-                builder.get_targets_and_mask_for_a_variable(stat=args.measurement_variable_stat)
+                builder.get_targets_and_mask_for_a_variable()
             
             # Feature matrices
             logger.info("Generating feature arrays for homogeneous graph...")
@@ -286,12 +309,6 @@ def main():
             # Prepare numpy input
             logger.info("Preparing homogeneous numpy input...")
             builder.prepare_and_save_numpy_input(output_path=full_output_path)
-        
-        if args.graph_type == "heterogeneous":
-            # Save graph schema
-            schema_path = os.path.join(args.output_dir, f"hetero_graph_schema_{args.interval}.txt")
-            schema = builder.visualize_hetero_graph_schema(save_path=schema_path)
-            logger.info("Saved heterogeneous graph schema")
         
 if __name__ == "__main__":
     main()

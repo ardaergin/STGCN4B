@@ -2,7 +2,6 @@ import numpy as np
 from datetime import datetime
 import pandas as pd
 import logging
-from rdflib import URIRef
 
 # Logging setup
 import logging, sys
@@ -169,7 +168,7 @@ class TemporalBuilderMixin:
     # Task-Specific (Target) Data
     #############################
     
-    def get_classification_labels(self, country_code: str = 'NL') -> None:
+    def get_workhour_labels(self, country_code: str = 'NL') -> None:
         """
         Generate work hour classification labels for each time bucket.
         
@@ -204,7 +203,7 @@ class TemporalBuilderMixin:
 
         return None
     
-    def get_forecasting_values(self, consumption_dir: str = "data/consumption") -> None:
+    def get_consumption_values(self, consumption_dir: str = "data/consumption") -> None:
         """
         Load and aggregate consumption data for forecasting.
 
@@ -241,206 +240,149 @@ class TemporalBuilderMixin:
         logger.info("Consumption values are saved as an array to 'self.consumption_values'.")
 
         return None
-        
-    #############################
-    # Measurement bucketing
-    #############################
+    
+    
 
-    def bucket_measurements_by_device_property(self) -> None:
-        """
-        Bucket measurements by device and property according to time buckets,
-        using a single pass and pandas groupby for speed.
-        """
-        if not self.time_buckets:
-            raise ValueError("Time buckets not initialized. Call initialize_time_parameters first.")
+    ##############################
+    # Device-level DataFrame
+    ##############################
 
-        # 1) Flatten all measurements into a DataFrame
+    def build_device_level_df(self) -> None:
+        """
+        Constructs a complete device-level feature DataFrame.
+
+        This function orchestrates the entire process of transforming raw time-series
+        data into a structured, dense DataFrame. It is designed to be both highly
+        performant and robust against missing or invalid data.
+
+        The process involves:
+        1.  **Performant Flattening**: Gathers raw data using an efficient, single-pass
+            approach with a pre-computed lookup map.
+        2.  **Data Cleaning**: Explicitly removes measurements with invalid (NaN) values
+            before any processing.
+        3.  **Aggregation**: Aggregates the measurements into time buckets.
+        4.  **Grid Expansion & Reindexing**: Expands the aggregated data into a dense grid
+            covering every device, property, and time bucket.
+        5.  **Robust Imputation**: Imputes to column 'count' where the ground truth can be
+            derived. Further Creates a 'has_measurement' flag based on the final count of 
+            valid data points. If a "count" value is `1` for a given measurement, the 
+            corresponding "std" is set to 0, since this is also a ground truth.
+
+        The final DataFrame is stored in `self.device_level_df`.
+        """
+        if not hasattr(self, 'time_buckets') or not self.time_buckets:
+            raise ValueError("Time buckets are not initialized. Please call initialize_time_parameters() first.")
+
+        logger.info("Starting to build the device-level feature DataFrame...")
+
+        # === Stage 1: Data Flattening ===
+        logger.info("[Step 1/5] Flattening raw measurements...")
         records = []
-        ignored = getattr(self, "ignored_property_types", set())
-        for device_uri, device in self.office_graph.devices.items():
-            for prop_uri in device.properties:
-                # determine property_type
-                property_type = next(
-                    (pt for pt, uris in self.office_graph.property_type_mappings.items()
-                    if prop_uri in uris),
-                    None
-                )
-                if not property_type or property_type in ignored:
-                    continue
-                for meas in device.measurements_by_property.get(prop_uri, []):
-                    ts = meas.timestamp
-                    if not (self.start_time <= ts < self.end_time):
-                        continue
-                    records.append({
-                        "device_uri": str(device_uri),
-                        "property_type": property_type,
-                        "timestamp": ts,
-                        "value": meas.value
-                    })
-
-        # Raise error if the DataFrame is empty
-        df = pd.DataFrame.from_records(records)
-        if df.empty:
-            raise ValueError("No measurements to bucket.")
+        used_property_types = self.used_property_types
         
-        # 2) Assign each measurement to a time bucket using pd.cut
+        prop_uri_to_type = {
+            uri: p_type
+            for p_type, uris in self.office_graph.property_type_mappings.items()
+            for uri in uris
+        }
+        
+        for meas in self.office_graph.measurements.values():
+            if not (self.start_time <= meas.timestamp < self.end_time):
+                continue
+            
+            prop_type = prop_uri_to_type.get(meas.property_type)
+            if not prop_type or prop_type not in used_property_types:
+                continue
+            
+            records.append({
+                "device_URIRef": meas.device_uri,
+                "property_type": prop_type,
+                "timestamp": meas.timestamp,
+                "value": meas.value
+            })
+
+        if not records:
+            raise ValueError("No measurements found within the specified time range and for the given properties.")
+        
+        
+        # === Stage 2: Initial DataFrame and Robust Cleaning ===
+        logger.info("[Step 2/5] Cleaning raw measurement data...")
+        df = pd.DataFrame.from_records(records)
+        
+        # Explicitly drop records where the measurement value itself is NaN.
+        initial_rows = len(df)
+        df.dropna(subset=['value'], inplace=True)
+        if initial_rows > len(df):
+            logger.info(f"Dropped {initial_rows - len(df)} rows with invalid/NaN measurement values.")
+
+        df['device_URIRef'] = df['device_URIRef'].astype('category')
+        df['property_type'] = df['property_type'].astype('category')
+        
+
+        # === Stage 3: Bucketing and Aggregation ===
+        logger.info("[Step 3/5] Aggregating measurements into time buckets...")
         bin_edges = [start for start, _ in self.time_buckets] + [self.time_buckets[-1][1]]
         labels = list(range(len(self.time_buckets)))
-        df["bucket_idx"] = pd.cut(df["timestamp"],
-                                bins=bin_edges,
-                                right=False,
-                                labels=labels)
-        df = df.dropna(subset=["bucket_idx"])
+        df["bucket_idx"] = pd.cut(df["timestamp"], bins=bin_edges, right=False, labels=labels)
+        df.dropna(subset=["bucket_idx"], inplace=True)
         df["bucket_idx"] = df["bucket_idx"].astype(int)
 
-        # 3) Aggregate with pandas groupby
-        if "Contact" in self.used_property_types:
-            stats = ["mean", "std", "max", "min", "sum", "count"]
-        else:
-            stats = ["mean", "std", "max", "min", "count"]
-        
-        agg_df = (
-            df.groupby(["device_uri","property_type","bucket_idx"])["value"]
-            .agg(stats)
-            .reset_index()
-        )
+        # Defining aggregation stats, aggregate with pandas groupby
+        stats = ["mean", "std", "max", "min", "count"]
+        agg_df = df.groupby(["device_URIRef", "property_type", "bucket_idx"])["value"].agg(stats).reset_index()
 
-        # Null‐out stats for 'Contact'
-        if "Contact" in self.used_property_types:
-            contact_mask = agg_df["property_type"] == "Contact"
-            agg_df.loc[contact_mask, ["mean","std","max","min"]] = np.nan
-        else:
-            stats = ["mean", "std", "max", "min", "count"]
 
-        # 4) Pick columns and save df
-        cols = ["device_uri","property_type","bucket_idx"] + stats
-        self.bucketed_measurements_df = agg_df[cols]
+        # === Stage 4: Grid Expansion & Reindexing ===
+        logger.info("[Step 4/5] Expanding to a full grid and reindexing...")
 
-        # --- Sanity logging ---
-        logger.info("-" * 40)
-        logger.info(f"BUCKETING SUMMARY ({len(agg_df)} rows total)\n")
-
-        # Unique vs expected
-        n_buckets = agg_df['bucket_idx'].nunique()
-        expected = len(self.time_buckets)
-        logger.info(f"• Buckets covered: {n_buckets}, {expected}\n")
-
-        # Missing buckets
-        all_bins = set(range(expected))
-        present = set(agg_df['bucket_idx'].unique())
-        missing = sorted(all_bins - present)
-        logger.info(f"• Number of missing buckets: {len(missing)}\n")
-
-        # distribution of records per bucket
-        counts = agg_df.groupby('bucket_idx').size()
-        desc = counts.describe()
-        logger.info(
-            f"Per-bucket record counts summary: count={desc['count']}, mean={desc['mean']:.2f}, "
-            f"std={desc['std']:.2f}, min={desc['min']}, 25%={desc['25%']}, "
-            f"50%={desc['50%']}, 75%={desc['75%']}, max={desc['max']}"
-        )
-
-        # Per‐device stats
-        logger.info("ROWS PER DEVICE:")
-        for dev, cnt in agg_df['device_uri'].value_counts().items():
-            ub = agg_df[agg_df['device_uri']==dev]['bucket_idx'].nunique()
-            logger.info(f"  - {dev}: {cnt} rows in {ub} buckets")
-        logger.info("")
-
-        # Per‐property stats
-        logger.info("ROWS PER PROPERTY:")
-        for prop, cnt in agg_df['property_type'].value_counts().items():
-            ub = agg_df[agg_df['property_type']==prop]['bucket_idx'].nunique()
-            logger.info(f"  - {prop}: {cnt} rows in {ub} buckets")
-
-        # sample row
-        sample = agg_df.iloc[0].to_dict()
-        logger.info(f"Sample row: {sample}")
-
-        logger.info("-" * 40)
-        return None
-    
-    #############################
-    # Adding back the empty buckets
-    #############################
-
-    def build_full_feature_df(self) -> None:
-        """
-        Re-index the bucketed measurements so we get one row per (device_uri, property_type, bucket_idx), 
-        and adding a binary 'has_measurement' indicator.
-
-        IMPORTANT:  There is no normalization or missing value imputation by this point.
-                    Will do this in the next steps.
-        
-        Returns:
-            DataFrame with columns:
-            ['device_uri', 'property_type', 'bucket_idx', <feature_cols>, 'has_measurement']
-        """
-        if not hasattr(self, "bucketed_measurements_df"):
-            raise ValueError("Call normalize_bucketed_measurements first.")
-
-        # 1) Tag existing normalized rows as present
-        df = self.bucketed_measurements_df.copy()
-        df['has_measurement'] = 1.0
-
-        # 2) Build full grid index
         full_idx = pd.MultiIndex.from_product(
             [
-                df['device_uri'].unique(),
-                df['property_type'].unique(),
+                agg_df['device_URIRef'].unique(),
+                agg_df['property_type'].unique(),
                 range(len(self.time_buckets))
             ],
-            names=["device_uri", "property_type", "bucket_idx"]
+            names=["device_URIRef", "property_type", "bucket_idx"]
         )
+        full_df = agg_df.set_index(['device_URIRef', 'property_type', 'bucket_idx']).reindex(full_idx).reset_index()
 
-        # 3) Reindex and reset
-        full_df = (
-            df
-            .set_index(['device_uri', 'property_type', 'bucket_idx'])
-            .reindex(full_idx)
-            .reset_index()
-        )
 
-        # 4) Fill NaNs with 0.0 for the 'has_measurement' and 'count' columns 
-        # These imputations can be made, since we know the rows we just added 
-        # - do not have a measurement (has_measurement = 0), 
-        # - and, therefore, also has no count (count = 0)
-        full_df['has_measurement'] = full_df['has_measurement'].fillna(0.0)
+        # === Stage 5: Final Imputation & Feature Creation ===
+
+        # For the new rows created by reindex, 'count' is NaN, can be safely filled with 0
         full_df['count'] = full_df['count'].fillna(0.0)
 
-        # --- Sanity logging ---
+        # Creating binary flag of 'has_measurement'
+        full_df['has_measurement'] = (full_df['count'] > 0).astype(float)
+
+        # Fixing std for single-measurements
+        count_is_one = full_df['count'] == 1
+        full_df.loc[count_is_one, 'std'] = 0.0
+
+        # --- Logging and Storing ---
         logger.info("=" * 40)
-        logger.info(f"FULL FEATURE MATRIX ({len(full_df)} rows)")
-
-        # Devices, properties, buckets
-        n_devices = full_df['device_uri'].nunique()
-        n_props = full_df['property_type'].nunique()
-        n_buckets = full_df['bucket_idx'].nunique()
-        logger.info(f"• Devices: {n_devices}")
-        logger.info(f"• Property types: {n_props}")
-        logger.info(f"• Time buckets: {n_buckets}")
-
-        # Sparsity: proportion of rows without measurements
+        logger.info(f"BUILT FULL DEVICE FEATURE MATRIX ({len(full_df)} rows)")
         missing_mask = full_df['has_measurement'] == 0.0
         missing_pct = missing_mask.mean() * 100
-        logger.info(f"• Missing entries: {missing_mask.sum()} rows ({missing_pct:.1f}% of total)")
-
-        # Sample row
-        sample = full_df.iloc[0].to_dict()
-        logger.info(f"Sample row (first): {sample}")
-
+        logger.info(f"Sparsity: {missing_mask.sum()} entries ({missing_pct:.1f}%) have no valid measurements.")
         logger.info("=" * 40)
 
-        self.full_feature_df = full_df
+        # Store the final, clean DataFrame
+        self.device_level_df = full_df
         return None
+
     
-    def build_room_feature_df(self) -> None:
+    
+    ##############################
+    # Room-level DataFrame
+    ##############################
+
+    def build_room_level_df(self) -> None:
         """
         Transforms device-level data into a room-level feature matrix.
 
-        This method pivots the `self.full_feature_df` (keyed by device, property,
+        This method pivots the `self.device_level_df` (keyed by device, property,
         and time bucket) into a wide-format DataFrame where each row represents a
-        unique room and time bucket (`room_uri`, `bucket_idx`).
+        unique room and time bucket (`room_URIRef`, `bucket_idx`).
 
         For each property type (e.g., "Temperature"), it generates a set of features
         by aggregating data from all devices of that type within a single room.
@@ -457,50 +399,51 @@ class TemporalBuilderMixin:
             - `sum` -> `n_active_devices`: The number of devices reporting data.
             - `max` -> `has_measurement`: A binary flag indicating if the room had any data for that property.
 
-        The final DataFrame is stored in `self.room_feature_df`.
+        After the aggregation, static room attributes (e.g., area, hasWindows) are added to the DataFrame.
+
+        The final DataFrame is stored in `self.room_level_df`.
         """
-        # 1) Ensure full_feature_df exists
-        if not hasattr(self, 'full_feature_df'):
-            raise ValueError("full_feature_df not found. Run build_full_feature_df() first.")
-        df = self.full_feature_df.copy()
+        logger.info(f"Starting to build room_level_df...")
         
-        logger.info(f"Starting build_room_feature_df with {len(df)} rows in full_feature_df.")
+        # 1) Ensure device_level_df exists
+        if not hasattr(self, 'device_level_df'):
+            raise ValueError("device_level_df not found. Run build_device_level_df() first.")
+        df = self.device_level_df.copy()
+        
+        
+        # 2) Mapping each device_URIRef → room_URIRef
+        df["room_URIRef"] = df['device_URIRef'].apply(self.office_graph._map_DeviceURIRef_to_RoomURIRef)
+        df['room_URIRef'] = df['room_URIRef'].astype('category')
+        
+        # ---------- Intermediate logging ----------
+        unique_buckets = df['bucket_idx'].nunique()
+        unique_devices = df['device_URIRef'].nunique()
+        unique_rooms_mapped = df['room_URIRef'].nunique()
 
-        # 2) Map each device_uri → room_uri
-        #    (device_uri is a string, so convert to URIRef and look up device_obj.room)
-        def _map_device_to_room(dev_str: str):
-            try:
-                dev_ref = URIRef(dev_str)
-                device_obj = self.office_graph.devices.get(dev_ref)
-                if device_obj is None:
-                    raise KeyError(f"Device {dev_str} not in office_graph.devices")
-                return device_obj.room
-            except Exception as e:
-                raise RuntimeError(f"Cannot map device_uri '{dev_str}' to a room: {e}")
-
-        df['room_uri'] = df['device_uri'].apply(_map_device_to_room)
-        unique_devices = df['device_uri'].nunique()
-        unique_rooms_mapped = df['room_uri'].nunique()
-        logger.info(f"Mapped {unique_devices} unique device_uris into {unique_rooms_mapped} distinct rooms.")
-
-        # Using pivot_table to aggregate and pivot
+        logger.info(f"Mapped {unique_devices} unique devices "
+                    f"into {unique_rooms_mapped} rooms ")
+        logger.info(f"Total number of unique time buckets: {unique_buckets}.")
+        # ---------- Intermediate logging ----------
+        
+        
+        # 3) Using pivot_table to aggregate and pivot
         wide = pd.pivot_table(
             df,
-            index=['room_uri', 'bucket_idx'],
+            index=['room_URIRef', 'bucket_idx'],
             columns='property_type',
             values=['mean', 'std', 'max', 'min', 'count', 'has_measurement'],
             aggfunc={
-                'mean': 'mean', 
+                'mean': ['mean', 'std'],
                 'std': 'mean', 
-                'max': 'mean', 
-                'min': 'mean',
+                'max': 'max', 
+                'min': 'min',
                 'count': 'sum', 
                 'has_measurement': ['sum', 'max']
             }
         )
-
+        
         # Flatten the multi-level columns
-        new_cols = []
+        new_column_names = []
         for col in wide.columns:
             # col is always a 3-tuple: (value_name, aggfunc_name, prop_type)
             if isinstance(col, tuple) and len(col) == 3:
@@ -508,36 +451,393 @@ class TemporalBuilderMixin:
             else:
                 raise ValueError(f"Unexpected column structure: {col}")
             
-            # The special case
+            # Special case: has_measurement
             if value == 'has_measurement': 
-                # sum → number of devices, max → binary flag
-                name = f"{prop}_{'n_devices' if aggfunc=='sum' else 'has_measurement'}"
+                if aggfunc=='sum': # sum → number of devices
+                    name = f"{prop}_{'n_active_devices'}"
+                else: # aggfunc=='max' → binary flag
+                    name = f"{prop}_{'has_measurement'}"
+            
+            # Special case: mean
+            elif value == 'mean': 
+                # "{prop}_mean" or "{prop}_std"
+                name = f"{prop}_{aggfunc}"
+            
+            # Special case: std
+            elif value == 'std': 
+                name = f"{prop}_average_intra_device_variation"
             
             # The standard case
             else:
-                # mean, std, max, min → just prop_stat
+                # max, min → just prop_stat
                 name = f"{prop}_{value}"
-
-            new_cols.append(name)
             
-        wide.columns = new_cols
-
+            new_column_names.append(name)
+        
+        wide.columns = new_column_names
         wide = wide.reset_index()
+        
+        # Handling the standard deviation of means when only one device is active 
+        property_types = self.device_level_df['property_type'].unique()
+        
+        for prop in property_types:
+            inter_device_std_col = f"{prop}_std"
+            n_active_col = f"{prop}_n_active_devices"
 
-        # Store the resulting DataFrame
-        self.room_feature_df = wide
+            if inter_device_std_col in wide.columns and n_active_col in wide.columns:
+                # Condition: The inter-device std is NaN AND there was only 1 active device
+                is_nan_mask = wide[inter_device_std_col].isnull()
+                is_one_device_mask = wide[n_active_col] == 1
 
-        # Informative logging about DataFrame structure
-        logger.info(f"Built room_feature_df DataFrame for measured rooms. Shape: {wide.shape}")
+                # Apply the fix
+                wide.loc[is_nan_mask & is_one_device_mask, inter_device_std_col] = 0.0
+        
+        # 4) Store the final resulting DataFrame
+        self.room_level_df = wide
+        
+        logger.info(f"Built room_level_df DataFrame for measured rooms. Shape: {wide.shape}")
+        
+        return None
+    
+    def expand_room_level_df(self) -> None:
+        """
+        Helper function to take the DataFrame of measured rooms and expand
+        it to include all rooms defined in the graph, filling missing ones with NaNs.
 
-        num_unique_rooms = wide['room_uri'].nunique()
-        num_unique_buckets = wide['bucket_idx'].nunique()
-        total_columns = wide.shape[1]
-        column_names = wide.columns.tolist()
+        This is required for the STGCN pipeline, but do not call it for the Tabular pipeline.
+        """
+        if not hasattr(self, "room_level_df"):
+            raise ValueError("Run build_room_level_df() first.")
 
-        logger.info(f"room_feature_df contains {num_unique_rooms} unique rooms and {num_unique_buckets} unique buckets.")
-        logger.info(f"room_feature_df has {total_columns} columns. Column names:")
-        for col in column_names:
-            logger.info(f"  • {col}")
+        logger.info("Expanding feature DataFrame to include all graph nodes for STGCN...")
 
+        # 1. Get the complete set of all rooms and time buckets
+        # These are the dimensions of our final grid.
+        all_room_urirefs = list(self.office_graph.rooms.keys())
+        all_bucket_indices = range(len(self.time_buckets))
+
+        # 2. Create the full MultiIndex from the product of all rooms and all buckets
+        # This represents every possible (room, bucket_idx) pair.
+        full_grid_index = pd.MultiIndex.from_product(
+            [all_room_urirefs, all_bucket_indices],
+            names=["room_URIRef", "bucket_idx"]
+        )
+        
+        # 3. Re-index the existing DataFrame to this full grid
+        expanded_df = (
+            self.room_level_df
+            .set_index(["room_URIRef", "bucket_idx"])   # make these two levels the index
+            .reindex(full_grid_index)                   # add missing (room, bucket) pairs
+            .reset_index()                              # restore columns 'room_URIRef' & 'bucket_idx'
+        )
+
+        # 4. For the newly added rows, some values can be safely imputed.
+        for prop in self.used_property_types:
+            # count
+            count_col = f"{prop}_count"
+            if count_col in expanded_df.columns:
+                expanded_df[count_col] = expanded_df[count_col].fillna(0.0)
+            
+            # has_measurement
+            has_meas_col = f"{prop}_has_measurement"
+            if has_meas_col in expanded_df.columns:
+                expanded_df[has_meas_col] = expanded_df[has_meas_col].fillna(0.0)
+            
+            # n_active_devices
+            n_active_col = f"{prop}_n_active_devices"
+            if n_active_col in expanded_df.columns:
+                expanded_df[n_active_col] = expanded_df[n_active_col].fillna(0.0)
+
+        # 5. Update the class attribute
+        self.room_level_df = expanded_df
+
+        n_rows, n_cols = expanded_df.shape
+        logger.info(f"DataFrame expanded. New shape: {n_rows} rows, {n_cols} columns.")
+        logger.info(f"Grid covers {len(all_room_urirefs)} rooms × {len(all_bucket_indices)} buckets "
+                    f"= {len(all_room_urirefs) * len(all_bucket_indices)} theoretical rows.")
+        
+        return None
+
+    def add_static_room_features(self) -> None:
+        """
+        Enriches the room_level_df with static attributes for each room.
+
+        This method creates a DataFrame of static room properties. 
+        It then merges this static data into the main `room_level_df` based on the room's URI.
+
+        This function can be called on either the original or the expanded room_level_df DataFrame.
+        """
+        if not hasattr(self, 'room_level_df'):
+            raise ValueError("`room_level_df` not found. Build it first.")
+        
+        logger.info(f"Adding {len(self.static_room_attributes)} static room features...")
+
+        # 1. Create a list of dictionaries, one for each room in your graph.
+        room_data = []
+        for room_URIRef, room_obj in self.office_graph.rooms.items():
+            features = {'room_URIRef': room_URIRef}
+            for attr_string in self.static_room_attributes:
+
+                # Case 2: Special handling for normalized area attributes
+                if attr_string in ['norm_areas_minmax', 'norm_areas_prop']:
+                    # These attributes are stored on the builder instance, not the Room object.
+                    source_dict = getattr(self, attr_string, None)
+                    
+                    if source_dict:
+                        floor_num = self.room_to_floor.get(room_URIRef)
+                        val = source_dict.get(floor_num, {}).get(room_URIRef, np.nan)
+                        features[attr_string] = val
+                    else:
+                        logger.warning(f"Normalized area dictionary '{attr_string}' not found. Did you run normalize_room_areas()?")
+                        features[attr_string] = np.nan
+                
+                # Case 3: Default handling for attributes on the Room object
+                else:
+                    val = self.office_graph._get_nested_attr(room_obj, attr_string, default=np.nan)
+                    features[attr_string] = val
+
+            # Special handling for 'floor number', which is not in static_room_attributes,
+            # but still it is a feature for the room we want to include.
+            floor_URIRef = self.office_graph._map_RoomURIRef_to_FloorURIRef(room_URIRef)
+            floor_num = self.office_graph._map_FloorURIRef_to_FloorNumber(floor_URIRef)
+            features["floor"] = floor_num
+            
+            # Adding features for a single room back to the list
+            room_data.append(features)
+
+        if not room_data:
+            logger.warning("Could not gather any static room data.")
+            return None
+
+        # 2. Convert the list of dicts into a clean DataFrame.
+        static_features_df = pd.DataFrame(room_data)
+
+        # 3. Merge this static data into the main feature DataFrame.
+        self.room_level_df = pd.merge(
+            self.room_level_df,
+            static_features_df,
+            on='room_URIRef',
+            how='left'  # Use a left merge to keep all rows from the original df.
+        )
+
+        # 4. Ensuring features are correctly categorical
+        categorical_static_cols = [
+            col for col in ['room_URIRef', 'isProperRoom', 
+                            'hasWindows', 'has_multiple_windows']
+            if col in self.room_level_df.columns]
+        if categorical_static_cols:
+            self.room_level_df[categorical_static_cols] = (
+                self.room_level_df[categorical_static_cols].astype('category'))
+
+        logger.info("Successfully merged static room features.")
+
+        return None
+
+
+
+    ##############################
+    # Floor-level DataFrame
+    ##############################
+
+    def build_floor_level_df(self) -> None:
+        """
+        Builds a wide-format feature DataFrame with one row per time bucket.
+
+        This function aggregates room-level data to the floor-level and then pivots
+        the result to create a wide DataFrame where each row is a unique `bucket_idx`.
+        Columns are structured as `F{floor}_{property}_{statistic}`.
+        
+        This is built from `room_level_df` and produces the kind of tabular,
+        wide-format data suitable for certain time-series models.
+
+        The final DataFrame is stored in `self.floor_level_df`.
+        """
+        if not hasattr(self, 'room_level_df'):
+            raise ValueError("room_level_df not found; ensure build_room_level_df() was called first.")
+        
+        logger.info("Building wide-format, floor-aggregated DataFrame (one row per bucket)...")
+        df = self.room_level_df.copy()
+
+        # 1) Add floor_number mapping to the room-level data
+        room_to_floor_map = {
+            room_uri: self.office_graph._map_FloorURIRef_to_FloorNumber(
+                self.office_graph._map_RoomURIRef_to_FloorURIRef(room_uri)
+            )
+            for room_uri in df['room_URIRef'].unique()
+        }
+        df['floor_number'] = df['room_URIRef'].map(room_to_floor_map)
+        df['floor_number'] = df['floor_number'].astype(int)
+
+        # For later use
+        property_types = self.used_property_types
+        floor_numbers = df['floor_number'].unique()
+
+        # 2) First, aggregate from rooms to floors using groupby.
+        # This creates an intermediate "long" DataFrame (one row per floor per bucket).
+        agg_spec = {}
+        value_cols = [c for c in df.columns if c.split('_')[0] in property_types]
+        
+        for col in value_cols:
+            if col.endswith('_count'):
+                agg_spec[col] = 'sum'
+            elif col.endswith('_n_active_devices'):
+                agg_spec[col] = 'sum'
+            elif col.endswith('_max'):
+                agg_spec[col] = 'max'
+            elif col.endswith('_min'):
+                agg_spec[col] = 'min'
+
+            elif col.endswith('_average_intra_device_variation'):
+                agg_spec[col] = 'mean'
+
+            elif col.endswith('_has_measurement'):
+                agg_spec[col] = ['sum', 'max'] # sum -> n_active_rooms, max -> has_measurement flag
+
+            elif col.endswith('_mean'):
+                agg_spec[col] = ['mean', 'std']
+            elif col.endswith('_std'):
+                agg_spec[col] = 'mean'
+            
+            else:
+                raise ValueError(f"Unexpected column name: {col}")
+
+        long_floor_df = df.groupby(['floor_number', 'bucket_idx']).agg(agg_spec)
+
+        # 3) Now, pivot the intermediate DataFrame to get the desired wide format
+        wide = long_floor_df.pivot_table(
+            index='bucket_idx',
+            columns='floor_number'
+        )
+        
+        # 4) Flatten the complex multi-level columns into the desired F{floor}_{prop}_{stat} format
+        new_column_names = []
+        for col in wide.columns:
+            # Column is always a 3-tuple: (base_name, aggfunc, floor_number)
+            # e.g., ('CO2Level_mean', 'mean', 7)
+            if isinstance(col, tuple) and len(col) == 3:
+                base_name, agg_func, floor = col
+                prop, stat_suffix = base_name.split('_', 1)
+                final_stat_name = ""
+            else:
+                raise ValueError(f"Unexpected column structure: {col}")
+            
+            # Special case: has_measurement
+            if stat_suffix == 'has_measurement':
+                if agg_func == 'sum':
+                    final_stat_name = 'n_active_rooms'
+                else: # agg_func == 'max'
+                    final_stat_name = 'has_measurement'
+                    
+            # Special case: mean
+            elif stat_suffix == 'mean':
+                final_stat_name = agg_func
+
+            # Special case: std
+            elif stat_suffix == 'std': 
+                final_stat_name = f"{prop}_average_intra_room_variation"
+
+            # The standard case
+            else:
+                final_stat_name = stat_suffix
+            
+            new_column_names.append(f"F{floor}_{prop}_{final_stat_name}")
+
+        wide.columns = new_column_names
+        wide = wide.reset_index()
+        
+        # 5) Fix std for inter-room variation when only one room is active on a floor
+        for floor in floor_numbers:
+            for prop in property_types:
+                inter_room_std_col = f"F{floor}_{prop}_std"
+                n_active_rooms_col = f"F{floor}_{prop}_n_active_rooms"
+                
+                if inter_room_std_col in wide.columns and n_active_rooms_col in wide.columns:
+                    is_nan_mask = wide[inter_room_std_col].isnull()
+                    is_one_room_mask = wide[n_active_rooms_col] == 1
+                    wide.loc[is_nan_mask & is_one_room_mask, inter_room_std_col] = 0.0
+        
+        # 6) Store or return the final DataFrame
+        self.floor_level_df = wide
+        logger.info(f"Stored wide-format, floor-aggregated DataFrame. Shape: {wide.shape}")
+        return None
+    
+    
+    
+    ##############################
+    # Building-level DataFrame
+    ##############################
+
+    def build_building_level_df(self) -> None:
+        """
+        Aggregates floor-level data to create a building-level feature DataFrame.
+
+        This method transforms the `self.floor_level_df` (which is wide on floors)
+        into a condensed DataFrame where each row still represents a single time bucket,
+        but the columns now represent aggregated statistics for the entire building.
+
+        The final DataFrame is stored in `self.building_level_df`.
+        """
+        if not hasattr(self, 'floor_level_df'):
+            raise ValueError("floor_level_df not found; ensure build_floor_level_df() was called first.")
+        
+        logger.info("Aggregating floor-level data into a single building-level DataFrame...")
+        
+        # Start with a copy of the floor-level data
+        df = self.floor_level_df.copy()
+        
+        # Initialize the new building-level DataFrame with the same index
+        building_df = pd.DataFrame(index=df.index)
+        building_df['bucket_idx'] = df['bucket_idx']
+
+        # Iterate over each property type ('Temperature', 'CO2Level', 'Humidity') to aggregate
+        for prop in self.used_property_types:
+                        
+            # Sum up counts, active rooms, and active devices
+            for stat in ['count', 'n_active_devices', 'n_active_rooms']:
+                cols = df.filter(like=f"_{prop}_{stat}").columns
+                building_df[f"{prop}_{stat}"] = df[cols].sum(axis=1)
+
+            # Take the max of maxes and min of mins
+            for stat in ['max', 'min']:
+                cols = df.filter(like=f"_{prop}_{stat}").columns
+                building_df[f"{prop}_{stat}"] = df[cols].agg(func=stat, axis=1)
+
+            # Take the max and sum of has_measurement flags
+            for stat in ['max', 'sum']:
+                cols = df.filter(like=f"_{prop}_has_measurement").columns
+                colname_suffix = "has_measurement" if stat == 'max' else "n_active_floors"
+                building_df[f"{prop}_{colname_suffix}"] = df[cols].agg(func=stat, axis=1)
+            
+            # Take the mean and std of the mean
+            for stat in ['mean', 'std']:
+                cols = df.filter(like=f"_{prop}_mean").columns
+                building_df[f"{prop}_{stat}"] = df[cols].agg(func=stat, axis=1)
+                        
+            # Take the mean of "average intra-device variation" and "average intra-room variation"
+            for stat in ['average_intra_device_variation', 'average_intra_room_variation']:
+                cols = df.filter(like=f"_{prop}_{stat}").columns
+                building_df[f"{prop}_{stat}"] = df[cols].mean(axis=1)
+
+            # From std columns, create "average_intra_floor_variation"
+            std_cols = df.filter(like=f"_{prop}_std").columns
+            building_df[f"{prop}_average_intra_floor_variation"] = df[std_cols].mean(axis=1)
+        
+        # Handling the standard deviation of means when only one floor is active 
+        for prop in self.used_property_types:
+            inter_floor_std_col = f"{prop}_std"
+            n_active_col = f"{prop}_n_active_floors"
+            
+            if inter_floor_std_col in building_df.columns and n_active_col in building_df.columns:
+                # Condition: The inter-device std is NaN AND there was only 1 active device
+                is_nan_mask = building_df[inter_floor_std_col].isnull()
+                is_one_device_mask = building_df[n_active_col] == 1
+                
+                # Apply the fix
+                building_df.loc[is_nan_mask & is_one_device_mask, inter_floor_std_col] = 0.0
+        
+        # Store the final result
+        self.building_level_df = building_df.reset_index(drop=True)
+        
+        logger.info(f"Successfully built building-level DataFrame. Shape: {self.building_level_df.shape}")
+        
         return None
