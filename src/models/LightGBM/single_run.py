@@ -18,7 +18,10 @@ from sklearn.metrics import (
     precision_recall_curve,
     mean_absolute_error,
     mean_squared_error,
-    r2_score
+    r2_score,
+    log_loss, 
+    precision_score, 
+    recall_score
 )
 
 # Logging setup
@@ -176,24 +179,52 @@ class LGBMSingleRunner:
         if self.args.task_type == "workhour_classification":
             preds_proba = final_model.predict_proba(X_test)
             preds_label = (preds_proba > optimal_threshold).astype(int)
+            
+            # Calculate all required metrics
             test_metrics = {
                 'accuracy': (preds_label == y_test).mean(),
                 'balanced_accuracy': balanced_accuracy_score(y_test, preds_label),
+                'precision': precision_score(y_test, preds_label),
+                'recall': recall_score(y_test, preds_label),
                 'f1': f1_score(y_test, preds_label),
                 'roc_auc': roc_auc_score(y_test, preds_proba),
                 'auc_pr': average_precision_score(y_test, preds_proba),
-                'predictions': preds_label, 'probabilities': preds_proba, 'labels': y_test.values
+                'test_loss': log_loss(y_test, preds_proba),
+                'threshold': optimal_threshold,
+                'predictions': preds_label, 
+                'probabilities': preds_proba, 
+                'labels': y_test.values
             }
         else: # Forecasting
             preds = final_model.predict(X_test)
-            test_metrics = {
-                'mse': mean_squared_error(y_test, preds),
-                'rmse': np.sqrt(mean_squared_error(y_test, preds)),
-                'mae': mean_absolute_error(y_test, preds),
-                'r2': r2_score(y_test, preds),
-                'predictions': preds, 'targets': y_test.values
+            
+            test_loss_mse = mean_squared_error(y_test, preds)
+
+            # Safely calculate MAPE, avoiding division by zero
+            y_test_np = y_test.values # Ensure it's a numpy array for boolean indexing
+            mape_mask = y_test_np != 0
+            if np.sum(mape_mask) > 0:
+                mape = np.mean(np.abs((y_test_np[mape_mask] - preds[mape_mask]) / y_test_np[mape_mask])) * 100
+            else:
+                mape = 0.0 # Assign 0 if all target values are zero
+
+            # Calculating other metrics
+            mse = mean_squared_error(y_test, preds)
+            rmse = np.sqrt(mse)
+            mae = mean_absolute_error(y_test, preds)
+            r2 = r2_score(y_test, preds)
+
+            metrics = {
+                'test_loss': test_loss_mse,
+                'mse':mse,
+                'rmse': rmse,
+                'mae': mae,
+                'r2': r2,
+                'mape': mape,
+                'predictions': preds,
+                'targets': y_test.values
             }
-        
+                
         # Use ResultHandler to save artifacts
         handler = ResultHandler(output_dir=self.output_dir, task_type=self.args.task_type,
                                 history=history, metrics=test_metrics, model=final_model)
