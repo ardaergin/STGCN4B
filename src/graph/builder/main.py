@@ -242,7 +242,8 @@ def main():
             lags=args.lags,
             windows=args.windows,
             shift_amount=args.shift_amount,
-            integrate_weather=not args.skip_incorporating_weather
+            integrate_weather=not args.skip_incorporating_weather,
+            target_prediction_type=args.target_prediction_type
         )
         if args.make_and_save_plots:
             plot_missing_values(builder.tabular_feature_df, df_name=f"Tabular Feature DF {plot_suffix}",

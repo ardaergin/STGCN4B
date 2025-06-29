@@ -352,6 +352,11 @@ def add_LightGBM_args(parser):
     parser.add_argument('--forecast_horizon', type=int,
                         default=1,
                         help='The forecast horizon in hours. Default is 1.')
+    
+    parser.add_argument('target_prediction_type', type=str,
+                        choices=['absolute', 'delta'],
+                        default="absolute",
+                        help='Whether to predict the actual target (absolute, default) or the change (delta)')
 
     parser.add_argument('--early_stopping_rounds', type=int, 
                         default=10, 

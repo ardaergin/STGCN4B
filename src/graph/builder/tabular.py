@@ -1,7 +1,7 @@
 import os 
 import pandas as pd
 import numpy as np
-from typing import Optional, List
+from typing import Optional, List, Tuple
 import joblib
 
 # Logging setup
@@ -268,58 +268,85 @@ class TabularBuilderMixin:
         )
 
         return merged_df
-
-    def add_target_consumption_to_df(self, data_frame: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
+    
+    def add_target_consumption_to_df(self, 
+                                    data_frame: pd.DataFrame, 
+                                    horizon: int = 1, 
+                                    prediction_type: str = 'absolute') -> pd.DataFrame:
         """
-        Creates the future consumption target by shifting the consumption values
-        backwards within each block to prevent data leakage.
+        Creates the future consumption target, either as an absolute value or a delta (change).
 
-        This method adds a new 'target_consumption' column to the given data_frame.
-        The data_frame must have a column named "consumption".
-
-        Note that the rows where the target could not be created (i.e., the last `horizon` rows
-        of each block) will have NaN and must be dropped before training.
+        This method adds a new target column to the given data_frame. The data_frame must 
+        have a column named "consumption". The calculation is performed within each block 
+        to prevent data leakage.
 
         Args:
+            data_frame (pd.DataFrame): The input DataFrame, which must contain 'consumption'.
             horizon (int): The number of time steps into the future to predict.
-                        Defaults to 1 (predict the next time step).
-        """        
+            prediction_type (str): The type of target to create.
+                                - 'absolute': target = consumption(t+h)
+                                - 'delta': target = consumption(t+h) - consumption(t)
+
+        Returns:
+            pd.DataFrame: The modified DataFrame with the new target column.
+        """
+        # --- Input validation ---
+        if prediction_type not in ['absolute', 'delta']:
+            raise ValueError("prediction_type must be either 'absolute' or 'delta'.")
         if "consumption" not in data_frame.columns:
             raise KeyError("Required column 'consumption' not found in DataFrame.")
 
-        logger.info(f"Creating block-aware consumption target for horizon={horizon}...")
+        logger.info(f"Creating block-aware consumption target (type: {prediction_type}) for horizon={horizon}...")
         
         df = data_frame.copy()
         
         # 1. Assign block ID for grouping
         df['block_id'] = self._assign_block_id(df)
         
-        # 2. Group by block and shift to get the future value
-        #    .shift(-horizon) pulls future values into the current row.
-        df['target_consumption'] = df.groupby('block_id')['consumption'].shift(-horizon)
+        # 2. Group by block and get the future value (needed for both cases)
+        future_consumption = df.groupby('block_id')['consumption'].shift(-horizon)
         
-        # 3. Drop the helper column
+        # 3. Create the target based on the prediction_type
+        if prediction_type == 'absolute':
+            df['target_consumption'] = future_consumption
+        else:  # prediction_type == 'delta'
+            df['target_consumption'] = future_consumption - df['consumption']
+
+        # 4. Drop the helper column
         df.drop(columns='block_id', inplace=True)
         
-        # 4. Report on the number of NaNs created
+        # 5. Report on the number of NaNs created
         nan_count = df['target_consumption'].isna().sum()
         logger.info(f"Created 'target_consumption'. Found {nan_count} rows with NaN targets (these should be dropped).")
         
         return df
-    
-    def add_target_measurement_to_df(self, data_frame: pd.DataFrame, horizon: int = 1) -> pd.DataFrame:
+
+
+    def add_target_measurement_to_df(self, 
+                                    data_frame: pd.DataFrame, 
+                                    horizon: int = 1,
+                                    prediction_type: str = 'absolute') -> pd.DataFrame:
         """
-        Creates the future measurement target for a specific variable (e.g., Temperature).
+        Creates the future measurement target, either as an absolute value or a delta (change).
         
         This is done by shifting the measurement values backwards within each block AND for
-        each room to prevent data leakage. It adds a 'target_measurement' column.
+        each room to prevent data leakage.
 
         Args:
-            stat (str): The statistic of the measurement variable to use as the target (e.g., 'mean').
-            horizon (int): The number of time steps into the future to predict. Defaults to 1.
+            data_frame (pd.DataFrame): The input DataFrame.
+            horizon (int): The number of time steps into the future to predict.
+            prediction_type (str): The type of target to create.
+                                - 'absolute': target = measurement(t+h)
+                                - 'delta': target = measurement(t+h) - measurement(t)
+
+        Returns:
+            pd.DataFrame: The modified DataFrame with the new target column.
         """
+        # --- Input validation ---
+        if prediction_type not in ['absolute', 'delta']:
+            raise ValueError("prediction_type must be either 'absolute' or 'delta'.")
         if "room_number" not in data_frame.columns:
-            raise KeyError("This method is for measurement forecasting and requires 'room_number' in the DataFrame.")
+            raise KeyError("This method requires 'room_number' in the DataFrame.")
         
         # The source column from which we create the target
         variable = self.measurement_variable
@@ -328,20 +355,27 @@ class TabularBuilderMixin:
         if source_column not in data_frame.columns:
             raise ValueError(f"Source column '{source_column}' not found in the DataFrame.")
         
-        logger.info(f"Creating block-aware measurement target from '{source_column}' for horizon={horizon}...")
+        logger.info(f"Creating block-aware measurement target (type: {prediction_type}) from '{source_column}' for horizon={horizon}...")
         
         df = data_frame.copy()
         
         # 1. Assign block ID for grouping
         df['block_id'] = self._assign_block_id(df)
+        grouping_cols = ['block_id', 'room_number']
         
-        # 2. IMPORTANT: Group by both block and room, then shift
-        df['target_measurement'] = df.groupby(['block_id', 'room_number'])[source_column].shift(-horizon)
+        # 2. Group by block and room, then get the future value
+        future_measurement = df.groupby(grouping_cols)[source_column].shift(-horizon)
         
-        # 3. Drop the helper column
+        # 3. Create the target based on the prediction_type
+        if prediction_type == 'absolute':
+            df['target_measurement'] = future_measurement
+        else:  # prediction_type == 'delta'
+            df['target_measurement'] = future_measurement - df[source_column]
+            
+        # 4. Drop the helper column
         df.drop(columns='block_id', inplace=True)
         
-        # 4. Report on the number of NaNs
+        # 5. Report on the number of NaNs
         nan_count = df['target_measurement'].isna().sum()
         logger.info(f"Created 'target_measurement'. Found {nan_count} total rows with NaN targets.")
         
@@ -356,12 +390,22 @@ class TabularBuilderMixin:
                          lags: List[int] = None,
                          windows: List[int] = None,
                          shift_amount: int = 1, 
-                         integrate_weather: bool = True):
+                         integrate_weather: bool = True,
+                         target_prediction_type: str = 'absolute'):
         """
         This is the final, all-in-one function to build tabular data depending on the 'build_mode' (or 'task_type').
         1) Handles building the base DataFrame, appropriate to the task type
         2) Does feature engineering.
         3) Adds the appropriate target column to the DataFrame, and cleans the rows where target is NaN.
+
+        Args:
+            forecast_horizon (int): Number of time steps into the future to predict.
+            lags: ...
+            windows: ...
+            shift_amount: ...
+            integrate_weather: Weather to integrate weather features.
+            target_prediction_type (str): Type of target for forecasting tasks.
+                                          Either 'absolute' or 'delta'.
         """
 
         ##### Building the base DataFrame #####
@@ -498,13 +542,17 @@ class TabularBuilderMixin:
             self.target_col_name = 'target_consumption'
             self.tabular_df = self.add_target_consumption_to_df(
                 data_frame=self.tabular_df,
-                horizon=forecast_horizon)
+                horizon=forecast_horizon,
+                prediction_type=target_prediction_type
+            )
 
         elif self.build_mode == "measurement_forecast":
             self.target_col_name = 'target_measurement'
             self.tabular_df = self.add_target_measurement_to_df(
                 data_frame=self.tabular_feature_df,
-                horizon=forecast_horizon)
+                horizon=forecast_horizon,
+                prediction_type=target_prediction_type
+            )
         
         else:
             raise ValueError(f"Unknown build_mode: {self.build_mode}")
