@@ -36,6 +36,8 @@ logging.basicConfig(
     format='%(asctime)s - PID:%(process)d - %(name)s - %(levelname)s - %(message)s',
     handlers=[logging.StreamHandler(sys.stdout)])
 logger = logging.getLogger(__name__)
+
+
 class LGBMExperimentRunner:
     """
     Orchestrates a machine learning experiment for a LightGBM model, designed
@@ -184,7 +186,7 @@ class LGBMExperimentRunner:
         study.optimize(
             lambda trial: self._objective(trial, splitter),
             n_trials=self.args.n_optuna_trials,
-            n_jobs=5, # <<< PARALLEL HPO
+            n_jobs=self.args.n_jobs, # Defaults to 5 <<< PARALLEL HPO
             catch=(Exception,)
         )
         return study
@@ -193,19 +195,20 @@ class LGBMExperimentRunner:
         """The objective function for Optuna, performing k-fold cross-validation."""
         # Suggest hyperparameters for LightGBM
         params = {
-            "n_estimators": 1500, # High value, rely on early stopping
             "learning_rate": trial.suggest_float("learning_rate", 1e-3, 0.1, log=True),
             "num_leaves": trial.suggest_int("num_leaves", 20, 300),
             "max_depth": trial.suggest_int("max_depth", 3, 12),
             "min_child_samples": trial.suggest_int("min_child_samples", 5, 100),
             "min_child_weight": trial.suggest_float("min_child_weight", 1e-3, 10.0, log=True),
-            "min_split_gain": trial.suggest_float("min_split_gain", 1e-8, 1.0, log=True),
+            "min_split_gain": trial.suggest_float("min_split_gain", 1e-4, 1.0, log=True),
             "feature_fraction": trial.suggest_float("feature_fraction", 0.5, 1.0),
             "bagging_fraction": trial.suggest_float("bagging_fraction", 0.5, 1.0),
             "bagging_freq": trial.suggest_int("bagging_freq", 1, 7),
             "lambda_l1": trial.suggest_float("lambda_l1", 1e-8, 1.0, log=True),
             "lambda_l2": trial.suggest_float("lambda_l2", 1e-8, 1.0, log=True),
-            "n_jobs": 1 # Single job per trial, as Optuna parallelizes trials
+            "n_jobs": 1, # Single job per trial, as Optuna parallelizes trials
+            "n_estimators": self.args.n_estimators, # Default is 1500 —> High value, rely on early stopping.
+            "early_stopping_rounds": self.args.early_stopping_rounds,
         }
 
         if self.args.task_type == "workhour_classification":

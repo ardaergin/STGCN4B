@@ -31,7 +31,7 @@ class LGBMWrapper(BaseEstimator, RegressorMixin, ClassifierMixin):
         n_jobs: int = -1,
 
         # Early stopping
-        early_stopping_rounds: Optional[int] = 50,
+        early_stopping_rounds: Optional[int] = 10,
 
         # Tree structure
         num_leaves: int = 31,

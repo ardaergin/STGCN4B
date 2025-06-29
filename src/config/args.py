@@ -353,6 +353,18 @@ def add_LightGBM_args(parser):
                         default=1,
                         help='The forecast horizon in hours. Default is 1.')
 
+    parser.add_argument('--early_stopping_rounds', type=int, 
+                        default=10, 
+                        help='The number of early stopping rounds')
+
+    parser.add_argument('--n_estimators', type=int, 
+                        default=1500, 
+                        help='The number of early stopping rounds')
+
+    parser.add_argument('--n_jobs', type=int, 
+                        default=5, 
+                        help='The number of early stopping rounds')
+
 
 def parse_args():
     """Parse command-line arguments with model-specific parameters."""
