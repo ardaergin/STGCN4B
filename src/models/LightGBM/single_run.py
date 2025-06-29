@@ -214,7 +214,7 @@ class LGBMSingleRunner:
             mae = mean_absolute_error(y_test, preds)
             r2 = r2_score(y_test, preds)
 
-            metrics = {
+            test_metrics = {
                 'test_loss': test_loss_mse,
                 'mse':mse,
                 'rmse': rmse,
