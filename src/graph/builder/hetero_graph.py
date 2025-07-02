@@ -60,8 +60,8 @@ class HeteroGraphBuilderMixin:
             raise ValueError("Room adjacency matrix not found. Run build_horizontal_adjacency first.")
         if not hasattr(self, 'vertical_adj_matrix') or self.vertical_adj_matrix is None:
             raise ValueError("Vertical adjacency matrix not found. Run build_vertical_adjacency first.")
-        if not hasattr(self, 'full_feature_df'):
-            raise ValueError("Full feature DataFrame not found. Run build_full_feature_df first.")
+        if not hasattr(self, 'device_level_df'):
+            raise ValueError("Full feature DataFrame not found. Run build_device_level_df first.")
         if not hasattr(self, 'static_room_attributes') or not self.static_room_attributes:
             logger.warning("No static room attributes defined. Using default attributes.")
             self.static_room_attributes = ['isProperRoom', 'norm_area_minmax']
@@ -114,7 +114,7 @@ class HeteroGraphBuilderMixin:
             self.reverse_node_mappings['room'][idx] = room_uri
         
         # Device nodes - extract unique devices from the DataFrame
-        unique_devices = self.full_feature_df['device_uri'].unique()
+        unique_devices = self.device_level_df['device_uri'].unique()
         for idx, device_uri in enumerate(unique_devices):
             # Convert string back to URIRef if needed
             if isinstance(device_uri, str) and not isinstance(device_uri, URIRef):
@@ -129,7 +129,7 @@ class HeteroGraphBuilderMixin:
         self.property_type_lookup = {}
         
         # Get unique device-property combinations from the DataFrame
-        unique_combinations = self.full_feature_df[['device_uri', 'property_type']].drop_duplicates()
+        unique_combinations = self.device_level_df[['device_uri', 'property_type']].drop_duplicates()
         
         for _, row in unique_combinations.iterrows():
             device_uri = row['device_uri']
@@ -264,7 +264,7 @@ class HeteroGraphBuilderMixin:
         n_properties = len(self.node_mappings['property'])
         
         # Get unique property types from the DataFrame
-        property_types = sorted(self.full_feature_df['property_type'].unique())
+        property_types = sorted(self.device_level_df['property_type'].unique())
         n_property_types = len(property_types)
         
         # Create property type to index mapping
@@ -498,15 +498,15 @@ class HeteroGraphBuilderMixin:
         if not hasattr(self, 'time_buckets') or not self.time_buckets:
             raise ValueError("Time buckets not initialized. Call initialize_time_parameters first.")
         
-        if not hasattr(self, 'full_feature_df'):
-            raise ValueError("Full feature DataFrame not found. Run build_full_feature_df first.")
+        if not hasattr(self, 'device_level_df'):
+            raise ValueError("Full feature DataFrame not found. Run build_device_level_df first.")
         
         # Determine feature columns
-        feature_cols = [c for c in self.full_feature_df.columns
+        feature_cols = [c for c in self.device_level_df.columns
                         if c not in ('device_uri','property_type','bucket_idx')]
         
         # Make a copy and fill NaNs with 0.0
-        df = self.full_feature_df.copy()
+        df = self.device_level_df.copy()
         df[feature_cols] = df[feature_cols].fillna(0.0)
         
         hetero_temporal_graphs = {}
@@ -697,7 +697,7 @@ class HeteroGraphBuilderMixin:
             "horizontal_adjacency_matrix": self.horizontal_adj_matrix,
             "vertical_adj_matrix": self.vertical_adj_matrix,
             "room_to_room_adj_matrix": self.room_to_room_adj_matrix,
-            "dynamic_adjacencies": self.masked_adjacencies,
+            "dynamic_adjacencies": self.masked_adjacency_matrices,
             # Hetero graph:
             "base_graph": self.base_hetero_graph,
             "temporal_graphs": self.hetero_temporal_graphs,

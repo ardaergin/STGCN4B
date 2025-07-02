@@ -89,7 +89,11 @@ def add_OfficeGraph_args(parser):
     parser.add_argument('--weather_csv_path', type=str,
                         default="data/weather/hourly_weather_2022_2023.csv",
                         help='Path to weather data CSV file')
-        
+
+    parser.add_argument('--incorporate_weather', 
+                        action='store_true',
+                        help='Add the weather info to the homogeneous graph (default: False)')
+
     ##############################
     #  Spatial Builder
     ##############################
@@ -122,24 +126,43 @@ def add_OfficeGraph_args(parser):
     parser.add_argument('--distance_threshold', type=float,
                         default=5.0,
                         help='Distance threshold for room adjacency')
-
-    ##############################
-    #  Graph
-    ##############################
-    parser.add_argument('--model_family', type=str, default='graph',
-                        choices=['graph', 'tabular'],
-                        help='Graph type')
     
-    parser.add_argument('--graph_type', type=str, default='homogeneous',
-                        choices=['heterogeneous', 'homogeneous'],
-                        help='Graph type')
-    
-    parser.add_argument('--skip_incorporating_weather', 
-                        action='store_true',
-                        help='Do not add the weather info to the homogeneous graph (default: False)')
-
     ##############################
-    #  GSO (later on in the pipeline)
+    #  Forecast Arguments
+    ##############################
+    # Feature engineering
+    parser.add_argument('--lags', type=int, nargs='+',
+                        default=[1, 2, 3, 24],
+                        help='A space-separated list of lag features to create (e.g., --lags 1 2 8 24).')
+    parser.add_argument('--windows', type=int, nargs='+',
+                        default=[3, 6, 12, 24],
+                        help='A space-separated list of window sizes for moving averages (e.g., --windows 3 6 12).')
+    parser.add_argument('--shift_amount', type=int,
+                        default=1,
+                        help='The shift amount for moving average features. Default is 1.')
+    
+    # Target engineering
+    parser.add_argument('--forecast_horizons', type=int, nargs='+',
+                        default=[1],
+                        help='A space-separated list of forecast horizons in hours (e.g., --forecast_horizons 1 24). Default is [1].')
+    parser.add_argument('--target_prediction_type', type=str,
+                        choices=['absolute', 'delta'],
+                        default="absolute",
+                        help='Whether to predict the actual target value ("absolute") or the change from the current value ("delta"). Default is "absolute".')
+    parser.add_argument('--forecast_type', type=str,
+                        choices=['point', 'range'],
+                        default='point',
+                        help="The type of forecast to generate. 'point' predicts a single value, 'range' is for aggregated values. Default is 'point'.")
+    parser.add_argument('--aggregation_type', type=str,
+                        choices=['mean', 'sum'],
+                        default='mean',
+                        help="The aggregation to apply for 'range' forecasts. Can be 'mean' or 'sum'. Default is 'mean'.")
+    parser.add_argument('--min_periods_ratio', type=float,
+                        default=0.5,
+                        help="The minimum ratio of non-null data points required in a window to compute a value. Default is 0.5.")
+        
+    ##############################
+    #  GSO
     ##############################
 
     parser.add_argument('--gso_mode', type=str, default='dynamic',
@@ -160,19 +183,25 @@ def add_OfficeGraph_args(parser):
             "  • rw_norm_adj    : D^{-1} A\n"
             "  • rw_renorm_adj  : D^{-1}(A+I)\n"
             "  • rw_norm_lap    : I - D^{-1} A\n"
-            "  • rw_renorm_lap  : I - D^{-1}(A+I)"
-        )
-    )
+            "  • rw_renorm_lap  : I - D^{-1}(A+I)"))
 
 
 
 def add_base_modelling_args(parser):
     """Parse common data and training arguments."""
     
-    # Task-related arguments
+    # Model arguments
+    parser.add_argument('--model_family', type=str, default='graph',
+                        choices=['graph', 'tabular'],
+                        help='Graph type')
+    parser.add_argument('--graph_type', type=str, default='homogeneous',
+                        choices=['heterogeneous', 'homogeneous'],
+                        help='Graph type')
     parser.add_argument('--model', type=str, default='STGCN',
                         choices=['STGCN', 'LightGBM'], 
                         help='Model type')
+    
+    # Task-related arguments
     parser.add_argument('--task_type', type=str, default='consumption_forecast',
                         choices=['workhour_classification', 'consumption_forecast', 'measurement_forecast'], 
                         help='Task type')
@@ -182,7 +211,7 @@ def add_base_modelling_args(parser):
     parser.add_argument('--measurement_variable_stat', type=str, default='mean',
                         choices=['mean', 'max', 'min'],
                         help='Which statistic to use for creating targets for the measurement variable.')
-
+    
     # Device specification
     parser.add_argument('--device', type=str,
                         default='cpu',
@@ -207,14 +236,18 @@ def add_base_modelling_args(parser):
                         choices=['mean', 'median'],
                         help='Normalization method')
     parser.add_argument('--skip_normalization_for', nargs='*', 
-        default=['_sin', '_cos', 'wc_', 
-                 'has_measurement'
-                 'hasWindows', 'has_multiple_windows', 
-                 'window_direction_sin', 'window_direction_cos', 
-                 'isProperRoom', 
-                 'norm_area_minmax', 'norm_area_prop', 
-                 ],
-        help='List of (sub-)strings for feature names that should NOT be normalized.')
+                        default=['_sin', '_cos', 'wc_', 
+                                'has_measurement'
+                                'hasWindows', 'has_multiple_windows', 
+                                'window_direction_sin', 'window_direction_cos', 
+                                'isProperRoom', 
+                                'norm_area_minmax', 'norm_area_prop'],
+                        help='List of (sub-)strings for feature names that should NOT be normalized.')
+    
+    # Features to drop
+    parser.add_argument('--features-to-drop', type=str, nargs='*',
+                        default=[],
+                        help='A space-separated list of feature columns to drop from the dataframe before training (e.g., --features-to-drop col_a col_b).')
     
     ########## Experimental Setup ##########
     parser.add_argument('--n_experiments', type=int,
@@ -231,7 +264,7 @@ def add_base_modelling_args(parser):
                         help='Number of Optuna trials for HPO.')
     parser.add_argument('--optuna_crash_mode', type=str, default='safe',
                         choices=['fail_fast', 'safe'], 
-                        help="weather to add 'study.optimize(..., catch=(Exception,))'.")
+                        help="whether to add 'study.optimize(..., catch=(Exception,))'.")
     
     # Arguments for configuring Optuna's MedianPruner
     parser.add_argument('--n_startup_trials', type=int, default=5,
@@ -258,9 +291,6 @@ def add_STGCN_args(parser):
     parser.add_argument('--n_his', type=int, 
                         default=24,
                         help='Number of historical time steps to use')
-    parser.add_argument('--n_pred', type=int, 
-                        default=1,
-                        help='the number of time interval for predcition, default as 1')
     parser.add_argument('--time_intvl', type=int, 
                         default=5)
     
@@ -336,28 +366,7 @@ def add_STGCN_args(parser):
 def add_LightGBM_args(parser):
     """
     Tabular‐specific arguments for LightGBM training/evaluation.
-    """
-    # For TabularBuilderMixin
-    parser.add_argument('--lags', type=int, nargs='+',
-                        default=None,
-                        help='A space-separated list of lag features to create (e.g., --lags 1 2 8 24). Uses function default if not provided.')
-
-    parser.add_argument('--windows', type=int, nargs='+',
-                        default=None,
-                        help='A space-separated list of window sizes for moving averages (e.g., --windows 3 6 12). Uses function default if not provided.')
-    parser.add_argument('--shift-amount', type=int,
-                        default=1,
-                        help='The shift amount for moving average features. Default is 1.')
-
-    parser.add_argument('--forecast_horizon', type=int,
-                        default=1,
-                        help='The forecast horizon in hours. Default is 1.')
-    
-    parser.add_argument('--target_prediction_type', type=str,
-                        choices=['absolute', 'delta'],
-                        default="absolute",
-                        help='Whether to predict the actual target (absolute, default) or the change (delta)')
-
+    """    
     parser.add_argument('--early_stopping_rounds', type=int, 
                         default=10, 
                         help='The number of early stopping rounds')

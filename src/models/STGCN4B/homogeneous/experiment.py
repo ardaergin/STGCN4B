@@ -10,11 +10,11 @@ from torch.utils.data import DataLoader
 import optuna
 from optuna.pruners import MedianPruner
 
-from ....utils.filename_util import get_data_filename
-from ....utils.block_split import StratifiedBlockSplitter
 from ....utils.train_utils import ResultHandler
-from .graph_loader import load_data
-from .processor import STGCNDataProcessor
+from ....preparation.split import StratifiedBlockSplitter
+from ....preparation.preparer import STGCNDataPreparer
+from .normalizer import STGCNNormalizer
+from .graph_loader import get_data_loaders
 from .train import setup_model, train_model, evaluate_model, find_optimal_threshold
 
 # Set up the main logging
@@ -31,20 +31,8 @@ optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 class STGCNExperimentRunner:
     """
-    Orchestrates a single machine learning experiment.
-
-    This class is designed to be executed as a self-contained unit, often as
-    part of a larger parallel execution framework (e.g., a Slurm job array)
-    where multiple experiments are run with different seeds to assess model
-    robustness.
-
-    A single run of this class performs the following steps:
-    1. Creates a unique train-test split based on a given seed.
-    2. Runs hyperparameter optimization on the training set using k-fold
-       cross-validation with Optuna.
-    3. Retrains a final model on the full training set using the best-found
-       hyperparameters.
-    4. Evaluates the final model on the hold-out test set and saves all results.
+    Orchestrates a machine learning experiment for a STGCN model, designed
+    to be run in parallel for different random seeds.
     """
 
     def __init__(self, args: Any):
@@ -54,10 +42,10 @@ class STGCNExperimentRunner:
         Args:
             args: A configuration object (e.g., from argparse) containing all
                   necessary parameters. It must include:
-                  - `split_id`: A unique integer for this experiment run, used for seeding.
-                  - `n_experiments`: The total number of parallel experiments being run.
-                  - `seed`: A base random seed.
-                  - `n_optuna_trials`: The number of HPO trials to run.
+                    - `split_id`: A unique integer for this experiment run, used for seeding.
+                    - `n_experiments`: The total number of parallel experiments being run.
+                    - `seed`: A base random seed.
+                    - `n_optuna_trials`: The number of HPO trials to run.
         """
         self.args = args
 
@@ -77,94 +65,35 @@ class STGCNExperimentRunner:
         self.cv_records: List[Dict[str, Any]] = []
         self.test_records: List[Dict[str, Any]] = []
 
-        # Pre-loading the main data file into memory
-        self.input_dict: Dict[str, Any] = {}
-        self.load_data_file()
-
         # Set up the specific output directory for this run's artifacts
         self.output_dir = args.output_dir
         logger.info(f"Experiment outputs will be saved in: {self.output_dir}")
 
-    def load_data_file(self):
+        # The preparer returns everything we need for the experiment
+        logger.info("Handling data preparation...")
+        data_preparer = STGCNDataPreparer(args)
+        self.input_dict = data_preparer.get_input_dict()
+    
+    def _normalize_data_and_get_dataloaders(
+            self, args,
+            train_block_ids: List[int], val_block_ids: List[int], test_block_ids: List[int],
+            splitter: StratifiedBlockSplitter
+            )-> Tuple[Dict, STGCNNormalizer]:
         """
-        Loads the pre-computed NumPy arrays and other metadata.
-        This is the one-time disk I/O.
-        """
-        args = self.args
-
-        # Deriving file name from arguments
-        fname = get_data_filename(self.args)
-        self.data_filename = fname
-        path = os.path.join(args.data_dir, "processed", fname)
+        Handles data normalization for a given fold using the fast NumPy workflow.
         
-        # Loading the file
-        logger.info(f"Loading pre-computed NumPy input from {path}")
-        numpy_input = torch.load(path)
-
-        # Determine device
-        device = torch.device("cuda" if args.enable_cuda and torch.cuda.is_available() else "cpu")
-
-        # Convert graph structures to tensors centrally upon loading
-        adj_matrix_tensor = torch.from_numpy(numpy_input["adjacency_matrix"]).float().to(device)
-        masked_adj_dict_tensor = {
-            k: torch.from_numpy(v).float().to(device)
-            for k, v in numpy_input["masked_adjacencies"].items()
-            }
-
-        # Creatign the input dict
-        self.input_dict = {
-            "device": device,
-            
-            # Data indices in block format
-            "blocks": numpy_input["blocks"],
-            "block_size": numpy_input["block_size"],
-            
-            # Main data as NumPy arrays
-            "feature_array": numpy_input["feature_array"], # Shape (T, R, F)
-            "feature_names": numpy_input["feature_names"],
-            "n_features": numpy_input["n_features"],
-
-            # Graph structure
-            "room_uris": numpy_input["room_uris"],
-            "n_nodes": len(numpy_input["room_uris"]),
-
-            # Adjacency
-            "adjacency_matrix": adj_matrix_tensor,
-            "masked_adjacencies": masked_adj_dict_tensor,
-
-            # Masks
-            "target_mask": numpy_input.get("target_mask", None)
-        }
-        if args.task_type == "workhour_classification":
-            self.input_dict["targets"] = numpy_input["workhour_labels"]
-        elif args.task_type == "consumption_forecast":
-            self.input_dict["targets"] = numpy_input["consumption_values"]
-        elif args.task_type == "measurement_forecast":
-            target_name = f"{self.args.measurement_variable}_values"
-            self.input_dict["targets"] = numpy_input[target_name]
-        else:
-            raise ValueError(f"Unknown task type: {args.task_type}")
-
-        logger.info("NumPy data loaded and ready for processing.")
-
-    def _process_and_load_data(self, args,
-                            train_block_ids: List[int], val_block_ids: List[int], test_block_ids: List[int],
-                            splitter: StratifiedBlockSplitter
-                            )-> Tuple[Dict, STGCNDataProcessor, torch.Tensor]:
-        """
-        Handles all data processing for a given fold using the fast NumPy workflow.
-        Returns the final data loaders and the fitted processor.
+        Returns the final data loaders and the fitted normalizer.
         """
         device = self.input_dict['device']
         
         # --- 1. Get train indices and slice arrays to fit the processor ---
         train_indices = splitter._get_indices_from_blocks(train_block_ids)
         train_feature_slice = self.input_dict["feature_array"][train_indices]
-        train_target_slice = self.input_dict["targets"][train_indices]
+        train_target_slice = self.input_dict["target_array"][train_indices]
         train_mask_slice = self.input_dict["target_mask"][train_indices] if self.input_dict["target_mask"] is not None else None
 
         # --- 2. Fit processor, transform full arrays, and impute ---
-        processor = STGCNDataProcessor()
+        processor = STGCNNormalizer()
 
         ##### X #####
         processor.fit_features(
@@ -182,14 +111,14 @@ class STGCNExperimentRunner:
 
         ##### y #####
         if self.args.task_type == "workhour_classification":
-            targets_numpy = self.input_dict["targets"]
+            targets_numpy = self.input_dict["target_array"]
         else: # Forecasting tasks
             processor.fit_target(
                 train_targets=train_target_slice, 
                 train_mask=train_mask_slice,
                 method='median'
                 )
-            targets_numpy = processor.transform_target(targets=self.input_dict["targets"])
+            targets_numpy = processor.transform_target(targets=self.input_dict["target_array"])
 
         # NOTE: For measurement forecast task, we impute to target
         #       This is fine, since we will mask these imputations later
@@ -207,20 +136,35 @@ class STGCNExperimentRunner:
         else: # workhour_classification, consumption_forecast
             final_mask = torch.ones_like(final_targets)
         
+        # Handle reconstruction tensor for delta forecasting
+        # NOTE: These tensors are NOT normalized. They are kept in their original scale for reconstruction.
+        if self.args.prediction_type == "delta":
+            reconstruction_tensor_t = torch.from_numpy(self.input_dict["reconstruction_array_t"]).float().to(device)
+            reconstruction_tensor_t_h = torch.from_numpy(self.input_dict["reconstruction_array_t_h"]).float().to(device)
+        else:
+            # If not in delta mode, create a dummy tensors of zeros with the same shape as targets.
+            # This simplifies the data loader's interface.
+            reconstruction_tensor_t = torch.zeros_like(final_targets)
+            reconstruction_tensor_t_h = torch.zeros_like(final_targets)
+        
         # --- 5. Get DataLoaders ---
-        loaders = load_data(
+        max_target_offset = max(self.args.forecast_horizons) if self.args.task_type != "workhour_classification" else 1
+        loaders = get_data_loaders(
             args,
             blocks=self.input_dict["blocks"],
             block_size=self.input_dict["block_size"],
             feature_tensor=norm_feature_tensor,
-            targets=final_targets,
+            target_tensor=final_targets,
             target_mask=final_mask,
+            reconstruction_tensor_t=reconstruction_tensor_t,
+            reconstruction_tensor_t_h=reconstruction_tensor_t_h,
+            max_target_offset=max_target_offset,
             train_block_ids=train_block_ids,
             val_block_ids=val_block_ids,
             test_block_ids=test_block_ids
         )
         return loaders, processor
-
+    
     def run_experiment(self):
         """
         Executes the full pipeline for a single experiment instance.
@@ -363,7 +307,7 @@ class STGCNExperimentRunner:
             logger.info(f">>> [Trial {trial.number}] Starting CV Fold {fold_num + 1}/{splitter.n_splits} <<<")
 
             # Load data for the current fold, combine loaders with other necessary data for setup_model
-            loaders, processor = self._process_and_load_data(trial_args, train_ids, val_ids, test_block_ids=[], splitter=splitter)
+            loaders, processor = self._normalize_data_and_get_dataloaders(trial_args, train_ids, val_ids, test_block_ids=[], splitter=splitter)
             data_for_setup = {**self.input_dict, **loaders}
 
             epoch_offset = fold_num * trial_args.epochs
@@ -436,7 +380,7 @@ class STGCNExperimentRunner:
         for key, value in best_params.items():
             setattr(final_args, key, value)
         
-        loaders, processor = self._process_and_load_data(final_args, train_ids, val_block_ids=[], test_block_ids=test_ids, splitter=splitter)
+        loaders, processor = self._normalize_data_and_get_dataloaders(final_args, train_ids, val_block_ids=[], test_block_ids=test_ids, splitter=splitter)
         data_for_setup = {**self.input_dict, **loaders}
         
         model, criterion, optimizer, scheduler, _ = setup_model(final_args, data_for_setup)
@@ -450,7 +394,7 @@ class STGCNExperimentRunner:
                               model: torch.nn.Module, 
                               test_loader: DataLoader, 
                               best_trial: optuna.trial.FrozenTrial,
-                              processor: STGCNDataProcessor):
+                              processor: STGCNNormalizer):
         """Evaluates the final, retrained model on the hold-out test set."""
         if self.args.task_type == "workhour_classification":
             # Retrieve the optimal threshold found during CV for the best trial.

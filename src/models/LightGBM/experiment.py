@@ -1,5 +1,4 @@
 import os
-import joblib
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Tuple
@@ -25,8 +24,9 @@ from sklearn.metrics import (
     r2_score)
 
 from ...utils.filename_util import get_data_filename
-from ...utils.block_split import StratifiedBlockSplitter
 from ...utils.train_utils import ResultHandler
+from ...preparation.split import StratifiedBlockSplitter
+from ...preparation.preparer import LGBMDataPreparer
 from .model import LGBMWrapper
 
 # Set up the main logging
@@ -43,7 +43,19 @@ class LGBMExperimentRunner:
     Orchestrates a machine learning experiment for a LightGBM model, designed
     to be run in parallel for different random seeds.
     """
+    
     def __init__(self, args: Any):
+        """
+        Initializes the LGBMExperimentRunner for a single experiment instance.
+
+        Args:
+            args: A configuration object (e.g., from argparse) containing all
+                  necessary parameters. It must include:
+                    - `split_id`: A unique integer for this experiment run, used for seeding.
+                    - `n_experiments`: The total number of parallel experiments being run.
+                    - `seed`: A base random seed.
+                    - `n_optuna_trials`: The number of HPO trials to run.
+        """
         self.args = args
 
         # A unique ID for this specific experiment run (e.g., from SLURM_ARRAY_TASK_ID)
@@ -57,91 +69,51 @@ class LGBMExperimentRunner:
             "n_warmup_steps": args.n_warmup_steps,
             "interval_steps": args.interval_steps
         }
-
+        
         # Central lists to store all detailed records
         self.cv_records: List[Dict[str, Any]] = []
         self.test_records: List[Dict[str, Any]] = []
-
-        # Pre-loading the main data file into memory
-        self.input_dict: Dict[str, Any] = {}
-        self.load_data_file()
 
         # Set up the specific output directory for this run's artifacts
         self.output_dir = args.output_dir
         logger.info(f"Experiment outputs will be saved in: {self.output_dir}")
 
-    def load_data_file(self):
-        """Loads the pre-computed tabular DataFrame and metadata."""
-        fname = get_data_filename(self.args)
-        path = os.path.join(self.args.data_dir, "processed", fname)
-        
-        logger.info(f"Loading pre-computed tabular input from {path}")
-        self.input_dict = joblib.load(path)
-        logger.info(f"Loaded DataFrame with shape: {self.input_dict['df'].shape}")
+        # The preparer returns everything we need for the experiment
+        logger.info("Handling data preparation...")
+        data_preparer = LGBMDataPreparer(args)
+        self.input_dict = data_preparer.get_input_dict()
+        self.delta_to_absolute_map = self.input_dict.get("delta_to_absolute_map", {})
 
-        self.input_dict['df'] = self.reduce_mem_usage(self.input_dict['df'])
-
-    @staticmethod
-    def reduce_mem_usage(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
-        """
-        Iterate through all the columns of a dataframe and modify the data type
-        to reduce memory usage.
-        """
-        start_mem = df.memory_usage().sum() / 1024**2
-        if verbose:
-            logger.info(f"Memory usage of dataframe is {start_mem:.2f} MB")
-
-        for col in df.columns:
-            col_type = df[col].dtype
-
-            if col_type != object and col_type.name != 'category' and 'datetime' not in col_type.name:
-                c_min = df[col].min()
-                c_max = df[col].max()
-                if str(col_type)[:3] == "int":
-                    if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max:
-                        df[col] = df[col].astype(np.int8)
-                    elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max:
-                        df[col] = df[col].astype(np.int16)
-                    elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max:
-                        df[col] = df[col].astype(np.int32)
-                    elif c_min > np.iinfo(np.int64).min and c_max < np.iinfo(np.int64).max:
-                        df[col] = df[col].astype(np.int64)
-                else:
-                    if c_min > np.finfo(np.float32).min and c_max < np.finfo(np.float32).max:
-                        df[col] = df[col].astype(np.float32)
-                    else:
-                        df[col] = df[col].astype(np.float64)
-
-        end_mem = df.memory_usage().sum() / 1024**2
-        if verbose:
-            logger.info(f"Memory usage after optimization is: {end_mem:.2f} MB")
-            logger.info(f"Decreased by {(start_mem - end_mem) / start_mem * 100:.1f}%")
-
-        return df
-
-    def _get_split_data(self, df, block_ids, blocks):
-        """Helper to filter the main DataFrame based on block IDs."""
+    def _get_split_data(self, block_ids: List[int]) -> Tuple[pd.DataFrame, pd.Series]:
+        """Helper to filter the final DataFrame based on block IDs."""
         indices = []
+        blocks = self.input_dict['blocks']
         for block_id in block_ids:
             indices.extend(blocks[block_id]['bucket_indices'])
         
         # Filter based on the 'bucket_idx'
-        split_df = df[df['bucket_idx'].isin(indices)].copy()
+        split_df = self.input_dict['df'][self.input_dict['df']['bucket_idx'].isin(indices)].copy()
         
-        # Define features (X) and target (y)
-        target_col = self.input_dict['target_col_name']
-        
-        # Drop identifiers and the target column
-        # NOTE: For measurement_forecast, 'room_uri' is a feature!
-        id_cols = ['bucket_idx']
-        if self.args.task_type != "measurement_forecast" and 'room_uri' in split_df.columns:
-            id_cols.append('room_uri')
+        # Get target (y)
+        target_colnames = self.input_dict['target_colnames']
+        if len(target_colnames) != 1:
+            raise ValueError(f"This script is intended for a single target, but found {len(target_colnames)}: {target_colnames}")
+        target_col_name = target_colnames[0]
+        y = split_df[target_col_name]
 
-        y = split_df[target_col]
-        X = split_df.drop(columns=[target_col] + id_cols)
+        # Delta forecasting logic
+        reconstruction_df = None
+        if self.args.prediction_type == "delta":
+            reconstruction_t_df = split_df[self.input_dict["source_col"]].copy()
+            reconstruction_t_h_df = split_df[self.input_dict["delta_colnames"]].copy()
         
-        return X, y
-
+        # Get features (X)
+        cols_to_drop = ['bucket_idx'] + target_colnames + self.input_dict["delta_colnames"]
+        cols_to_drop = [col for col in cols_to_drop if col in split_df.columns]
+        X = split_df.drop(columns=cols_to_drop)
+        
+        return X, y, reconstruction_t_df, reconstruction_t_h_df
+        
     def run_experiment(self):
         """Executes the full pipeline for a single experiment instance."""
         logger.info(f"===== Starting LGBM Experiment [{self.experiment_id+1}/{self.args.n_experiments}] | Seed: {self.seed} =====")
@@ -223,8 +195,8 @@ class LGBMExperimentRunner:
         fold_best_iterations = []
         fold_optimal_thresholds = []
         for fold_num, (train_ids, val_ids) in enumerate(splitter.split()):
-            X_train, y_train = self._get_split_data(self.input_dict['df'], train_ids, self.input_dict['blocks'])
-            X_val, y_val = self._get_split_data(self.input_dict['df'], val_ids, self.input_dict['blocks'])
+            X_train, y_train, _, _ = self._get_split_data(block_ids=train_ids)
+            X_val, y_val, _, _ = self._get_split_data(block_ids=val_ids)
 
             model = LGBMWrapper(**params)
             model.fit(X_train, y_train, eval_set=[(X_val, y_val)], use_early_stopping=True, verbose=True)
@@ -263,8 +235,8 @@ class LGBMExperimentRunner:
         train_ids = splitter.train_block_ids
         test_ids = splitter.test_block_ids
 
-        X_train, y_train = self._get_split_data(self.input_dict['df'], train_ids, self.input_dict['blocks'])
-        X_test, y_test = self._get_split_data(self.input_dict['df'], test_ids, self.input_dict['blocks'])
+        X_train, y_train, reconstruction_t_df, reconstruction_t_h_df = self._get_split_data(block_ids=train_ids)
+        X_test, y_test, reconstruction_t_df, reconstruction_t_h_df = self._get_split_data(block_ids=test_ids)
 
         # --- Determine the optimal n_estimators from the HPO study ---
         avg_iter_from_cv = best_trial.user_attrs.get("average_best_iteration")
@@ -335,21 +307,33 @@ class LGBMExperimentRunner:
         else: # Forecasting
             preds = final_model.predict(X_test)
             
-            test_loss_mse = mean_squared_error(y_test, preds)
+            if self.args.prediction_type == "delta":
+                logger.info("Reconstructing absolute values from delta predictions for evaluation...")
+                # The final absolute prediction is the base value + the predicted delta
+                preds_final = reconstruction_t_df.values + preds
+                
+                # The final absolute target is the base value + the true delta
+                targets_final = reconstruction_t_h_df.values
+
+            else:
+                # If not in delta mode, preds and targets are already absolute
+                preds_final = preds
+                targets_final = y_test.values
+
+            test_loss_mse = mean_squared_error(targets_final, preds_final)
 
             # Safely calculate MAPE, avoiding division by zero
-            y_test_np = y_test.values # Ensure it's a numpy array for boolean indexing
-            mape_mask = y_test_np != 0
+            mape_mask = targets_final != 0
             if np.sum(mape_mask) > 0:
-                mape = np.mean(np.abs((y_test_np[mape_mask] - preds[mape_mask]) / y_test_np[mape_mask])) * 100
+                mape = np.mean(np.abs((targets_final[mape_mask] - preds_final[mape_mask]) / targets_final[mape_mask])) * 100
             else:
-                mape = 0.0 # Assign 0 if all target values are zero
+                mape = 0.0
 
             # Calculating other metrics
-            mse = mean_squared_error(y_test, preds)
+            mse = mean_squared_error(targets_final, preds_final)
             rmse = np.sqrt(mse)
-            mae = mean_absolute_error(y_test, preds)
-            r2 = r2_score(y_test, preds)
+            mae = mean_absolute_error(targets_final, preds_final)
+            r2 = r2_score(targets_final, preds_final)
 
             metrics = {
                 'test_loss': test_loss_mse,
@@ -358,8 +342,8 @@ class LGBMExperimentRunner:
                 'mae': mae,
                 'r2': r2,
                 'mape': mape,
-                'predictions': preds,
-                'targets': y_test.values
+                'predictions': preds_final,
+                'targets': targets_final
             }
         
         return final_model, metrics, history

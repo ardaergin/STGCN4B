@@ -1,21 +1,14 @@
+import os 
 import numpy as np
 from datetime import datetime
 import pandas as pd
 import logging
 
-# Logging setup
-import logging, sys
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
+import logging
 logger = logging.getLogger(__name__)
 
 
 class TemporalBuilderMixin:
-    from ..officegraph import OfficeGraph
-    office_graph: OfficeGraph
 
     def initialize_time_parameters(self, 
                                   start_time: str = "2022-03-07 00:00:00", # Monday
@@ -99,7 +92,7 @@ class TemporalBuilderMixin:
         self.blocks = {}
         for block_id, bucket_list in enumerate(initial_blocks):
             self.blocks[block_id] = {
-                "bucket_indices": list(bucket_list) # Use a copy
+                "bucket_indices": list(bucket_list)
             }
         
         return None
@@ -120,7 +113,9 @@ class TemporalBuilderMixin:
 
         Returns:
             Dict[bucket_idx → {feature_name: value}].
-        """
+        """        
+        logger.info("Loading and processing weather data...")
+
         from ...data.Weather.weather import (
             load_weather_csv,
             get_weather_data_for_time_buckets
@@ -158,27 +153,30 @@ class TemporalBuilderMixin:
                 raise ValueError("`weather_code` column not found in weather_df, "
                                  "but add_weather_code_onehot_features is True.")
         else:
-            weather_df.drop(columns=["weather_code"], inplace=True)
-
+            if "weather_code" in weather_df:
+                weather_df.drop(columns=["weather_code"], inplace=True)
+        
         self.weather_features_ = weather_df
         self.weather_data_dict = weather_df.to_dict(orient="index")
         return None
-
+    
     #############################
     # Task-Specific (Target) Data
     #############################
     
-    def get_workhour_labels(self, country_code: str = 'NL') -> None:
+    def get_workhour_labels(self, country_code: str = 'NL', save: bool = True) -> None:
         """
         Generate work hour classification labels for each time bucket.
         
         Args:
             country_code: Country code for holidays
-            
+            save: whether to save the np.array to disk.
+
         Returns:
             Binary labels for each time bucket (1 for work hour, 0 for non-work hour), as np.ndarray.
         """
-        # Check if time buckets are available
+        logger.info("Generating work hour classification labels...")
+
         if not self.time_buckets:
             raise ValueError("Time buckets not initialized. Call initialize_time_parameters first.")
         
@@ -193,31 +191,46 @@ class TemporalBuilderMixin:
         # Classify time buckets
         labels_list = work_hour_classifier.classify_time_buckets(self.time_buckets)
         
-        # Convert to numpy array
+        # Convert to numpy array (legacy)
         labels = np.array(labels_list, dtype=int)
         self.workhour_labels = labels
-
+        
         logger.info(f"Generated {len(labels)} classification labels")
         logger.info(f"Work hours: {labels.sum()} ({labels.sum()/len(labels):.1%} of time buckets)")
         logger.info("Workhour labels are saved as an array to 'self.workhour_labels'.")
-
+        
+        # Create a DataFrame with bucket indices and labels
+        self.workhour_labels_df = pd.DataFrame({
+            'bucket_idx': range(len(labels_list)),
+            'target_workhour': labels_list
+        })
+        
+        if save:
+            file_name = f'target_workhour_{self.interval}.parquet'
+            file_full_path = os.path.join(self.processed_data_dir, file_name)
+            
+            logger.info(f"Saving workhour labels DataFrame to: {file_full_path}")
+            self.workhour_labels_df.to_parquet(file_full_path, index=False)
+        
         return None
     
-    def get_consumption_values(self, consumption_dir: str = "data/consumption") -> None:
+    def get_consumption_values(self, consumption_dir: str = "data/consumption", save: bool = True) -> None:
         """
         Load and aggregate consumption data for forecasting.
 
         Args:
             consumption_dir: Directory containing consumption data files
+            save: whether to save the np.array to disk.
 
         Returns:
             NumPy array of consumption values, one per time bucket.
         """        
-        # 1) load and aggregate exactly as before
+        logger.info("Loading and processing consumption data...")
         from ...data.TimeSeries.consumption import (
             load_consumption_files,
             aggregate_consumption_to_time_buckets
         )
+        # 1) load and aggregate
         consumption_data = load_consumption_files(
             consumption_dir,
             self.start_time,
@@ -230,19 +243,32 @@ class TemporalBuilderMixin:
         )
         # now bucket_consumption: { idx: raw_value }
 
-        # 2) Convert to array format
+        # 2) Convert to array format and store (legacy)
         T = len(self.time_buckets)
         consumption_array = np.array([bucket_consumption[i] for i in range(T)], dtype=float).reshape(-1, 1)
         final_consumption_array = consumption_array.flatten() # Ensure 1D
-
-        # 3) Store as a class attribute (as an array)
         self.consumption_values = final_consumption_array
         logger.info("Consumption values are saved as an array to 'self.consumption_values'.")
 
+        # 3) Convert dictionary to a DataFrame
+        # This creates a DataFrame from the dictionary's items with named columns.
+        consumption_df = pd.DataFrame(
+            bucket_consumption.items(), 
+            columns=['bucket_idx', 'consumption']
+        )
+        self.consumption_df = consumption_df
+        logger.info("Consumption values are saved as a DataFrame to 'self.consumption_df'.")
+
+        if save:
+            file_name = f'target_consumption_{self.interval}.parquet'
+            file_full_path = os.path.join(self.processed_data_dir, file_name)
+            logger.info(f"Saving consumption DataFrame to: {file_full_path}")
+            self.consumption_df.to_parquet(file_full_path, index=False)
+        
         return None
     
-    
 
+    
     ##############################
     # Device-level DataFrame
     ##############################
@@ -499,7 +525,7 @@ class TemporalBuilderMixin:
         
         return None
     
-    def expand_room_level_df(self) -> None:
+    def build_expanded_room_level_df(self) -> None:
         """
         Helper function to take the DataFrame of measured rooms and expand
         it to include all rooms defined in the graph, filling missing ones with NaNs.
@@ -508,6 +534,7 @@ class TemporalBuilderMixin:
         """
         if not hasattr(self, "room_level_df"):
             raise ValueError("Run build_room_level_df() first.")
+        df = self.room_level_df.copy()
 
         logger.info("Expanding feature DataFrame to include all graph nodes for STGCN...")
 
@@ -525,7 +552,7 @@ class TemporalBuilderMixin:
         
         # 3. Re-index the existing DataFrame to this full grid
         expanded_df = (
-            self.room_level_df
+            df
             .set_index(["room_URIRef", "bucket_idx"])   # make these two levels the index
             .reindex(full_grid_index)                   # add missing (room, bucket) pairs
             .reset_index()                              # restore columns 'room_URIRef' & 'bucket_idx'
@@ -549,7 +576,7 @@ class TemporalBuilderMixin:
                 expanded_df[n_active_col] = expanded_df[n_active_col].fillna(0.0)
 
         # 5. Update the class attribute
-        self.room_level_df = expanded_df
+        self.room_level_df_expanded = expanded_df
 
         n_rows, n_cols = expanded_df.shape
         logger.info(f"DataFrame expanded. New shape: {n_rows} rows, {n_cols} columns.")
@@ -558,20 +585,21 @@ class TemporalBuilderMixin:
         
         return None
 
-    def add_static_room_features(self) -> None:
+    def add_static_room_features_to_df(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Enriches the room_level_df with static attributes for each room.
+        Enriches the df with static attributes for each room.
 
         This method creates a DataFrame of static room properties. 
         It then merges this static data into the main `room_level_df` based on the room's URI.
 
-        This function can be called on either the original or the expanded room_level_df DataFrame.
+        Args:
+            df: either the original or the expanded room_level_df DataFrame.
         """
-        if not hasattr(self, 'room_level_df'):
-            raise ValueError("`room_level_df` not found. Build it first.")
-        
-        logger.info(f"Adding {len(self.static_room_attributes)} static room features...")
+        if not hasattr(self, "norm_areas_minmax") or not hasattr(self, "norm_areas_prop"):
+            raise KeyError("norm_areas_minmax or norm_areas_prop not found. Run normalize_room_areas() first.")
 
+        logger.info(f"Adding {len(self.static_room_attributes)} static room features...")
+        
         # 1. Create a list of dictionaries, one for each room in your graph.
         room_data = []
         for room_URIRef, room_obj in self.office_graph.rooms.items():
@@ -608,30 +636,26 @@ class TemporalBuilderMixin:
         if not room_data:
             logger.warning("Could not gather any static room data.")
             return None
-
+        
         # 2. Convert the list of dicts into a clean DataFrame.
         static_features_df = pd.DataFrame(room_data)
 
-        # 3. Merge this static data into the main feature DataFrame.
-        self.room_level_df = pd.merge(
-            self.room_level_df,
-            static_features_df,
-            on='room_URIRef',
-            how='left'  # Use a left merge to keep all rows from the original df.
-        )
-
+        # 3. Merge this static data into the main DataFrame
+        merged_df = pd.merge(df.copy(), static_features_df,
+                             on='room_URIRef', how='left')
+        
         # 4. Ensuring features are correctly categorical
         categorical_static_cols = [
             col for col in ['room_URIRef', 'isProperRoom', 
                             'hasWindows', 'has_multiple_windows']
-            if col in self.room_level_df.columns]
+            if col in merged_df.columns]
         if categorical_static_cols:
-            self.room_level_df[categorical_static_cols] = (
-                self.room_level_df[categorical_static_cols].astype('category'))
-
-        logger.info("Successfully merged static room features.")
-
-        return None
+            merged_df[categorical_static_cols] = (
+                merged_df[categorical_static_cols].astype('category'))
+        
+        logger.info("Successfully merged static room features. Returning the DataFrame.")
+        
+        return merged_df
 
 
 

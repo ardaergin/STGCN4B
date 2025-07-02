@@ -1,17 +1,10 @@
 import os
+import joblib
+import pandas as pd
 
+from ..officegraph import OfficeGraph
 from ...utils.missingness_plot import plot_missing_values
-
-# Logging setup
-import logging, sys
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger(__name__)
-
-# Importing mixin classes
+# Importing mixin classes:
 from .temporal import TemporalBuilderMixin
 from .temporal_viz import TemporalVisualizerMixin
 from .spatial import SpatialBuilderMixin
@@ -20,6 +13,14 @@ from .homo_graph import HomogGraphBuilderMixin
 # from .hetero_graph import HeteroGraphBuilderMixin
 from .tabular import TabularBuilderMixin
 from ...utils.filename_util import get_data_filename
+
+# Main logging setup
+import logging, sys
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)])
+logger = logging.getLogger(__name__)
 
 
 class OfficeGraphBuilder(
@@ -36,13 +37,19 @@ class OfficeGraphBuilder(
     including spatial relationships and temporal features.
     """
     
-    def __init__(self, office_graph):
+    def __init__(self, 
+                 office_graph: OfficeGraph,
+                 processed_data_dir: str = "data/processed",
+                 plots_dir: str = "output/visualizations"):
         self.office_graph = office_graph
         
+        # Room info
         self.room_uris = list(self.office_graph.rooms.keys())
-        self.room_names = {}
-        for room_uri in self.room_uris:
-            self.room_names[room_uri] = self.office_graph.rooms[room_uri].room_number
+        self.room_names = {
+            uri: self.office_graph.rooms[uri].room_number 
+            for uri in self.room_uris
+        }
+        self.adjacencies = {}
         
         # Property configuration
         self.ignored_property_types = {
@@ -56,75 +63,32 @@ class OfficeGraphBuilder(
                                        'window_direction_sin', 'window_direction_cos', 
                                        'isProperRoom', 'norm_areas_minmax']
         
-    def set_build_mode(self, mode: str, measurement_variable=None, measurement_variable_stat=None):
-        """
-        Options for 'mode':
-            - "workhour_classification"
-            - "consumption_forecast"
-            - "measurement_forecast"
-        """
-        valid_options = ["workhour_classification", "consumption_forecast", "measurement_forecast"]
-        if mode not in valid_options:
-            raise ValueError(f"Invalid build mode '{mode}'. Valid options are: {valid_options}")
-        else:
-            self.build_mode = mode
+        # Save directories
+        self.processed_data_dir = processed_data_dir
+        os.makedirs(self.processed_data_dir, exist_ok=True)
+        self.plots_dir = plots_dir
+        os.makedirs(self.plots_dir, exist_ok=True)
+        self.missing_plots_dir = os.path.join(self.plots_dir, "missingness_plots")
+        os.makedirs(self.missing_plots_dir, exist_ok=True)
         
-        # Measurement forecast task checks & setup
-        if mode == "measurement_forecast" and measurement_variable is None:
-            raise ValueError("measurement_variable must be specified for 'measurement_forecast' mode.")
-        if mode == "measurement_forecast" and measurement_variable_stat is None:
-            raise ValueError("measurement_stat must be specified for 'measurement_forecast' mode.")
-        
-        valid_measurement_variables = ["Temperature", "CO2Level", "Humidity"]
-        if mode == "measurement_forecast" and measurement_variable not in valid_measurement_variables:
-            raise ValueError(f"Invalid measurement variable '{measurement_variable}'. Valid options are: {valid_measurement_variables}")
+        # Plot_suffix for missingness plots
+        if self.office_graph.floors_to_load == [7]:
+            self.plot_suffix = "(floor 7)"
         else:
-            self.measurement_variable = measurement_variable
-            self.measurement_variable_stat = measurement_variable_stat
+            self.plot_suffix = "(all floors)"
         
-        return None
+        logger.info(f"Builder initialized.")
 
-def main():
-    # Argument parser
-    from ...config.args import parse_args
-    args = parse_args()
-    
-    # Loading OfficeGraph data
-    from ..officegraph import OfficeGraph
-    office_graph = OfficeGraph.from_pickles(floors_to_load = args.floors, data_dir=args.data_dir)
-    
-    # Setting up the builder
-    builder = OfficeGraphBuilder(office_graph)
-    
-    # Setting build mode based on task type
-    builder.set_build_mode(
-        mode=args.task_type, 
-        measurement_variable=args.measurement_variable, 
-        measurement_variable_stat=args.measurement_variable_stat)
 
-    logger.info(f"Builder initialized with build mode '{builder.build_mode}'.")
+    #########################
+    # Pipelines
+    #########################
 
-    os.makedirs(args.processed_data_dir, exist_ok=True)
-    if args.make_and_save_plots:
-        os.makedirs(args.builder_plots_dir, exist_ok=True) # For plots
-
-        # Missingness plots path
-        missing_plots_dir = os.path.join(args.builder_plots_dir, "missingness_plots")
-        os.makedirs(missing_plots_dir, exist_ok=True)
-
-        # plot_suffix for missingness plots
-        if args.floors == [7]:
-            plot_suffix = "(floor 7)"
-        else:
-            plot_suffix = "(all floors)"
-
-    # ============================
-    # SPATIAL SETUP
-    # ============================
-    logger.info("Setting up spatial components...")
-
-    # Presets for static room attributes
-    static_attr_presets = {
+    def run_common_spatial_pipeline(self, args) -> None:
+        logger.info("========== Running the spatial pipeline... ==========")
+        
+        # Setting static attributes
+        static_attr_presets = {
         'minimal': ['isProperRoom', 'norm_areas_minmax'],
         'standard': ['hasWindows', 'has_multiple_windows', 'window_direction_sin', 'window_direction_cos', 
                     'isProperRoom', 'norm_areas_minmax'],
@@ -136,211 +100,228 @@ def main():
                 'polygons_doc.centroid',
                 'polygons_doc.width', 'polygons_doc.height',
                 'polygons_doc.compactness', 'polygons_doc.rect_fit', 'polygons_doc.aspect_ratio', 'polygons_doc.perimeter']
-    }
-    # Setting static room attributes based on preset
-    builder.static_room_attributes = static_attr_presets[args.static_attr_preset]
-
-    # Initialize room polygons
-    builder.initialize_room_polygons(
-        polygon_type=args.polygon_type,
-        simplify_polygons=args.simplify_polygons,
-        simplify_epsilon=args.simplify_epsilon
-    )
-    
-    # Normalize room areas
-    builder.normalize_room_areas()
-
-    if args.model_family == "graph":
-        # Build horizontal adjacency
-        builder.build_horizontal_adjacency(
-            mode=args.adjacency_type,
-            distance_threshold=args.distance_threshold
-        )
-
-        # Build vertical adjacency
-        builder.build_vertical_adjacency(
-            mode=args.adjacency_type,
-            min_overlap_area=0.05,
-            min_weight=0
-        )
+        }
+        # Setting static room attributes based on preset
+        self.static_room_attributes = static_attr_presets[args.static_attr_preset]
         
-        # Combined horizontal + vertical adjacency
-        builder.build_combined_room_to_room_adjacency()
-
-        # Calculate information propagation masks and apply them
-        logger.info("Building masked adjacency matrices for information propagation...")
-        builder.build_masked_adjacencies()
+        # Initialize room polygons
+        self.initialize_room_polygons(polygon_type=args.polygon_type,
+                                      simplify_polygons=args.simplify_polygons,
+                                      simplify_epsilon=args.simplify_epsilon)
+        # Normalize room areas
+        self.normalize_room_areas()
         
-        # Build outside adjacency
-        if not args.skip_incorporating_weather:
-            logger.info("Calculating outside adjacency...")
-            builder.build_outside_adjacency(mode=args.adjacency_type)
+        logger.info("========== Finished the spatial pipeline. ==========")
+        return None
+
     
-    # ============================
-    # TEMPORAL SETUP
-    # ============================
-    logger.info("Setting up temporal parameters...")
+    def run_temporal_pipeline(self, args):
+        logger.info("========== Running the temporal pipeline... ==========")
 
-    # Initialize time parameters
-    builder.initialize_time_parameters(
-        start_time=args.start_time,
-        end_time=args.end_time,
-        interval=args.interval,
-        use_sundays=args.use_sundays
-    )
-    # Split time buckets
-    builder.build_weekly_blocks()
+        # Time buckets & Weekly blocks setup
+        self.initialize_time_parameters(start_time=args.start_time, end_time=args.end_time,
+                                        interval=args.interval, use_sundays=args.use_sundays)
+        self.build_weekly_blocks()
 
-    # Get weather data
-    if not args.skip_incorporating_weather:
-        logger.info("Loading and processing weather data...")
-        builder.get_weather_data(weather_csv_path=args.weather_csv_path)
-    
-    # Targets
-    if builder.build_mode == "workhour_classification":
-        # Get classification labels
-        logger.info("Generating work hour classification labels...")
-        builder.get_workhour_labels(country_code=args.country_code)
-    elif builder.build_mode == "consumption_forecast":
-        # Get forecasting values
-        logger.info("Loading and processing consumption data...")
-        builder.get_consumption_values(consumption_dir=args.consumption_dir)
-    
-    # Building the device-level feature DataFrame
-    builder.build_device_level_df()
-
-    # Building the room-level feature DataFrame
-    builder.build_room_level_df()
-    
-    # Building the floor-level feature DataFrame    
-    builder.build_floor_level_df()
-
-    # Building the building-level feature DataFrame
-    builder.build_building_level_df()
-
-    # Missingness plots for all 4 of these DFs
-    if args.make_and_save_plots:
-        plot_missing_values(builder.device_level_df, df_name=f"Device-level DF {plot_suffix}",
-                            save=True, output_dir=missing_plots_dir)
-        plot_missing_values(builder.room_level_df, df_name=f"Room-level DF {plot_suffix}",
-                            save=True, output_dir=missing_plots_dir)
-        plot_missing_values(builder.floor_level_df, df_name=f"Floor-level DF {plot_suffix}",
-                            save=True, output_dir=missing_plots_dir)
-        plot_missing_values(builder.building_level_df, df_name=f"Building-level DF {plot_suffix}",
-                            save=True, output_dir=missing_plots_dir)
+        # Get weather data
+        if args.incorporate_weather:
+            self.get_weather_data(weather_csv_path=args.weather_csv_path)
         
-    # ============================
-    # DATA BUILDING
-    # ============================
-    
-    if args.model_family == "tabular":
-        if args.task_type == "measurement_forecast":
-            builder.add_static_room_features()
+        # Targets based on task
+        if not args.task_type == "workhour_classification":
+            self.get_workhour_labels(country_code=args.country_code, save=True)
+            self.get_consumption_values(consumption_dir=args.consumption_dir, save=True)
+        
+        # Building different level feature DataFrames
+        self.build_device_level_df()
+        self.build_room_level_df()
+        self.build_expanded_room_level_df()
+        self.build_floor_level_df()
+        self.build_building_level_df()
 
-        builder.build_tabular_df(
-            forecast_horizon=args.forecast_horizon,
-            lags=args.lags,
-            windows=args.windows,
-            shift_amount=args.shift_amount,
-            integrate_weather=not args.skip_incorporating_weather,
-            target_prediction_type=args.target_prediction_type
-        )
+        # Missingness plots for all 4 of these DFs
         if args.make_and_save_plots:
-            plot_missing_values(builder.tabular_feature_df, df_name=f"Tabular Feature DF {plot_suffix}",
-                                save=True, output_dir=missing_plots_dir)
-            plot_missing_values(builder.tabular_df, df_name=f"Tabular DF {plot_suffix}",
-                                save=True, output_dir=missing_plots_dir)
+            plot_missing_values(self.device_level_df, df_name=f"Device-level DF {self.plot_suffix}",
+                                save=True, output_dir=self.missing_plots_dir)
+            plot_missing_values(self.room_level_df, df_name=f"Room-level DF {self.plot_suffix}",
+                                save=True, output_dir=self.missing_plots_dir)
+            plot_missing_values(self.floor_level_df, df_name=f"Floor-level DF {self.plot_suffix}",
+                                save=True, output_dir=self.missing_plots_dir)
+            plot_missing_values(self.building_level_df, df_name=f"Building-level DF {self.plot_suffix}",
+                                save=True, output_dir=self.missing_plots_dir)
+        
+        logger.info("========== Finished the temporal pipeline. ==========")
+        return None
 
-        # Get file name via helper
-        fname = get_data_filename(args)
-        full_output_path = os.path.join(args.processed_data_dir, fname)
 
-        # Save
-        builder.save_tabular_df(output_path=full_output_path)
+    def run_tabular_pipeline(self, args, build_mode: str) -> pd.DataFrame:
+        logger.info("========== Running the tabular pipeline... ==========")
+        
+        self.build_base_tabular_df(build_mode=build_mode)
+        self.engineer_tabular_features(build_mode=build_mode,
+            lags=args.lags, windows=args.windows, shift_amount=args.shift_amount,
+            integrate_weather=args.incorporate_weather)
+        
+        if args.make_and_save_plots:
+            plot_missing_values(self.tabular_feature_df, df_name=f"Tabular Feature DF {self.plot_suffix}",
+                                save=True, output_dir=self.missing_plots_dir)
+        
+        logger.info("========== Finished the tabular pipeline. ==========")
+        return self.tabular_feature_df
 
-    elif args.model_family == "graph":
 
-        # Heterogeneous Graph Builder
-        if args.graph_type == "heterogeneous":
-            raise NotImplementedError("Not implemented yet.")
-            # builder.build_base_hetero_graph()
-            # builder.build_hetero_temporal_graphs()
+    def run_homograph_pipeline(self, args) -> pd.DataFrame:
+        logger.info("========== Running the homogenous graph pipeline... ==========")
 
-            # # Prepare torch input
-            # logger.info("Preparing heterogeneous STGCN input...")
-            # heterogeneous_stgcn_input = builder.prepare_hetero_stgcn_input()
-            # torch_tensors = builder.convert_hetero_to_torch_tensors(heterogeneous_stgcn_input)
+        for adjacency_type in ("binary", "weighted"):
+            self.build_horizontal_adjacency(mode=adjacency_type, 
+                                            distance_threshold=args.distance_threshold)
+            self.build_vertical_adjacency(mode=adjacency_type,
+                                        min_overlap_area=0.05, min_weight=0)
+            # Combine horizontal & vertical adjacency matrices
+            self.build_combined_room_to_room_adjacency()
 
-            # fname = get_data_filename(args)
-            # full_output_path = os.path.join("data/processed", fname)
-            # torch.save(torch_tensors, full_output_path)
-            # logger.info(f"Saved tensors to {full_output_path} with default parameters.")
-            # 
-            # # Save graph schema
-            # schema_path = os.path.join(args.output_dir, f"hetero_graph_schema_{args.interval}.txt")
-            # schema = builder.visualize_hetero_graph_schema(save_path=schema_path)
-            # logger.info("Saved heterogeneous graph schema")
-
-        # Homogeneous Graph Builder
-        elif args.graph_type == "homogeneous":
-            # Expanding the room_level_df by adding also the empty room-bucket combinations
-            builder.expand_room_level_df()
-
+            # Calculate information propagation masks and apply them
+            self.build_masked_adjacency_matrices()
+            
+            # Build outside adjacency
+            outside_vector = None
+            if args.incorporate_weather:
+                self.build_outside_adjacency(mode=adjacency_type)
+                outside_vector = getattr(self, "combined_outside_adj", None)
+            
             # Adding static attributes
-            builder.add_static_room_features()
+            final_df = self.add_static_room_features_to_df(df=self.room_level_df_expanded)
             if args.make_and_save_plots:
-                plot_missing_values(builder.room_level_df, df_name=f"Room-level DF, Extended {plot_suffix}",
-                                    save=True, output_dir=missing_plots_dir)
-                
-            ######################## DEBUG ########################
-            logger.info("######################## DEBUG ########################")
-            # 1. First, let's verify the column exists to avoid errors
-            if 'isProperRoom' in builder.room_level_df.columns:
-                
-                # 2. Create a boolean mask to find rows where 'isProperRoom' is NaN
-                nan_mask = builder.room_level_df['isProperRoom'].isnull()
-                
-                # 3. Select the 'room_URIRef' column from the filtered rows
-                problematic_rooms = builder.room_level_df.loc[nan_mask, 'room_URIRef']
-                
-                # 4. Get the unique room URIs (since a room appears in many time buckets)
-                unique_problematic_uris = problematic_rooms.unique()
-                
-                # 5. Display the result
-                if len(unique_problematic_uris) > 0:
-                    logger.info(f"Found {len(unique_problematic_uris)} room(s) where 'isProperRoom' is NaN:")
-                    for uri in unique_problematic_uris:
-                        logger.info(f"- {uri}")
-                else:
-                    logger.info("No rooms found where 'isProperRoom' is NaN.")
-                    
-            else:
-                logger.info("Column 'isProperRoom' not found in the DataFrame.")
-            logger.info("######################## DEBUG ########################")
-            ######################## DEBUG ########################
-
-            # Incorporate weather data as outside space if specified
-            if not args.skip_incorporating_weather:
+                plot_missing_values(final_df, df_name=f"Room-level DF, Expanded {self.plot_suffix}",
+                                    save=True, output_dir=self.missing_plots_dir)
+            
+            # Incorporate weather data as outside 'space' if specified
+            if args.incorporate_weather:
                 logger.info("Integrating outside node with weather data into homogeneous graph...")
-                builder.incorporate_weather_as_an_outside_room()
+                final_df = self.incorporate_weather_as_an_outside_room(room_level_df=final_df)
                 if args.make_and_save_plots:
-                    plot_missing_values(builder.room_level_df, df_name=f"Room-level DF, Extended with Weather {plot_suffix}",
-                        save=True, output_dir=missing_plots_dir)
+                    plot_missing_values(final_df, df_name=f"Room-level DF, Expanded, with Weather {self.plot_suffix}",
+                        save=True, output_dir=self.missing_plots_dir)
 
-            if builder.build_mode == "measurement_forecast":
-                builder.get_targets_and_mask_for_a_variable()
-            
-            # Feature matrices
-            logger.info("Generating feature arrays for homogeneous graph...")
-            builder.build_feature_array()
-            
-            # Get file name via helper
-            fname = get_data_filename(args)
-            full_output_path = os.path.join(args.processed_data_dir, fname)
+            # Saving the adjacency
+            self.adjacencies[adjacency_type] = {
+                "adjacency_matrix":             self.room_to_room_adj_matrix.copy(),
+                "masked_adjacency_matrices":    {k: v.copy() for k, v in self.masked_adjacency_matrices.items()},
+                "outside_adjacency_vector":     outside_vector.copy() if outside_vector is not None else None
+            }
+        
+        logger.info("========== Finished the homogenous graph pipeline. ==========")
+        return final_df
+    
+    
+    #########################
+    # Save Helpers
+    #########################
 
-            # Prepare numpy input
-            logger.info("Preparing homogeneous numpy input...")
-            builder.prepare_and_save_numpy_input(output_path=full_output_path)
+    def save_df_as_parquet(self, df: pd.DataFrame, file_name: str) -> None:
+        """Convenience helper to save DataFrames as parquet files."""
+        parquet_file_path = os.path.join(self.processed_data_dir, file_name)
+        df.to_parquet(parquet_file_path, engine='pyarrow')
+        logger.info(f"Successfully saved DataFrame to {parquet_file_path}")
+        return None
+    
+    def save_metadata(self, file_name: str) -> None:        
+        """Convenience helper to save current metadata in the Builder."""
+        metadata_file_path = os.path.join(self.processed_data_dir, file_name)
+
+        metadata = {
+            # Block info
+            "blocks": self.blocks,
+            "block_size": self.block_size,
+            "time_buckets": self.time_buckets,
+
+            # Graph structure (same across binary and weighted)
+            "room_URIRefs": self.adj_matrix_room_uris,
+            "n_nodes": len(self.adj_matrix_room_uris),
+            
+            # Adjacency
+            "binary_adjacency": self.adjacencies["binary"],
+            "weighted_adjacency": self.adjacencies["weighted"],
+        }
+        joblib.dump(metadata, metadata_file_path, compress=0)
+        logger.info(f"Saved all metadata to {metadata_file_path}")
+        return None
+
+
+def main():
+    """Main function to build both tabular and graph data in one go."""
+    from ...config.args import parse_args
+    args = parse_args()
+    
+    # Loading OfficeGraph data
+    from ..officegraph import OfficeGraph
+    office_graph = OfficeGraph.from_pickles(floors_to_load = args.floors, data_dir=args.data_dir)
+    
+    # Setting up the builder
+    builder = OfficeGraphBuilder(
+        office_graph=office_graph, 
+        processed_data_dir=args.processed_data_dir, 
+        plots_dir=args.builder_plots_dir)     
+    
+    # Spatial pipeline
+    builder.run_common_spatial_pipeline(args)
+
+    # Temporal pipeline
+    builder.run_temporal_pipeline(args)
+    
+    ### Creating DataFrames & Saving ###
+
+    # Workhour classification has just one floor, so, completely seperate interim data.
+    # There is always no weather for workhour_classification, and it is always interval="1h".
+    # For the other two, I can save them together in one go.
+    if args.task_type == "workhour_classification":
+        # Ensuring correct args for this task:
+        args.incorporate_weather = False
+        args.interval = "1h"
+
+        # Tabular
+        tabular_df = builder.run_tabular_pipeline(args=args, build_mode="workhour_classification")
+        fname_base = get_data_filename(
+            file_type="dataframe", task_type="workhour_classification",
+            model_family="tabular")
+        builder.save_df_as_parquet(tabular_df, file_name=f"{fname_base}.parquet")
+
+        # Homogeneous Graph
+        homograph_df = builder.run_homograph_pipeline(args=args)
+        fname_base = get_data_filename(
+            file_type="dataframe", task_type="workhour_classification",
+            model_family="graph")
+        builder.save_df_as_parquet(homograph_df, file_name=f"{fname_base}.parquet")
+
+        # Metadata
+        fname_base = get_data_filename(file_type="metadata", task_type="workhour_classification")
+        builder.save_metadata(file_name=f"{fname_base}.joblib")
+        
+    else:
+        for build_mode in ["consumption_forecast", "measurement_forecast"]:
+
+            tabular_df = builder.run_tabular_pipeline(args=args, build_mode=build_mode)
+            fname_base = get_data_filename(
+                file_type="dataframe", task_type=build_mode,
+                model_family="tabular", 
+                interval=args.interval, incorporate_weather=args.incorporate_weather)
+            builder.save_df_as_parquet(tabular_df, file_name=f"{fname_base}.parquet")
+                    
+        # Homogeneous Graph
+        # NOTE: The files for measurement and consumption are the same for HomoGraph, unlike Tabular.
+        homograph_df = builder.run_homograph_pipeline(args=args)
+        fname_base = get_data_filename(
+            file_type="dataframe",
+            model_family="graph",
+            interval=args.interval, incorporate_weather=args.incorporate_weather)
+        builder.save_df_as_parquet(homograph_df, file_name=f"{fname_base}.parquet")
+        
+        # Metadata
+        fname_base = get_data_filename(
+            file_type="metadata",
+            interval=args.interval, incorporate_weather=args.incorporate_weather)
+        builder.save_metadata(file_name=f"{fname_base}.joblib")
         
 if __name__ == "__main__":
     main()

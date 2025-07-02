@@ -1,3 +1,4 @@
+import os
 import logging
 import pandas as pd
 from shapely.geometry import Polygon
@@ -218,19 +219,19 @@ class SpatialVisualizerMixin:
         from plotly.subplots import make_subplots
         import numpy as np
         
-        if not hasattr(self, 'masked_adjacencies') or not self.masked_adjacencies:
-            raise ValueError("Masked adjacency matrices not found. Run build_masked_adjacencies first.")
+        if not hasattr(self, 'masked_adjacency_matrices') or not self.masked_adjacency_matrices:
+            raise ValueError("Masked adjacency matrices not found. Run build_masked_adjacency_matrices first.")
             
         if not hasattr(self, 'room_polygons') or not self.room_polygons:
             raise ValueError("Room polygons not found. Run initialize_room_polygons first.")
         
         # Define the number of steps
-        n_steps = len(self.masked_adjacencies)
+        n_steps = len(self.masked_adjacency_matrices)
         
         # Extract information about which rooms can pass info at each step
         room_info_by_step = {}
         for step in range(n_steps):
-            mask = self.masked_adjacencies[step]
+            mask = self.masked_adjacency_matrices[step]
             can_pass_info = mask.sum(axis=1) > 0  # Rooms that can pass info
             room_info_by_step[step] = can_pass_info
         
@@ -474,9 +475,9 @@ class SpatialVisualizerMixin:
         from shapely.geometry import Polygon
         
         # --- ensure adjacency masks exist ---
-        if not hasattr(self, "masked_adjacencies"):
-            self.build_masked_adjacencies()
-        masks = self.masked_adjacencies
+        if not hasattr(self, "masked_adjacency_matrices"):
+            self.build_masked_adjacency_matrices()
+        masks = self.masked_adjacency_matrices
         n_steps = len(masks)
         
         # --- gather centroids, floor info and room labels ---
@@ -1098,4 +1099,373 @@ class SpatialVisualizerMixin:
         
         plt.axis('off')
         plt.tight_layout()
+        return fig
+
+    def create_daily_temperature_visualization(
+            self,
+            output_file: str = "output/builder/temperature_3D.html",
+            day_to_visualize: str = None, # "YYYY-MM-DD", None for random
+            thickness: float = None,
+            colorscale: str = 'RdYlBu_r'
+        ):
+            """
+            Creates an interactive 3D Plotly visualization showing the hourly temperature
+            variation in each room over a single day.
+
+            Args:
+                output_file (str): Path to save the standalone HTML file.
+                day_to_visualize (str, optional): The specific day to visualize in "YYYY-MM-DD" format.
+                                                If None, a random day with data is chosen. Defaults to None.
+                thickness (float, optional): Vertical thickness of each room's extrusion. If None, it's auto-calculated.
+                colorscale (str, optional): The Plotly colorscale to use for temperature. Defaults to 'RdYlBu_r'.
+
+            Returns:
+                plotly.graph_objects.Figure: The generated Plotly figure.
+            """
+            import numpy as np
+            import pandas as pd
+            import plotly.graph_objects as go
+            from plotly.colors import sample_colorscale
+            from shapely.geometry import Polygon
+            
+            # --- 1. Data Preparation ---
+            
+            if not hasattr(self, 'room_level_df'):
+                logger.info("room_level_df not found. Calling build_room_level_df() first.")
+                self.build_room_level_df()
+            
+            bucket_to_time = {i: bucket[0] for i, bucket in enumerate(self.time_buckets)}
+            df = self.room_level_df[['room_uri', 'bucket_idx', 'Temperature_mean']].copy()
+            df = df.dropna(subset=['Temperature_mean'])
+            
+            df['datetime'] = df['bucket_idx'].map(bucket_to_time)
+            df['date'] = df['datetime'].dt.date
+            df['hour'] = df['datetime'].dt.hour
+            
+            available_dates = df['date'].unique()
+            if not available_dates.any():
+                raise ValueError("No temperature data found in room_level_df.")
+
+            if day_to_visualize:
+                selected_date = pd.to_datetime(day_to_visualize).date()
+                if selected_date not in available_dates:
+                    raise ValueError(f"Date {selected_date} not found in the data. Available dates start from {available_dates.min()}.")
+            else:
+                selected_date = np.random.choice(available_dates)
+                logger.info(f"No day specified. Randomly selected: {selected_date}")
+
+            day_df = df[df['date'] == selected_date]
+            if day_df.empty:
+                raise ValueError(f"No temperature data available for the selected date: {selected_date}")
+                
+            temp_pivot = day_df.pivot_table(
+                index='room_uri', columns='hour', values='Temperature_mean'
+            )
+            
+            cmin = temp_pivot.min().min()
+            cmax = temp_pivot.max().max()
+            logger.info(f"Visualizing temperatures for {selected_date}. Range: {cmin:.1f}°C to {cmax:.1f}°C")
+
+            # --- 2. Geometry and Layout Calculation ---
+            
+            centroids, raw_zs, room_ids, room_uris_ordered = [], [], [], []
+            for uri in self.room_uris:
+                room = self.office_graph.rooms.get(uri)
+                if not room: continue
+
+                floor_num = self.room_to_floor.get(uri)
+                if floor_num is None or uri not in self.polygons.get(floor_num, {}):
+                    continue
+
+                poly: Polygon = self.polygons[floor_num][uri]
+                x, y = poly.centroid.coords[0]
+                centroids.append((x, y))
+                raw_zs.append(floor_num)
+                room_ids.append(self.room_names.get(uri, str(uri)))
+                room_uris_ordered.append(uri)
+            
+            xs = np.array([c[0] for c in centroids])
+            ys = np.array([c[1] for c in centroids])
+            raw_zs = np.array(raw_zs, dtype=float)
+            
+            floors = np.unique(raw_zs)
+            n_floors = len(floors)
+            footprint = max(xs.max() - xs.min(), ys.max() - ys.min())
+            floor_sep = footprint / max(n_floors, 1) if n_floors > 1 else footprint
+            if thickness is None:
+                thickness = floor_sep / 5.0
+            
+            floor_min = floors.min()
+            zs = (raw_zs - floor_min) * floor_sep
+            
+            room_meshes, room_edge_traces = [], []
+            for idx, uri in enumerate(room_uris_ordered):
+                poly: Polygon = self.polygons[self.room_to_floor[uri]][uri]
+                coords = list(poly.exterior.coords)[:-1]
+                N = len(coords)
+                x2d, y2d = zip(*coords)
+                z0 = zs[idx]
+                
+                xv = np.concatenate([np.array(x2d), np.array(x2d)])
+                yv = np.concatenate([np.array(y2d), np.array(y2d)])
+                zv = np.concatenate([np.full(N, z0), np.full(N, z0 + thickness)])
+                
+                i, j, k = [], [], []
+                for t in range(1, N - 1): i.extend([N, N + t, N + t + 1]); j.extend([N + t, N + t + 1, N]); k.extend([N + t + 1, N, N + t])
+                for t in range(1, N - 1): i.extend([0, t + 1, t]); j.extend([t + 1, t, 0]); k.extend([t, 0, t + 1])
+                for t in range(N): nt = (t + 1) % N; i.extend([t, nt, N + nt]); j.extend([nt, N + nt, t]); k.extend([N + nt, t, N + t]); i.extend([t, N + nt, N + t]); j.extend([N + nt, N + t, t]); k.extend([N + t, t, N + nt])
+                
+                room_meshes.append((xv, yv, zv, i, j, k))
+                
+                edge_x = list(xv[N:]) + [xv[N]]
+                edge_y = list(yv[N:]) + [yv[N]]
+                edge_z = list(zv[N:]) + [zv[N]]
+                room_edge_traces.append((edge_x, edge_y, edge_z))
+
+            # --- 3. Build Animation Frames ---
+            
+            frames = []
+            for hour in range(24):
+                data = []
+                for idx, uri in enumerate(room_uris_ordered):
+                    
+                    # ***** THE FIX IS HERE *****
+                    # Use .loc for proper row/column lookup in the DataFrame
+                    if uri in temp_pivot.index and hour in temp_pivot.columns:
+                        temp = temp_pivot.loc[uri, hour]
+                    else:
+                        temp = np.nan
+                    # ***** END OF FIX *****
+
+                    if pd.isna(temp):
+                        mesh_color = "#cccccc"
+                        hover_text = f"<b>{room_ids[idx]}</b><br>Hour: {hour}<br>No data"
+                    else:
+                        norm_temp = (temp - cmin) / (cmax - cmin) if (cmax - cmin) > 0 else 0.5
+                        mesh_color = sample_colorscale(colorscale, norm_temp)[0]
+                        hover_text = f"<b>{room_ids[idx]}</b><br>Hour: {hour}<br>Temp: {temp:.1f}°C"
+
+                    xv, yv, zv, i, j, k = room_meshes[idx]
+                    data.append(go.Mesh3d(x=xv, y=yv, z=zv, i=i, j=j, k=k, color=mesh_color, opacity=1.0, flatshading=True, showscale=False, hoverinfo="skip"))
+                    
+                    ex, ey, ez = room_edge_traces[idx]
+                    data.append(go.Scatter3d(x=ex, y=ey, z=ez, mode="lines", line=dict(color="black", width=1.5), hoverinfo="text", text=hover_text, showlegend=False))
+                
+                frames.append(go.Frame(data=data, name=f"Hour {hour}"))
+
+            # --- 4. Assemble Figure ---
+            
+            fig = go.Figure(data=frames[0].data, frames=frames)
+
+            fig.add_trace(go.Scatter3d(
+                x=[None], y=[None], z=[None], mode='markers',
+                marker=dict(
+                    colorscale=colorscale, cmin=cmin, cmax=cmax,
+                    colorbar=dict(title='Temperature (°C)', thickness=20, len=0.75, y=0.5),
+                    showscale=True
+                ),
+                hoverinfo='none', showlegend=False
+            ))
+            
+            sliders = [dict(
+                active=0, pad={"t": 50}, currentvalue={"prefix": "Hour: "},
+                steps=[dict(method="animate", label=str(h), args=[[f"Hour {h}"], dict(mode="immediate", frame=dict(duration=300, redraw=True))]) for h in range(24)]
+            )]
+            updatemenus = [dict(
+                type="buttons", showactive=False, y=0, x=1.0, xanchor="right", yanchor="top", pad={"t": 20, "r": 20},
+                buttons=[
+                    dict(label="Play", method="animate", args=[None, {"frame": {"duration": 500, "redraw": True}, "fromcurrent": True}]),
+                    dict(label="Pause", method="animate", args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}])
+                ]
+            )]
+            
+            fig.update_layout(
+                title=f"Hourly Room Temperature Visualization ({selected_date})",
+                scene=dict(
+                    xaxis=dict(visible=False), yaxis=dict(visible=False), zaxis=dict(visible=False),
+                    aspectmode='data'
+                ),
+                margin=dict(l=0, r=0, b=0, t=40),
+                sliders=sliders,
+                updatemenus=updatemenus
+            )
+            
+            if output_file:
+                os.makedirs(os.path.dirname(output_file), exist_ok=True)
+                fig.write_html(output_file)
+                logger.info(f"Saved 3D temperature visualization to {output_file}")
+                
+            return fig
+
+    def create_temperature_variation_visualization_2(
+        self,
+        day: str,
+        output_file: str = "output/builder/temperature_day_3D.html",
+        thickness: float = None,
+        marker_size: int = 4,
+        colorscale: list = None,
+    ):
+        """
+        Interactive 3D Plotly animation showing room temperature variation over 24 hours.
+
+        Args:
+            day: Date string "YYYY-MM-DD" for which to visualize (must be within your time_buckets).
+            output_file: Path to save standalone HTML.
+            thickness: Vertical thickness of each room (if None, auto = floor_sep/10).
+            marker_size: Size of centroid markers (unused here but kept for consistency).
+            colorscale: Plotly colorscale name or list (default Viridis).
+        Returns:
+            plotly.graph_objects.Figure
+        """
+        import numpy as np
+        import plotly.graph_objects as go
+        from shapely.geometry import Polygon
+        from datetime import datetime
+
+        # default colorscale
+        if colorscale is None:
+            colorscale = "Viridis"
+
+        # -- prepare the 24 bucket indices for this day --
+        target_date = datetime.strptime(day, "%Y-%m-%d").date()
+        hour_to_bucket = {}
+        for idx, (start, end) in enumerate(self.time_buckets):
+            if start.date() == target_date:
+                hour_to_bucket[start.hour] = idx
+        if len(hour_to_bucket) != 24:
+            raise ValueError(f"Expected 24 hourly buckets on {day}, found {len(hour_to_bucket)}")
+
+        # -- gather centroids, floors, and room labels --
+        centroids, raw_zs, room_ids = [], [], []
+        for uri in self.adj_matrix_room_uris:
+            poly: Polygon = self.polygons[self.room_to_floor[uri]][uri]
+            x, y = poly.centroid.coords[0]
+            centroids.append((x, y))
+            raw_zs.append(self.room_to_floor[uri])
+            room_ids.append(self.room_names.get(uri, str(uri)))
+        xs = np.array([c[0] for c in centroids])
+        ys = np.array([c[1] for c in centroids])
+        raw_zs = np.array(raw_zs, dtype=float)
+
+        # -- floor separation & thickness --
+        floors = np.unique(raw_zs)
+        n_floors = len(floors)
+        footprint = max(xs.max() - xs.min(), ys.max() - ys.min())
+        floor_sep = footprint / max(n_floors, 1)
+        if thickness is None:
+            thickness = floor_sep / 5.0
+        floor_min = floors.min()
+        zs = (raw_zs - floor_min) * floor_sep
+
+        # -- precompute each room mesh once --
+        room_meshes = []
+        for idx, uri in enumerate(self.adj_matrix_room_uris):
+            poly: Polygon = self.polygons[self.room_to_floor[uri]][uri]
+            coords = list(poly.exterior.coords)[:-1]
+            N = len(coords)
+            x2d, y2d = zip(*coords)
+            z0 = zs[idx]
+            x_low = np.array(x2d)
+            y_low = np.array(y2d)
+            z_low = np.full(N, z0)
+            x_up = x_low
+            y_up = y_low
+            z_up = np.full(N, z0 + thickness)
+            xv = np.concatenate([x_low, x_up])
+            yv = np.concatenate([y_low, y_up])
+            zv = np.concatenate([z_low, z_up])
+
+            # build faces
+            i, j, k = [], [], []
+            # top
+            for t in range(1, N-1):
+                i += [N, N + t, N + t + 1]
+                j += [N + t, N + t + 1, N]
+                k += [N + t + 1, N, N + t]
+            # bottom
+            for t in range(1, N-1):
+                i += [0, t + 1, t]
+                j += [t + 1, t, 0]
+                k += [t, 0, t + 1]
+            # sides
+            for t in range(N):
+                nt = (t + 1) % N
+                i += [t, nt, N + nt, t, N + nt, N + t]
+                j += [nt, N + nt, t, N + nt, N + t, t]
+                k += [N + nt, t, N + t, N + t, t, N + nt]
+            room_meshes.append((xv, yv, zv, i, j, k))
+
+        # -- build frames --
+        frames = []
+        for hour in range(24):
+            bucket_idx = hour_to_bucket[hour]
+            # extract temperatures
+            temps = self.room_level_df.loc[
+                self.room_level_df["bucket_idx"] == bucket_idx, "Temperature_mean"
+            ].values
+            # normalize intensities per room for Mesh3d
+            # replicate per-vertex
+            step_data = []
+            for idx in range(len(xs)):
+                xv, yv, zv, i, j, k = room_meshes[idx]
+                temp = temps[idx]
+                intensity = np.full_like(xv, temp, dtype=float)
+                step_data.append(
+                    go.Mesh3d(
+                        x=xv, y=yv, z=zv,
+                        i=i, j=j, k=k,
+                        intensity=intensity,
+                        colorscale=colorscale,
+                        intensitymode="vertex",
+                        showscale=(idx == 0),
+                        cmin=self.room_level_df["Temperature_mean"].min(),
+                        cmax=self.room_level_df["Temperature_mean"].max(),
+                        name="",
+                        flatshading=True,
+                    )
+                )
+            frames.append(go.Frame(data=step_data, name=f"Hour {hour}"))
+
+        # -- initial fig, sliders, buttons --
+        fig = go.Figure(frames[0].data, frames=frames)
+        slider_steps = [
+            dict(
+                method="animate",
+                label=str(h),
+                args=[
+                    [f"Hour {h}"],
+                    dict(mode="immediate", frame=dict(duration=300, redraw=True), transition=dict(duration=300)),
+                ],
+            )
+            for h in range(24)
+        ]
+        sliders = [dict(active=0, pad={"t": 50}, currentvalue={"prefix": "Hour: "}, steps=slider_steps)]
+        updatemenus = [
+            dict(
+                type="buttons",
+                showactive=False,
+                y=0,
+                x=0.1,
+                xanchor="right",
+                yanchor="top",
+                pad={"t": 60, "r": 10},
+                buttons=[
+                    dict(label="Play", method="animate", args=[None, {"frame": {"duration": 500, "redraw": True}, "fromcurrent": True}]),
+                    dict(label="Pause", method="animate", args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}]),
+                ],
+            )
+        ]
+
+        fig.update_layout(
+            scene=dict(xaxis=dict(visible=False), yaxis=dict(visible=False), zaxis=dict(visible=False, title="Floors")),
+            margin=dict(l=0, r=0, b=0, t=50),
+            sliders=sliders,
+            updatemenus=updatemenus,
+            title=f"Room Temperatures on {day}",
+        )
+
+        if output_file:
+            fig.write_html(output_file)
+            self.logger.info(f"Saved 3D temperature viz for {day} to {output_file}")
+
         return fig

@@ -5,7 +5,7 @@ import torch
 import logging
 logger = logging.getLogger(__name__)
 
-class STGCNDataProcessor:
+class STGCNNormalizer:
     """
     A simple and fast data processor that works exclusively with NumPy arrays.
     It calculates statistics on a training slice while ignoring NaNs, and then

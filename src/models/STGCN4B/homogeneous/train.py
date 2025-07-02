@@ -1,8 +1,8 @@
 #!/usr/bin/env python
 
-import os
-import numpy as np
 import torch
+import torch.nn as nn
+import numpy as np
 from torch_geometric.utils import dense_to_sparse
 # Forecasting metrics
 from sklearn.metrics import (mean_squared_error, mean_absolute_error, r2_score)
@@ -15,12 +15,9 @@ import optuna
 import logging
 logger = logging.getLogger(__name__)
 
-from ....config.args import parse_args
 from ....utils.graph_utils import calc_gso_edge
 from ....utils.early_stopping import EarlyStopping
-from ....utils.train_utils import ResultHandler
-from .processor import NumpyDataProcessor
-from .graph_loader import load_data
+from .normalizer import STGCNNormalizer
 
 def setup_model(args, data):
     """Set up the STGCN model and training components."""
@@ -56,11 +53,11 @@ def setup_model(args, data):
 
     # Build masked GSOs for information propagation
     elif args.gso_mode == "dynamic":
-        masked_adjacencies_dict = data.get("masked_adjacencies", {})
-        masked_adjacencies = list(masked_adjacencies_dict.values())
-        masked_adjacencies = masked_adjacencies[: args.stblock_num]
+        masked_adjacency_matrices_dict = data.get("masked_adjacency_matrices", {})
+        masked_adjacency_matrices = list(masked_adjacency_matrices_dict.values())
+        masked_adjacency_matrices = masked_adjacency_matrices[: args.stblock_num]
         masked_gsos = []
-        for adjacency_matrix in masked_adjacencies:
+        for adjacency_matrix in masked_adjacency_matrices:
             edge_index, edge_weight = dense_to_sparse(adjacency_matrix)
             G = calc_gso_edge(
                 edge_index, edge_weight, 
@@ -101,7 +98,8 @@ def setup_model(args, data):
         blocks.append([args.output_channels, args.output_channels])
     
     # Output dimension determined by n_pred
-    blocks.append([args.n_pred])
+    n_pred = len(args.forecast_horizons)
+    blocks.append([n_pred])
     
     # Create model based on graph convolution type
     if args.graph_conv_type == 'cheb_graph_conv':
@@ -121,7 +119,7 @@ def setup_model(args, data):
     criterion = None
     if args.task_type == "workhour_classification":
         all_labels = []
-        for _, labels, _ in data['train_loader']:
+        for _, labels, _, _, _ in data['train_loader']:
             all_labels.extend(labels.cpu().numpy().flatten().tolist())
         n_samples = len(all_labels)
         n_work_hours = sum(all_labels)
@@ -131,7 +129,7 @@ def setup_model(args, data):
         logger.info(f"Using positive class weight: {pos_weight:.4f}")
         criterion = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight, device=device))
     else:
-        criterion = None # For forecasting, the loss is calculated manually later
+        criterion = MaskedMSELoss()
     
     # Set optimizer
     if args.optimizer == 'adam':
@@ -167,10 +165,11 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
     for epoch in range(args.epochs):
         # Training phase
         model.train()
-        running_loss = 0.0
+        running_train_loss = 0.0
         total_valid_points_train = 0
         
-        for X_batch, y_batch, mask_batch in train_loader:
+        for X_batch, y_batch, mask_batch, _, _ in train_loader:
+            # NOTE: we are not using the reconstruction_batch here, so left it as "_"
             # Zero the gradients
             optimizer.zero_grad()
 
@@ -181,25 +180,21 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
             outputs = model(x)
             
             if args.task_type == "workhour_classification":
-                loss = criterion(outputs.squeeze(), y_batch.squeeze().float())
-                running_loss += loss.item() * x.size(0)
-                total_valid_points_train += x.size(0)
+                loss_train = criterion(outputs.squeeze(), y_batch.squeeze().float())
+                running_train_loss += loss_train.item()
             else: # Forecasting tasks
                 preds, targets, mask = get_preds_targets_mask(outputs, y_batch, mask_batch, args.task_type)
-                # Manually calculate squared error and apply mask
-                error = preds - targets
-                masked_squared_error = (error ** 2) * mask
-                loss = torch.sum(masked_squared_error)
-                # Update running loss and count of valid points
-                running_loss += loss.item()
-                total_valid_points_train += torch.sum(mask).item()
+                loss_train = criterion(preds, targets, mask)
 
+                # Update running train loss: accumulating the per-batch MSE into running_train_loss
+                running_train_loss += loss_train.item()
+            
             # Backward pass
-            loss.backward()
+            loss_train.backward()
             optimizer.step()
                             
         # Average training loss for the epoch
-        epoch_train_loss = running_loss / total_valid_points_train if total_valid_points_train > 0 else 0.0
+        epoch_train_loss = running_train_loss / len(train_loader) if len(train_loader) > 0 else 0.0
         history['train_loss'].append(epoch_train_loss)
                 
         # Validation phase (Optional)
@@ -213,7 +208,7 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
             all_probs, all_targets_class = [], [] 
             
             with torch.no_grad():
-                for X_batch, y_batch, mask_batch in val_loader:
+                for X_batch, y_batch, mask_batch, _, _ in val_loader:
 
                     # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
                     x = X_batch.permute(0, 3, 1, 2)
@@ -223,30 +218,25 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
 
                     if args.task_type == "workhour_classification":
                         loss_val = criterion(outputs.squeeze(), y_batch.squeeze().float())
-                        running_val_loss += loss_val.item() * x.size(0)
-                        total_valid_points_val += x.size(0)
                         probs = torch.sigmoid(outputs.squeeze())
                         all_probs.extend(probs.cpu().tolist())
                         all_targets_class.extend(y_batch.squeeze().cpu().tolist())
                     else: # Forecasting tasks
                         preds, targets, mask = get_preds_targets_mask(outputs, y_batch, mask_batch, args.task_type)
-                        # Manually calculate squared error and apply mask
-                        error = preds - targets
-                        masked_squared_error = (error ** 2) * mask
-                        loss_val = torch.sum(masked_squared_error)
-                        # Update running loss and count of valid points
-                        running_val_loss += loss_val.item()
-                        total_valid_points_val += torch.sum(mask).item()
+                        loss_val = criterion(preds, targets, mask)
+                        
                         # Collect only valid predictions and targets for R² score
                         valid_preds = preds[mask == 1]
                         valid_targets = targets[mask == 1]
                         all_preds.extend(valid_preds.cpu().tolist())
                         all_targets.extend(valid_targets.cpu().tolist())
-
+                                            
+                    running_val_loss += loss_val.item()
+            
             # Average validation loss (MSE) for the epoch
-            epoch_val_loss = running_val_loss / total_valid_points_val if total_valid_points_val > 0 else 0.0
+            epoch_val_loss = running_val_loss / len(val_loader) if len(val_loader) > 0 else 0.0
             history['val_loss'].append(epoch_val_loss)
-
+            
             # Append epoch metrics to the history dictionary
             epoch_metrics = {}
             if args.task_type == "workhour_classification":
@@ -326,7 +316,7 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
 
     return model, history
 
-def evaluate_model(args, model, test_loader, processor: NumpyDataProcessor, threshold=0.5):
+def evaluate_model(args, model, test_loader, processor: STGCNNormalizer, threshold=0.5):
     """Evaluate the trained model on the test set."""
     logger.info("Evaluating model on test set...")
     
@@ -338,8 +328,12 @@ def evaluate_model(args, model, test_loader, processor: NumpyDataProcessor, thre
     all_probs = []
     all_class_labels = []
 
+    # If delta forecasting:
+    all_reconstruction_t_values = []
+    all_reconstruction_t_h_values = []
+
     with torch.no_grad():
-        for X_batch, y_batch, mask_batch in test_loader:
+        for X_batch, y_batch, mask_batch, r_t_batch, r_t_h_batch in test_loader:
 
             # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
             x = X_batch.permute(0, 3, 1, 2)
@@ -354,11 +348,21 @@ def evaluate_model(args, model, test_loader, processor: NumpyDataProcessor, thre
             else:
                 preds_norm, targets_norm, mask = get_preds_targets_mask(outputs, y_batch, mask_batch, args.task_type)
                 # Collect only valid predictions and targets for R² score
-                valid_preds_norm = preds_norm[mask.bool()]
-                valid_targets_norm = targets_norm[mask.bool()]
+                valid_mask = mask.bool()
+                valid_preds_norm = preds_norm[valid_mask]
+                valid_targets_norm = targets_norm[valid_mask]
                 all_preds_norm.extend(valid_preds_norm.cpu().tolist())
                 all_targets_norm.extend(valid_targets_norm.cpu().tolist())
 
+                if args.prediction_type == "delta":
+                    # The reconstruction batches has the same shape as y_batch and mask_batch
+                    # We need to filter it with the same mask to keep them aligned
+                    valid_r_t = r_t_batch[valid_mask]
+                    all_reconstruction_t_values.extend(valid_r_t.cpu().tolist())
+                    
+                    valid_r_t_h = r_t_h_batch[valid_mask]
+                    all_reconstruction_t_h_values.extend(valid_r_t_h.cpu().tolist())
+                    
     if args.task_type == "workhour_classification":
         all_preds_class = [1 if prob >= threshold else 0 for prob in all_probs]
         roc_auc = roc_auc_score(all_class_labels, all_probs)
@@ -388,19 +392,38 @@ def evaluate_model(args, model, test_loader, processor: NumpyDataProcessor, thre
         preds_norm_np = np.array(all_preds_norm)
         targets_norm_np = np.array(all_targets_norm)
 
-        # Inverse transforming back to the original scale
-        preds_orig = processor.inverse_transform_target(preds_norm_np)
-        targets_orig = processor.inverse_transform_target(targets_norm_np)
+        # Inverse-transform the normalized predictions and targets.
+        # NOTE: - For 'delta', these are now deltas in their original scale.
+        #       - For 'absolute', these are the final predictions.
+        preds_processed = processor.inverse_transform_target(preds_norm_np)
+        targets_processed = processor.inverse_transform_target(targets_norm_np)
+
+        # Delta reconstruction logic
+        if args.prediction_type == "delta":
+            logger.info("Reconstructing absolute values from delta predictions...")
+            r_t_np = np.array(all_reconstruction_t_values)
+            r_t_h_np = np.array(all_reconstruction_t_h_values)
+            
+            # Final absolute predictions = value at t + predicted delta
+            preds_final = r_t_np + preds_processed
+            
+            # Ground truth absolute targets = value at t_h
+            targets_final = r_t_h_np
+            
+        else: # Absolute forecasting (no change from before)
+            preds_final = preds_processed
+            targets_final = targets_processed
         
         # Calculating all metrics on the original-scale data
-        mse = mean_squared_error(targets_orig, preds_orig)
+        mse = mean_squared_error(targets_final, preds_final)
         rmse = np.sqrt(mse)
-        mae = mean_absolute_error(targets_orig, preds_orig)
-        r2 = r2_score(targets_orig, preds_orig)
+        mae = mean_absolute_error(targets_final, preds_final)
+        r2 = r2_score(targets_final, preds_final)
+
         ## Calculating MAPE safely, avoiding division by zero:
-        mape_mask = targets_orig != 0
+        mape_mask = targets_final != 0
         if np.sum(mape_mask) > 0:
-            mape = np.mean(np.abs((targets_orig[mape_mask] - preds_orig[mape_mask]) / targets_orig[mape_mask])) * 100
+            mape = np.mean(np.abs((targets_final[mape_mask] - preds_final[mape_mask]) / targets_final[mape_mask])) * 100
         else:
             mape = 0.0
 
@@ -414,8 +437,8 @@ def evaluate_model(args, model, test_loader, processor: NumpyDataProcessor, thre
             "mae": mae, 
             "r2": r2, 
             "mape": mape,
-            "predictions": preds_orig, 
-            "targets": targets_orig,
+            "predictions": preds_final, 
+            "targets": targets_final,
         }
 
 
@@ -431,6 +454,15 @@ def get_preds_targets_mask(outputs, y_batch, mask_batch, task_type):
         targets = y_batch.float()               # (B, n_pred, N) -> No change, just ensuring float type
         mask = mask_batch                       # (B, n_pred, N) -> No change
     return preds, targets, mask
+
+class MaskedMSELoss(nn.Module):
+    def forward(self, preds, targets, mask):
+        error = preds - targets
+        masked_squared_error = (error ** 2) * mask
+        num_valid_points = torch.sum(mask)
+        if num_valid_points > 0:
+            return torch.sum(masked_squared_error) / num_valid_points
+        return torch.tensor(0.0, device=preds.device)
 
 def find_optimal_threshold(model, val_loader):
     """Find the optimal classification threshold using validation data."""

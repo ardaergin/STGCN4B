@@ -1,26 +1,16 @@
 import pandas as pd
 from shapely.geometry import Polygon
 import numpy as np
-from typing import Dict, Any, List
+from typing import Dict
 from collections import defaultdict
-
-# Logging setup
-import logging, sys
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-logger = logging.getLogger(__name__)
 
 from ...data.FloorPlan import polygon_utils
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class SpatialBuilderMixin:
-    from ..officegraph import OfficeGraph
-    office_graph: OfficeGraph
-    room_uris: List[Any]
-    room_names: Dict[Any, str]
 
     #############################
     # Polygons
@@ -86,24 +76,8 @@ class SpatialBuilderMixin:
                 points_2d = room.polygons_doc.get('points_2d', [])
                 area = room.polygons_doc.get('area')
             
-            # Floor data
-            if room.floor is not None:
-                # room.floor is a URIRef, need to get the actual Floor object
-                floor_obj = self.office_graph.floors.get(room.floor)
-                if floor_obj and floor_obj.floor_number is not None:
-                    floor_number = floor_obj.floor_number
-                else:
-                    # Fallback: extract floor number from URI
-                    try:
-                        floor_str = str(room.floor)
-                        if 'floor_' in floor_str:
-                            floor_number = int(floor_str.split('floor_')[-1])
-                        else:
-                            floor_number = int(floor_str.split('/')[-1])
-                    except:
-                        raise ValueError(f"Room {room_uri} has no valid floor information. Floor URI: {room.floor}")
-            else:
-                raise ValueError(f"Room {room_uri} has no associated floor information.")
+            floor_uri = self.office_graph._map_RoomURIRef_to_FloorURIRef(room_uri)
+            floor_number = self.office_graph._map_FloorURIRef_to_FloorNumber(floor_uri)
             
             # Quick access dictionaries
             self.room_to_floor[room_uri] = floor_number
@@ -782,7 +756,7 @@ class SpatialBuilderMixin:
         logger.info(f"Generated {len(masks)} propagation masks")
         return masks
 
-    def build_masked_adjacencies(self) -> None:
+    def build_masked_adjacency_matrices(self) -> None:
         """
         Using the propagation masks (horizontal+vertical), produce a series of
         masked adjacency matrices showing the network at each step.
@@ -803,12 +777,12 @@ class SpatialBuilderMixin:
         masks = self.calculate_information_propagation_masks()
         
         adjacency = self.room_to_room_adj_matrix
-        self.masked_adjacencies = {
+        self.masked_adjacency_matrices = {
             step: adjacency * mask
             for step, mask in masks.items()
         }
         
-        logger.info(f"Created {len(self.masked_adjacencies)} masked adjacency matrices")
+        logger.info(f"Created {len(self.masked_adjacency_matrices)} masked adjacency matrices")
         return None
 
 
