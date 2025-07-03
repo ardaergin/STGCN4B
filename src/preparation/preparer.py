@@ -389,7 +389,7 @@ class STGCNDataPreparer(BaseDataPreparer):
         # Case for data WITHOUT a room dimension (targets for consumption_forecast)
         else:
             total_timesteps = sum(len(v["bucket_indices"]) for v in self.metadata["blocks"].values())
-            values_df = df[['bucket_idx'] + columns_to_pivot].drop_duplicates().set_index('bucket_idx')
+            values_df = df[['bucket_idx'] + columns_to_pivot].groupby('bucket_idx').first()
             np_array = values_df.reindex(range(total_timesteps))[columns_to_pivot].values
             logger.info(f"Created 2D NumPy array of shape {np_array.shape}")
             return np_array
