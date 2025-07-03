@@ -27,6 +27,7 @@ class BlockAwareSTGCNDataset(Dataset):
 
     def __init__(
         self,
+        args,
         feature_tensor: torch.Tensor,
         blocks: List[List[int]],
         target_tensor: torch.Tensor,
@@ -36,6 +37,7 @@ class BlockAwareSTGCNDataset(Dataset):
         max_target_offset: int,
         n_his: int,
     ):
+        self.args = args
         self.feature_tensor = feature_tensor
         self.blocks = blocks
         self.target_tensor = target_tensor
@@ -165,6 +167,7 @@ def get_data_loaders(
 
     # 2) Construct Datasets
     train_ds = BlockAwareSTGCNDataset(
+        args,
         feature_tensor,
         train_block_lists,
         target_tensor,
@@ -177,6 +180,7 @@ def get_data_loaders(
     val_ds = None
     if val_block_lists:
         val_ds = BlockAwareSTGCNDataset(
+            args,
             feature_tensor,
             val_block_lists,
             target_tensor,
@@ -187,6 +191,7 @@ def get_data_loaders(
             args.n_his)
     
     test_ds = BlockAwareSTGCNDataset(
+        args,
         feature_tensor,
         test_block_lists,
         target_tensor,
