@@ -145,7 +145,7 @@ def add_OfficeGraph_args(parser):
     parser.add_argument('--forecast_horizons', type=int, nargs='+',
                         default=[1],
                         help='A space-separated list of forecast horizons in hours (e.g., --forecast_horizons 1 24). Default is [1].')
-    parser.add_argument('--target_prediction_type', type=str,
+    parser.add_argument('--prediction_type', type=str,
                         choices=['absolute', 'delta'],
                         default="absolute",
                         help='Whether to predict the actual target value ("absolute") or the change from the current value ("delta"). Default is "absolute".')
