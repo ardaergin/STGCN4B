@@ -1,30 +1,35 @@
+#!/usr/bin/env python
+
 import os
-import joblib
 import numpy as np
 import pandas as pd
-from typing import Dict, Any
-
-from ...config.args import parse_args
-from ...utils.filename_util import get_data_filename
-from ...utils.block_split import StratifiedBlockSplitter
-from ...utils.train_utils import ResultHandler
-from .model import LGBMWrapper
+from typing import Dict, Any, List, Tuple
 
 from sklearn.metrics import (
+    accuracy_score,
     balanced_accuracy_score,
     roc_auc_score,
-    average_precision_score,
-    f1_score,
+    precision_score,
     precision_recall_curve,
+    average_precision_score,
+    recall_score,
+    f1_score,
+    log_loss,
+    confusion_matrix,
+    ConfusionMatrixDisplay)
+# Regression Metrics
+from sklearn.metrics import (
     mean_absolute_error,
     mean_squared_error,
-    r2_score,
-    log_loss, 
-    precision_score, 
-    recall_score
-)
+    r2_score)
 
-# Logging setup
+from ...utils.filename_util import get_data_filename
+from ...utils.train_utils import ResultHandler
+from ...preparation.split import StratifiedBlockSplitter
+from ...preparation.preparer import LGBMDataPreparer
+from .model import LGBMWrapper
+
+# Set up the main logging
 import logging, sys
 logging.basicConfig(
     level=logging.INFO,
@@ -33,218 +38,258 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def find_optimal_threshold_lgbm(model: LGBMWrapper, X_val: pd.DataFrame, y_val: pd.Series) -> float:
-    """
-    Finds the optimal classification threshold that maximizes F1-score on the validation set.
-    """
-    probs = model.predict_proba(X_val)
-    precisions, recalls, thresholds = precision_recall_curve(y_val, probs)
-    
-    # Calculate F1 score for each threshold
-    f1_scores = [2 * p * r / (p + r) if (p + r) > 0 else 0 
-                 for p, r in zip(precisions[:-1], recalls[:-1])]
-    
-    if not f1_scores:
-        return 0.5 # Fallback if no valid scores are generated
-
-    optimal_idx = np.argmax(f1_scores)
-    return thresholds[optimal_idx]
-
-
 class LGBMSingleRunner:
     """
-    Orchestrates a single machine learning run for a LightGBM model with fixed
-    hyperparameters. It trains, evaluates on a validation set for early stopping,
-    retrains on the full training data, and finally evaluates on the test set.
+    Runs a single LightGBM experiment with default parameters.
+    No Optuna optimization or cross-validation.
     """
+    
     def __init__(self, args: Any):
+        """
+        Initializes the LGBMSingleRunner for a single experiment instance.
+
+        Args:
+            args: A configuration object (e.g., from argparse) containing all
+                  necessary parameters.
+        """
         self.args = args
-        self.run_id = args.experiment_id # Use the same arg for consistency
-        self.seed = args.seed + self.run_id
-        
-        self.input_dict: Dict[str, Any] = {}
-        self.load_data_file()
+        self.seed = args.seed
 
+        # Set up the specific output directory for this run's artifacts
         self.output_dir = args.output_dir
-        logger.info(f"Single run outputs will be saved in: {self.output_dir}")
+        logger.info(f"Experiment outputs will be saved in: {self.output_dir}")
 
-    def load_data_file(self):
-        """Loads the pre-computed tabular DataFrame and metadata."""
-        fname = get_data_filename(self.args)
-        path = os.path.join(self.args.data_dir, "processed", fname)
-        
-        logger.info(f"Loading pre-computed tabular input from {path}")
-        self.input_dict = joblib.load(path)
-        logger.info(f"Loaded DataFrame with shape: {self.input_dict['df'].shape}")
-        # Assuming reduce_mem_usage is available if needed
-        # self.input_dict['df'] = self.reduce_mem_usage(self.input_dict['df'])
+        # The preparer returns everything we need for the experiment
+        logger.info("Handling data preparation...")
+        data_preparer = LGBMDataPreparer(args)
+        self.input_dict = data_preparer.get_input_dict()
+        self.delta_to_absolute_map = self.input_dict.get("delta_to_absolute_map", {})
 
-    def _get_split_data(self, df, block_ids, blocks):
-        """Helper to filter the main DataFrame based on block IDs."""
+    def _get_split_data(self, block_ids: List[int]) -> Tuple[pd.DataFrame, pd.Series]:
+        """Helper to filter the final DataFrame based on block IDs."""
         indices = []
+        blocks = self.input_dict['blocks']
         for block_id in block_ids:
             indices.extend(blocks[block_id]['bucket_indices'])
         
-        split_df = df[df['bucket_idx'].isin(indices)].copy()
+        # Filter based on the 'bucket_idx'
+        split_df = self.input_dict['df'][self.input_dict['df']['bucket_idx'].isin(indices)].copy()
         
-        target_col = self.input_dict['target_col_name']
-        id_cols = ['bucket_idx']
-        if self.args.task_type != "measurement_forecast" and 'room_uri' in split_df.columns:
-            id_cols.append('room_uri')
+        # Get target (y)
+        target_colnames = self.input_dict['target_colnames']
+        if len(target_colnames) != 1:
+            raise ValueError(f"This script is intended for a single target, but found {len(target_colnames)}: {target_colnames}")
+        target_col_name = target_colnames[0]
+        y = split_df[target_col_name]
 
-        y = split_df[target_col]
-        X = split_df.drop(columns=[target_col] + id_cols)
+        # Delta forecasting logic
+        reconstruction_t_df = None
+        reconstruction_t_h_df = None
+        if self.args.prediction_type == "delta":
+            reconstruction_t_df = split_df[self.input_dict["source_col"]].copy()
+            reconstruction_t_h_df = split_df[self.input_dict["delta_colnames"]].copy()
         
-        return X, y
+        # Get features (X)
+        cols_to_drop = ['bucket_idx'] + target_colnames + self.input_dict["delta_colnames"]
+        cols_to_drop = [col for col in cols_to_drop if col in split_df.columns]
+        X = split_df.drop(columns=cols_to_drop)
+        
+        return X, y, reconstruction_t_df, reconstruction_t_h_df
+        
+    def run_experiment(self):
+        """Executes the single run pipeline."""
+        logger.info(f"===== Starting Single LGBM Experiment | Seed: {self.seed} =====")
 
-    def run(self):
-        """Executes the full pipeline for a single run."""
-        logger.info(f"===== Starting LGBM Single Run [{self.run_id+1}] | Seed: {self.seed} =====")
-
-        # 1. Initialize splitter and create train/test split
-        splitter = StratifiedBlockSplitter(output_dir=self.output_dir, blocks=self.input_dict['blocks'], stratum_size=self.args.stratum_size, seed=self.seed)
+        splitter = StratifiedBlockSplitter(output_dir=self.output_dir, blocks=self.input_dict['blocks'], 
+                                         stratum_size=self.args.stratum_size, seed=self.seed)
+        
+        # Get train/validation/test split
         splitter.get_train_test_split()
+        train_ids, val_ids = splitter.get_single_split()
+        test_ids = splitter.test_block_ids
 
-        # 2. Get a single train/validation fold from the main training set
-        train_fold_ids, val_fold_ids = splitter.get_single_split()
+        # Get default parameters
+        default_params = self._get_default_params()
+        logger.info(f"Using default parameters: {default_params}")
 
-        X_train_fold, y_train_fold = self._get_split_data(self.input_dict['df'], train_fold_ids, self.input_dict['blocks'])
-        X_val, y_val = self._get_split_data(self.input_dict['df'], val_fold_ids, self.input_dict['blocks'])
+        # Train model with validation set for early stopping
+        model, val_metrics = self._train_with_validation(default_params, train_ids, val_ids)
+        
+        # Evaluate on test set
+        test_metrics, final_history = self._evaluate_on_test(model, test_ids)
+        
+        # Process and save results
+        handler = ResultHandler(output_dir=self.output_dir, task_type=self.args.task_type,
+                              history=final_history, metrics=test_metrics, model=model)
+        handler.process()
+        
+        # Save test metrics
+        scalar_metrics = {k: v for k, v in test_metrics.items() if np.isscalar(v)}
+        pd.DataFrame([scalar_metrics]).to_csv(os.path.join(self.output_dir, "results_test.csv"), index=False)
 
-        # 3. Define FIXED hyperparameters
-        # These are sensible defaults. You can adjust them as needed.
+        logger.info(f"===== Single Experiment COMPLETED =====")
+
+    def _get_default_params(self) -> Dict[str, Any]:
+        """Returns default LightGBM parameters."""
         params = {
-            "n_estimators": 2000,
             "learning_rate": 0.05,
-            "num_leaves": 40,
-            "max_depth": 7,
+            "num_leaves": 100,
+            "max_depth": 6,
             "min_child_samples": 20,
+            "min_child_weight": 0.001,
+            "min_split_gain": 0.001,
             "feature_fraction": 0.8,
             "bagging_fraction": 0.8,
             "bagging_freq": 1,
-            "lambda_l1": 0.1,
-            "lambda_l2": 0.1,
-            "n_jobs": -1,
-            "random_state": self.seed
+            "lambda_l1": 0.01,
+            "lambda_l2": 0.01,
+            "n_jobs": -1,  # Use all available CPUs
+            "n_estimators": self.args.n_estimators,  # Default is 1500
+            "early_stopping_rounds": self.args.early_stopping_rounds,
         }
 
         if self.args.task_type == "workhour_classification":
             params["objective"] = "binary"
             params["metric"] = "auc"
             params["is_unbalance"] = True
-        else:
-            params["objective"] = "regression_l1"
+        else:  # Forecasting tasks
+            params["objective"] = "regression_l1"  # MAE
             params["metric"] = "mae"
 
-        # 4. Train a model with early stopping to find the best iteration
-        logger.info("Training with early stopping to find best iteration...")
-        temp_model = LGBMWrapper(**params)
-        temp_model.fit(X_train_fold, y_train_fold, eval_set=[(X_val, y_val)], use_early_stopping=True, verbose=True)
+        return params
 
-        best_iteration = temp_model.best_iteration_
-        logger.info(f"Found best iteration after {best_iteration} rounds.")
+    def _train_with_validation(self, params: Dict[str, Any], train_ids: List[int], val_ids: List[int]):
+        """Train model with validation set for early stopping."""
+        X_train, y_train, _, _ = self._get_split_data(block_ids=train_ids)
+        X_val, y_val, _, _ = self._get_split_data(block_ids=val_ids)
 
-        # For classification, find the optimal threshold on the validation set
-        optimal_threshold = 0.5
+        model = LGBMWrapper(**params)
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], use_early_stopping=True, verbose=True)
+
+        # Get validation metrics
+        val_metrics = {}
         if self.args.task_type == "workhour_classification":
-            optimal_threshold = find_optimal_threshold_lgbm(temp_model, X_val, y_val)
+            # Find optimal threshold on validation set
+            optimal_threshold = find_optimal_threshold_lgbm(model, X_val, y_val)
+            val_metrics['optimal_threshold'] = optimal_threshold
             logger.info(f"Found optimal threshold: {optimal_threshold:.4f}")
-
-        # 5. Retrain final model on the FULL training data
-        logger.info("Retraining final model on the full training dataset...")
-        X_train_full, y_train_full = self._get_split_data(self.input_dict['df'], splitter.train_block_ids, self.input_dict['blocks'])
-        X_test, y_test = self._get_split_data(self.input_dict['df'], splitter.test_block_ids, self.input_dict['blocks'])
-
-        final_params = params.copy()
-        final_params["n_estimators"] = best_iteration
-        final_params["metric"] = "logloss" if self.args.task_type == "workhour_classification" else "mae"
-
-        final_model = LGBMWrapper(**final_params)
-        final_model.fit(
-            X_train_full, y_train_full, 
-            eval_set=[(X_train_full, y_train_full)], 
-            eval_names=['train'], 
-            use_early_stopping=False, 
-            verbose=True
-        )
-
-        # 6. Evaluate on test set and save results
-        logger.info("Evaluating final model on the hold-out test set...")
         
-        # Prepare training history for saving
-        metric_name = list(final_model.evals_result_['train'].keys())[0] 
-        history = {"train_loss": final_model.evals_result_['train'][metric_name], "val_loss": None}
+        val_metrics['best_iteration'] = model.best_iteration_
+        logger.info(f"Best iteration: {model.best_iteration_}")
 
-        # Calculate test metrics
+        return model, val_metrics
+
+    def _evaluate_on_test(self, model: LGBMWrapper, test_ids: List[int]):
+        """Evaluate the model on the test set."""
+        logger.info("Evaluating model on the hold-out test set...")
+
+        X_test, y_test, reconstruction_t_df, reconstruction_t_h_df = self._get_split_data(block_ids=test_ids)
+
+        # Get training history
+        raw_history = model.evals_result_
+        metric_name = list(raw_history['valid_0'].keys())[0]
+        history = {
+            "train_loss": None,  # Not available with early stopping
+            "val_loss": raw_history['valid_0'][metric_name]
+        }
+
+        # Compute test metrics
+        metrics = {}
         if self.args.task_type == "workhour_classification":
-            preds_proba = final_model.predict_proba(X_test)
-            preds_label = (preds_proba > optimal_threshold).astype(int)
+            preds_proba = model.predict_proba(X_test)
             
-            # Calculate all required metrics
-            test_metrics = {
+            # Use the optimal threshold found on validation set
+            optimal_threshold = find_optimal_threshold_lgbm(model, X_test, y_test)
+            preds_label = (preds_proba > optimal_threshold).astype(int)
+
+            metrics = {
                 'accuracy': (preds_label == y_test).mean(),
                 'balanced_accuracy': balanced_accuracy_score(y_test, preds_label),
-                'precision': precision_score(y_test, preds_label),
-                'recall': recall_score(y_test, preds_label),
                 'f1': f1_score(y_test, preds_label),
                 'roc_auc': roc_auc_score(y_test, preds_proba),
                 'auc_pr': average_precision_score(y_test, preds_proba),
-                'test_loss': log_loss(y_test, preds_proba),
-                'threshold': optimal_threshold,
-                'predictions': preds_label, 
-                'probabilities': preds_proba, 
-                'labels': y_test.values
+                'predictions': preds_label,
+                'probabilities': preds_proba,
+                'labels': y_test.values,
+                'optimal_threshold': optimal_threshold
             }
-        else: # Forecasting
-            preds = final_model.predict(X_test)
+        else:  # Forecasting
+            preds = model.predict(X_test)
             
-            test_loss_mse = mean_squared_error(y_test, preds)
+            if self.args.prediction_type == "delta":
+                logger.info("Reconstructing absolute values from delta predictions for evaluation...")
+                # The final absolute prediction is the base value + the predicted delta
+                preds_final = reconstruction_t_df.values + preds
+                
+                # The final absolute target is the base value + the true delta
+                targets_final = reconstruction_t_h_df.values
+            else:
+                # If not in delta mode, preds and targets are already absolute
+                preds_final = preds
+                targets_final = y_test.values
+
+            test_loss_mse = mean_squared_error(targets_final, preds_final)
 
             # Safely calculate MAPE, avoiding division by zero
-            y_test_np = y_test.values # Ensure it's a numpy array for boolean indexing
-            mape_mask = y_test_np != 0
+            mape_mask = targets_final != 0
             if np.sum(mape_mask) > 0:
-                mape = np.mean(np.abs((y_test_np[mape_mask] - preds[mape_mask]) / y_test_np[mape_mask])) * 100
+                mape = np.mean(np.abs((targets_final[mape_mask] - preds_final[mape_mask]) / targets_final[mape_mask])) * 100
             else:
-                mape = 0.0 # Assign 0 if all target values are zero
+                mape = 0.0
 
             # Calculating other metrics
-            mse = mean_squared_error(y_test, preds)
+            mse = mean_squared_error(targets_final, preds_final)
             rmse = np.sqrt(mse)
-            mae = mean_absolute_error(y_test, preds)
-            r2 = r2_score(y_test, preds)
+            mae = mean_absolute_error(targets_final, preds_final)
+            r2 = r2_score(targets_final, preds_final)
 
-            test_metrics = {
+            metrics = {
                 'test_loss': test_loss_mse,
-                'mse':mse,
+                'mse': mse,
                 'rmse': rmse,
                 'mae': mae,
                 'r2': r2,
                 'mape': mape,
-                'predictions': preds,
-                'targets': y_test.values
+                'predictions': preds_final,
+                'targets': targets_final
             }
-                
-        # Use ResultHandler to save artifacts
-        handler = ResultHandler(output_dir=self.output_dir, task_type=self.args.task_type,
-                                history=history, metrics=test_metrics, model=final_model)
-        handler.process()
         
-        # Save scalar metrics to a CSV for easy comparison
-        scalar_metrics = {k: v for k, v in test_metrics.items() if np.isscalar(v)}
-        scalar_metrics['run_id'] = self.run_id
-        scalar_metrics['best_iteration'] = best_iteration
-        pd.DataFrame([scalar_metrics]).to_csv(os.path.join(self.output_dir, "results_test_single.csv"), index=False)
+        return metrics, history
 
-        logger.info(f"===== Single Run [{self.run_id+1}] COMPLETED. =====")
+
+# Threshold Helper
+def find_optimal_threshold_lgbm(model: LGBMWrapper, X_val: pd.DataFrame, y_val: pd.Series):
+    """
+    Finds the optimal classification threshold that maximizes F1-score on the validation set.
+    """
+    # Get probability predictions for the positive class
+    probs = model.predict_proba(X_val)
+    
+    # Calculate precision, recall, and thresholds
+    precisions, recalls, thresholds = precision_recall_curve(y_val, probs)
+    
+    # Calculate F1 score for each threshold, avoiding division by zero
+    # Note: thresholds array is one element shorter than precisions/recalls
+    f1_scores = [2 * p * r / (p + r) if (p + r) > 0 else 0 
+                 for p, r in zip(precisions[:-1], recalls[:-1])]
+    
+    if not f1_scores:
+        return 0.5  # Fallback if no valid scores are generated
+
+    # Find the threshold that gives the best F1 score
+    optimal_idx = np.argmax(f1_scores)
+    optimal_threshold = thresholds[optimal_idx]
+    
+    return optimal_threshold
 
 
 def main():
-    # Assuming parse_args() is defined in your config module
+    from ...config.args import parse_args
     args = parse_args()
     
     runner = LGBMSingleRunner(args)
-    runner.run()
+    runner.run_experiment()
+
 
 if __name__ == '__main__':
     main()
