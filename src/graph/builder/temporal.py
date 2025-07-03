@@ -370,8 +370,8 @@ class TemporalBuilderMixin:
             names=["device_URIRef", "property_type", "bucket_idx"]
         )
         full_df = agg_df.set_index(['device_URIRef', 'property_type', 'bucket_idx']).reindex(full_idx).reset_index()
-
-
+        
+        
         # === Stage 5: Final Imputation & Feature Creation ===
 
         # For the new rows created by reindex, 'count' is NaN, can be safely filled with 0
@@ -612,8 +612,8 @@ class TemporalBuilderMixin:
                     source_dict = getattr(self, attr_string, None)
                     
                     if source_dict:
-                        floor_num = self.room_to_floor.get(room_URIRef)
-                        val = source_dict.get(floor_num, {}).get(room_URIRef, np.nan)
+                        floor_num = self.room_to_floor.get(str(room_URIRef))
+                        val = source_dict.get(floor_num, {}).get(str(room_URIRef), np.nan)
                         features[attr_string] = val
                     else:
                         logger.warning(f"Normalized area dictionary '{attr_string}' not found. Did you run normalize_room_areas()?")

@@ -158,7 +158,7 @@ class SpatialVisualizerMixin:
         if not hasattr(self, 'room_to_room_adj_matrix') or self.room_to_room_adj_matrix is None:
             raise ValueError("No room-to-room adjacency matrix found. Make sure to call build_horizontal_adjacency().")
         
-        if not hasattr(self, 'adj_matrix_room_uris') or self.adj_matrix_room_uris is None:
+        if not hasattr(self, 'adj_matrix_room_URIs_str') or self.adj_matrix_room_URIs_str is None:
             raise ValueError("Room URIs in adjacency matrix order not found. Make sure to call build_horizontal_adjacency().")
         
         fig = plt.figure(figsize=figsize)
@@ -171,17 +171,17 @@ class SpatialVisualizerMixin:
             plt.colorbar(label='Connection strength')
         
         # Use pre-stored room names for labels
-        if show_room_ids and len(self.adj_matrix_room_uris) <= 50:  # Only show labels if not too many rooms
-            labels = [self.room_names.get(uri, str(uri)) for uri in self.adj_matrix_room_uris]
-            plt.xticks(range(len(self.adj_matrix_room_uris)), labels, rotation=90)
-            plt.yticks(range(len(self.adj_matrix_room_uris)), labels)
+        if show_room_ids and len(self.adj_matrix_room_URIs_str) <= 50:  # Only show labels if not too many rooms
+            labels = [self.room_names.get(uri, str(uri)) for uri in self.adj_matrix_room_URIs_str]
+            plt.xticks(range(len(self.adj_matrix_room_URIs_str)), labels, rotation=90)
+            plt.yticks(range(len(self.adj_matrix_room_URIs_str)), labels)
         elif not show_room_ids:
             plt.xticks([])
             plt.yticks([])
         else:
             # Too many rooms, just show indices
-            plt.xticks(range(0, len(self.adj_matrix_room_uris), 5))
-            plt.yticks(range(0, len(self.adj_matrix_room_uris), 5))
+            plt.xticks(range(0, len(self.adj_matrix_room_URIs_str), 5))
+            plt.yticks(range(0, len(self.adj_matrix_room_URIs_str), 5))
         
         # Set title
         if title is None:
@@ -250,7 +250,7 @@ class SpatialVisualizerMixin:
             frame_data = []
             
             # For each room polygon
-            for i, room_uri in enumerate(self.adj_matrix_room_uris):
+            for i, room_uri in enumerate(self.adj_matrix_room_URIs_str):
                 if room_uri in self.room_polygons:
                     polygon = self.room_polygons[room_uri]
                     
@@ -306,7 +306,7 @@ class SpatialVisualizerMixin:
                 name=f"Step {step}",
                 layout=go.Layout(
                     title=f"Information Propagation - Step {step}: "
-                        f"{np.sum(room_info_by_step[step])}/{len(self.adj_matrix_room_uris)} rooms can pass information"
+                        f"{np.sum(room_info_by_step[step])}/{len(self.adj_matrix_room_URIs_str)} rooms can pass information"
                 )
             )
             frames.append(frame)
@@ -482,7 +482,7 @@ class SpatialVisualizerMixin:
         
         # --- gather centroids, floor info and room labels ---
         centroids, raw_zs, room_ids = [], [], []
-        for uri in self.adj_matrix_room_uris:
+        for uri in self.adj_matrix_room_URIs_str:
             poly: Polygon = self.polygons[self.room_to_floor[uri]][uri]
             x, y = poly.centroid.coords[0]
             centroids.append((x, y))
@@ -527,7 +527,7 @@ class SpatialVisualizerMixin:
         # --- build mesh & edges for each room once ---
         room_meshes = []
         room_edge_traces = []
-        for idx, uri in enumerate(self.adj_matrix_room_uris):
+        for idx, uri in enumerate(self.adj_matrix_room_URIs_str):
             poly: Polygon = self.polygons[self.room_to_floor[uri]][uri]
             coords = list(poly.exterior.coords)[:-1]  # drop closing point
             N = len(coords)
@@ -684,7 +684,7 @@ class SpatialVisualizerMixin:
         if not hasattr(self, "room_to_outside_adjacency") or self.room_to_outside_adjacency is None:
             raise ValueError("Outside adjacency not found. Call calculate_outside_adjacency() first.")
         weights = np.array(self.room_to_outside_adjacency, dtype=float)
-        uris = self.adj_matrix_room_uris
+        uris = self.adj_matrix_room_URIs_str
 
         # --- gather centroids, floors and labels ---
         centroids = []
@@ -839,9 +839,9 @@ class SpatialVisualizerMixin:
                 "room_to_room_adj_matrix not found. "
                 "Run build_combined_room_to_room_adjacency() first."
             )
-        if not hasattr(self, "adj_matrix_room_uris"):
+        if not hasattr(self, "adj_matrix_room_URIs_str"):
             raise ValueError(
-                "adj_matrix_room_uris not found. It must list URIs in the same "
+                "adj_matrix_room_URIs_str not found. It must list URIs in the same "
                 "order as rows/cols of room_to_room_adj_matrix."
             )
 
@@ -871,7 +871,7 @@ class SpatialVisualizerMixin:
 
 
         # 5) Add each room URI as a node, copying requested static attributes
-        for room_uri in self.adj_matrix_room_uris:
+        for room_uri in self.adj_matrix_room_URIs_str:
             room_obj = self.office_graph.rooms.get(room_uri)
             if room_obj is None:
                 raise KeyError(f"Room {room_uri} not found in office_graph.rooms")
@@ -906,7 +906,7 @@ class SpatialVisualizerMixin:
 
         # 6) Add directed edges for every non‐zero entry in the adjacency matrix
         adj = self.room_to_room_adj_matrix
-        uris = self.adj_matrix_room_uris
+        uris = self.adj_matrix_room_URIs_str
         n = len(uris)
         for i in range(n):
             u = uris[i]
@@ -1337,7 +1337,7 @@ class SpatialVisualizerMixin:
 
         # -- gather centroids, floors, and room labels --
         centroids, raw_zs, room_ids = [], [], []
-        for uri in self.adj_matrix_room_uris:
+        for uri in self.adj_matrix_room_URIs_str:
             poly: Polygon = self.polygons[self.room_to_floor[uri]][uri]
             x, y = poly.centroid.coords[0]
             centroids.append((x, y))
@@ -1359,7 +1359,7 @@ class SpatialVisualizerMixin:
 
         # -- precompute each room mesh once --
         room_meshes = []
-        for idx, uri in enumerate(self.adj_matrix_room_uris):
+        for idx, uri in enumerate(self.adj_matrix_room_URIs_str):
             poly: Polygon = self.polygons[self.room_to_floor[uri]][uri]
             coords = list(poly.exterior.coords)[:-1]
             N = len(coords)

@@ -447,7 +447,7 @@ class STGCNDataPreparer(BaseDataPreparer):
         We get the requested "binary" or "weighted" adjacency dictionary.
         Then, we convert them into tensors and return them.
         """
-        requested_adjacency = f"{self.args.adjacency_type}_adjacency"
+        requested_adjacency = self.args.adjacency_type
         adjacency_data = self.metadata[requested_adjacency]
         
         adj_matrix_tensor = torch.from_numpy(adjacency_data["adjacency_matrix"]).float().to(device)

@@ -109,7 +109,7 @@ class HeteroGraphBuilderMixin:
         }
         
         # Room nodes - use the same order as adjacency matrix
-        for idx, room_uri in enumerate(self.adj_matrix_room_uris):
+        for idx, room_uri in enumerate(self.adj_matrix_room_URIs_str):
             self.node_mappings['room'][room_uri] = idx
             self.reverse_node_mappings['room'][idx] = room_uri
         
@@ -435,7 +435,7 @@ class HeteroGraphBuilderMixin:
         # Use the calculated outside adjacency weights
         for room_uri, room_idx in self.node_mappings['room'].items():
             # Find the corresponding index in the adjacency matrix order
-            adj_matrix_idx = self.adj_matrix_room_uris.index(room_uri)
+            adj_matrix_idx = self.adj_matrix_room_URIs_str.index(room_uri)
             weight = self.combined_outside_adj[adj_matrix_idx]
             
             if weight > 0:  # Only add edges with positive weights

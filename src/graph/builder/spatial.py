@@ -1,8 +1,9 @@
 import pandas as pd
 from shapely.geometry import Polygon
 import numpy as np
-from typing import Dict
+from typing import Dict, List
 from collections import defaultdict
+from rdflib.term import URIRef
 
 from ...data.FloorPlan import polygon_utils
 
@@ -11,12 +12,46 @@ logger = logging.getLogger(__name__)
 
 
 class SpatialBuilderMixin:
+    
+    def initialize_canonical_ordering(self) -> None:
+        """
+        Establishes a canonical ordering of rooms based on their room number.
 
+        This method populates 
+        - self.room_URIs_str: a sorted list of string URIs.
+        - self.room_names: a {str_uri: room_number} dict.
+        """
+        # Create a temporary mapping from string URI to room number
+        room_URIRefs_temp = self.office_graph.rooms.keys()
+        room_names_temp = {
+            str(uri): self.office_graph._map_RoomURIRef_to_RoomNumber(uri) 
+            for uri in room_URIRefs_temp
+        }
+        
+        # Store the canonically sorted list of string URIs
+        self.room_URIs_str = sorted(
+            room_names_temp.keys(), 
+            key=lambda uri_str: room_names_temp[uri_str]
+        )
+        # Store the name mapping
+        self.room_names = room_names_temp
+
+        # Logging
+        logger.info(f"Established canonical room ordering for {len(self.room_URIs_str)} rooms")
+        logger.debug(f"First 5 rooms in order: {[self.room_names[uri] for uri in self.room_URIs_str[:5]]}")
+        logger.debug(f"Last 5 rooms in order: {[self.room_names[uri] for uri in self.room_URIs_str[-5:]]}")
+    
+    
     #############################
     # Polygons
     #############################
-        
-    def initialize_room_polygons(self, polygon_type='doc', simplify_polygons=False, simplify_epsilon=0.0):
+
+    def initialize_room_polygons(
+        self, 
+        polygon_type='doc', 
+        simplify_polygons=False, 
+        simplify_epsilon=0.0
+        ) -> None:
         """
         Initialize shapely Polygon objects for each room based on the Room's polygon data.
         Also extracts and stores room areas for later use.
@@ -27,27 +62,6 @@ class SpatialBuilderMixin:
             simplify_epsilon (float): Epsilon value for polygon simplification. 
                                     0.0 means no simplification.
         """
-
-        ###### Rooms ######
-
-        # Get all room URIs and create room names mapping
-        all_room_uris = list(self.office_graph.rooms.keys())
-        room_names_temp = {}
-        
-        for room_uri in all_room_uris:
-            room = self.office_graph.rooms[room_uri]
-            room_number = room.room_number
-            room_names_temp[room_uri] = room_number
-        
-        # Create canonical ordering - simple string sort
-        self.room_uris = sorted(all_room_uris, key=lambda uri: room_names_temp[uri])
-        self.room_names = {uri: room_names_temp[uri] for uri in self.room_uris}
-
-        logger.info(f"Established canonical room ordering for {len(self.room_uris)} rooms")
-        logger.debug(f"First 5 rooms in order: {[self.room_names[uri] for uri in self.room_uris[:5]]}")
-        logger.debug(f"Last 5 rooms in order: {[self.room_names[uri] for uri in self.room_uris[-5:]]}")
-
-
         ###### Polygons ######
 
         # Store the polygon type for later reference
@@ -61,9 +75,10 @@ class SpatialBuilderMixin:
         self.floor_to_rooms = defaultdict(list)
         
         # Process rooms in canonical order
-        for room_uri in self.room_uris:
-            room = self.office_graph.rooms[room_uri]
-
+        for room_URI_str in self.room_URIs_str:
+            room_uri_obj = URIRef(room_URI_str)
+            room = self.office_graph.rooms[room_uri_obj]
+            
             # Get the appropriate polygon data based on type
             if polygon_type == 'geo':
                 points_2d = room.polygons_geo.get('points_2d', [])
@@ -76,38 +91,39 @@ class SpatialBuilderMixin:
                 points_2d = room.polygons_doc.get('points_2d', [])
                 area = room.polygons_doc.get('area')
             
-            floor_uri = self.office_graph._map_RoomURIRef_to_FloorURIRef(room_uri)
-            floor_number = self.office_graph._map_FloorURIRef_to_FloorNumber(floor_uri)
+            # Get the floor number using the helper in OfficeGraph
+            floor_URIRef = self.office_graph._map_RoomURIRef_to_FloorURIRef(room_uri_obj)
+            floor_number = self.office_graph._map_FloorURIRef_to_FloorNumber(floor_URIRef)
             
             # Quick access dictionaries
-            self.room_to_floor[room_uri] = floor_number
-            self.floor_to_rooms[floor_number].append(room_uri)
-            
+            self.room_to_floor[room_URI_str] = floor_number
+            self.floor_to_rooms[floor_number].append(room_URI_str)
+                        
             # Area data
             if area is not None:
-                self.areas[floor_number][room_uri] = area
+                self.areas[floor_number][room_URI_str] = area
             else:
-                raise ValueError(f"Room {room_uri} has no area data.")
+                raise ValueError(f"Room {room_URI_str} has no area data.")
 
             # Check if we have valid polygon data
             if not points_2d or len(points_2d) < 3:
-                logger.warning(f"Room {room_uri} has no valid polygon data for type '{polygon_type}'.")
+                logger.warning(f"Room {room_URI_str} has no valid polygon data for type '{polygon_type}'.")
                 continue
             
             # Create a shapely Polygon (simplify if requested)
             if simplify_polygons:
                 simplified_coords = polygon_utils.simplify_polygon(points_2d, epsilon=simplify_epsilon)
                 polygon = Polygon(simplified_coords)
-                logger.debug(f"Simplified room {room_uri} polygon from {len(points_2d)} to {len(simplified_coords)} vertices.")
+                logger.debug(f"Simplified room {room_URI_str} polygon from {len(points_2d)} to {len(simplified_coords)} vertices.")
             else:
                 polygon = Polygon(points_2d)
             
-            self.polygons[floor_number][room_uri] = polygon
+            self.polygons[floor_number][room_URI_str] = polygon
 
         # Sort floor_to_rooms lists to maintain canonical ordering within floors
         for floor_num in self.floor_to_rooms:
-            self.floor_to_rooms[floor_num].sort(key=lambda uri: self.room_names[uri])
-
+            self.floor_to_rooms[floor_num].sort(key=lambda uri_str: self.room_names[uri_str])
+        
         # Calculate totals for proper logging
         total_polygons = sum(len(floor_polys) for floor_polys in self.polygons.values())
         total_areas = sum(len(floor_areas) for floor_areas in self.areas.values())
@@ -119,25 +135,21 @@ class SpatialBuilderMixin:
         # Log floor-by-floor breakdown
         for floor_num in sorted(self.polygons.keys()):
             logger.info(f"  Floor {floor_num}: {len(self.polygons[floor_num])} rooms")
+        
+        return None
     
-
-
     ##############################
     # Normalization of Areas
     ##############################
-
-
+    
     def normalize_room_areas(self) -> None:
         """
-        Calculate both min-max and proportion normalized room areas and store them 
-        as class attributes. Uses the areas stored during initialize_room_polygons().
+        Calculate both min-max and proportion normalized room areas and store them as class attributes. 
+        Uses the areas stored during initialize_room_polygons().
         
         This method populates:
         - self.norm_areas_minmax: Hierarchical dictionary [floor_number][room_uri] = normalized_area (0-1 scale)
         - self.norm_areas_prop: Hierarchical dictionary [floor_number][room_uri] = proportion (fraction of total)
-        
-        Returns:
-            None
         """
         # Initialize hierarchical dictionaries for normalized areas
         self.norm_areas_minmax = defaultdict(dict)
@@ -187,70 +199,55 @@ class SpatialBuilderMixin:
         # Log floor-by-floor breakdown
         for floor_num in sorted(self.norm_areas_minmax.keys()):
             logger.info(f"  Floor {floor_num}: normalized {len(self.norm_areas_minmax[floor_num])} rooms")
-        
+
         return None
-
-
+    
+    
     #############################
     # Horizontal Adjacency
     #############################
-
-
+    
     def calculate_binary_adjacency(
         self,
         floor_number,
         distance_threshold: float = 5.0
         ) -> pd.DataFrame:
         """
-        Calculate binary adjacency between rooms based on their polygons.
+        Calculate binary adjacency between rooms on a floor based on their polygons.
         Two rooms are considered adjacent if their polygons are within distance_threshold.
         
         Args:
             floor_number (int): Floor number to calculate adjacency for
             distance_threshold (float): Maximum distance (in meters) for rooms to be considered adjacent
-            
+        
         Returns:
-            DataFrame: Adjacency matrix as a pandas DataFrame
+            DataFrame: Adjacency matrix as a pandas DataFrame (rows i to j)
         """
         # Get room polygons for the specified floor
         if not hasattr(self, 'polygons') or floor_number not in self.polygons:
             raise ValueError(f"Floor {floor_number} not found. Available floors: {list(self.polygons.keys()) if hasattr(self, 'polygons') else []}")
         
-        room_polygons = self.polygons[floor_number]
-        
+        # Get the rooms on the requested floor
+        room_polygons = self.polygons[floor_number]        
+        room_URIs_str = list(room_polygons.keys()) 
         if not room_polygons:
             raise ValueError(f"No room polygons found for floor {floor_number}")
-        
-        # Get list of room URIs as strings (to be used as DataFrame indices)
-        room_uris_str = [str(uri) for uri in room_polygons.keys()]
-        # Store mapping from string URI to original URI object for later use
-        uri_str_to_obj = {str(uri): uri for uri in room_polygons.keys()}
-        
+
         # Initialize adjacency matrix with zeros
-        adj_df = pd.DataFrame(0, index=room_uris_str, columns=room_uris_str)
+        adj_df = pd.DataFrame(0, index=room_URIs_str, columns=room_URIs_str)
         
         # Fill adjacency matrix
-        for i, room1_id in enumerate(room_uris_str):
-            room1_uri = uri_str_to_obj[room1_id]
-            room1_poly = room_polygons.get(room1_uri)
-            
-            if room1_poly is None:
-                continue
+        for i, room1_id in enumerate(room_URIs_str):
+            room1_poly = room_polygons.get(room1_id)
+            if not room1_poly: continue
                 
-            for j, room2_id in enumerate(room_uris_str[i+1:], i+1):
-                room2_uri = uri_str_to_obj[room2_id]
-                room2_poly = room_polygons.get(room2_uri)
+            for j, room2_id in enumerate(room_URIs_str[i+1:], i+1):
+                room2_poly = room_polygons.get(room2_id)
+                if not room2_poly: continue
                 
-                if room2_poly is None:
-                    continue
-                
-                # Calculate distance between the polygons
-                distance = room1_poly.distance(room2_poly)
-                
-                # Set adjacency based on distance threshold
-                if distance <= distance_threshold:
+                if room1_poly.distance(room2_poly) <= distance_threshold:
                     adj_df.at[room1_id, room2_id] = 1
-                    adj_df.at[room2_id, room1_id] = 1  # Symmetric
+                    adj_df.at[room2_id, room1_id] = 1
 
         return adj_df
 
@@ -274,14 +271,14 @@ class SpatialBuilderMixin:
                         no significant boundary is shared (default: 0.001)
             
         Returns:
-            DataFrame: adjacency matrix A (rows i to j)
+            DataFrame: Adjacency matrix as a pandas DataFrame (rows i to j)
         """
         # Get room polygons for the specified floor
         if not hasattr(self, 'polygons') or floor_number not in self.polygons:
             raise ValueError(f"Floor {floor_number} not found. Available floors: {list(self.polygons.keys()) if hasattr(self, 'polygons') else []}")
         
+        # Get the room polygons on the requested floor
         room_polygons = self.polygons[floor_number]
-        
         if not room_polygons:
             raise ValueError(f"No room polygons found for floor {floor_number}")
         
@@ -289,74 +286,55 @@ class SpatialBuilderMixin:
         binary_adj_df = self.calculate_binary_adjacency(floor_number=floor_number, distance_threshold=distance_threshold)
             
         # Reuse the room_ids from binary adjacency for consistency
-        room_ids = binary_adj_df.index.tolist()
+        room_URIs_str = binary_adj_df.index.tolist()
         
         # Prepare DataFrame
-        adj_df = pd.DataFrame(0.0, index=room_ids, columns=room_ids)
+        adj_df = pd.DataFrame(0.0, index=room_URIs_str, columns=room_URIs_str)
         
         # Create URI mapping for this floor
-        uri_str_to_obj = {str(uri): uri for uri in room_polygons.keys()}
-        
-        # Precompute perimeters
-        perimeters = {}
-        for rid in room_ids:
-            uri = uri_str_to_obj[rid]
-            if uri in room_polygons:
-                perimeters[rid] = room_polygons[uri].length
-            else:
-                perimeters[rid] = 0.0
-        
-        # Process only room pairs that are adjacent according to binary adjacency
-        for i, r1 in enumerate(room_ids):
-            uri1 = uri_str_to_obj[r1]
-            poly1 = room_polygons.get(uri1)
-            if poly1 is None:
-                continue
-                
-            p1 = perimeters[r1]
-            if p1 <= 0:
-                continue
-            
-            for j, r2 in enumerate(room_ids):
-                if i == j:
-                    continue
-                    
-                # Only process if binary adjacency exists
-                if binary_adj_df.at[r1, r2] <= 0:
-                    continue
-                
-                uri2 = uri_str_to_obj[r2]
-                poly2 = room_polygons.get(uri2)
-                if poly2 is None:
-                    continue
-                
-                # Find shared boundary: intersect boundary of r1 with buffered boundary of r2
-                try:
-                    shared = poly1.boundary.intersection(
-                        poly2.boundary.buffer(distance_threshold/2)
-                    )
-                except Exception as e:
-                    logger.warning(f"Boundary intersection error {r1}-{r2}: {e}")
-                    # Even if there's an error, we still want to preserve the binary adjacency
-                    adj_df.at[r1, r2] = min_weight
-                    continue
-                
-                # Compute total length of any lines
-                length = 0.0
-                if shared.geom_type == 'LineString':
-                    length = shared.length
-                elif shared.geom_type == 'MultiLineString':
-                    length = sum(seg.length for seg in shared.geoms)
-                
-                if length > min_shared_length:
-                    # Proportional weight: shared boundary / perimeter
-                    adj_df.at[r1, r2] = length / p1
-                else:
-                    # assign the minimum weight if too small
-                    adj_df.at[r1, r2] = min_weight
-        
-        return adj_df
+        perimeters = {
+            rid: room_polygons[rid].length
+            for rid in room_URIs_str if rid in room_polygons and room_polygons[rid].is_valid
+        }
 
+        # Process only room pairs that are adjacent according to binary adjacency
+        for r1 in room_URIs_str:
+            poly1 = room_polygons.get(r1)
+            p1 = perimeters.get(r1, 0)
+            
+            # Skip if the source room has no valid polygon or perimeter
+            if not poly1 or p1 <= 0:
+                continue
+
+            for r2 in room_URIs_str:
+                # Only calculate for pairs that are adjacent in the binary check
+                if r1 == r2 or binary_adj_df.at[r1, r2] == 0:
+                    continue
+
+                poly2 = room_polygons.get(r2)
+                if not poly2:
+                    continue
+
+                try:
+                    # Find the length of the shared boundary
+                    shared = poly1.boundary.intersection(
+                        poly2.boundary.buffer(distance_threshold / 2)
+                    )
+                    length = sum(seg.length for seg in getattr(shared, 'geoms', [shared]))
+
+                    # Assign weight: proportional to perimeter or a minimum value
+                    if length > min_shared_length:
+                        adj_df.at[r1, r2] = length / p1
+                    else:
+                        adj_df.at[r1, r2] = min_weight
+
+                except Exception as e:
+                    logger.warning(f"Boundary intersection error between {r1} and {r2}: {e}")
+                    adj_df.at[r1, r2] = min_weight
+                    continue
+
+        return adj_df
+    
     def build_horizontal_adjacency(self, 
                                    mode="weighted", 
                                    distance_threshold=5.0) -> None:
@@ -368,9 +346,6 @@ class SpatialBuilderMixin:
                 - 'binary': Basic binary adjacency based on proximity
                 - 'weighted': Weighted adjacency where each room's influence is proportional to target's perimeter
             distance_threshold: Maximum distance for considering rooms adjacent (in meters)
-            
-        Returns:
-            None
         """
         if not hasattr(self, 'polygons') or not self.polygons:
             raise ValueError("No room polygons found. Make sure to call initialize_room_polygons().")
@@ -388,41 +363,25 @@ class SpatialBuilderMixin:
             raise ValueError(f"Unknown adjacency kind: {mode}. Use 'binary' or 'weighted'.")
         
         logger.info(f"Building {mode} horizontal adjacency for {len(self.polygons)} floors...")
-        
+
         for floor_number in sorted(self.polygons.keys()):
-            logger.info(f"Processing floor {floor_number}...")
-            
-            # Calculate adjacency for this floor
             adj_df = adj_func(floor_number=floor_number, distance_threshold=distance_threshold)
             
-            # Create URI mapping for this floor
-            uri_str_to_obj = {str(uri): uri for uri in self.polygons[floor_number].keys()}
-            
-            # Store the results for this floor
+            # CHANGE: Simplified. adj_df.index is already a list of strings. No obj mapping.
             self.horizontal_adj[floor_number] = {
                 "df": adj_df,
                 "matrix": adj_df.values,
-                "room_uris": [uri_str_to_obj[uri_str] for uri_str in adj_df.index],
-                "uri_str_to_obj": uri_str_to_obj
+                "room_URIs_str": adj_df.index.tolist(),
             }
-            
-            non_zero_connections = (adj_df > 0).sum().sum()
-            logger.info(f"  Floor {floor_number}: {adj_df.shape} matrix with {non_zero_connections} connections")
+            logger.info(f"  Floor {floor_number}: {adj_df.shape} matrix with {(adj_df > 0).sum().sum()} connections")
         
-        logger.info(f"Completed horizontal adjacency calculation for {len(self.horizontal_adj)} floors")
-
-        # Combine per-floor horizontal adjacency matrices into one large matrix
         self._combine_horizontal_adjacencies()
-        
         return None
-
+    
     def _combine_horizontal_adjacencies(self) -> None:
         """
         Combine per-floor horizontal adjacency matrices into one large matrix.
         Uses canonical room ordering established during initialization.
-        
-        Returns:
-            None (stores results in self.combined_horizontal_adj_df and related attributes)
         """
         if not hasattr(self, 'horizontal_adj') or not self.horizontal_adj:
             raise ValueError("No horizontal adjacency matrices found. Call build_horizontal_adjacency() first.")
@@ -431,216 +390,143 @@ class SpatialBuilderMixin:
         rooms_in_adj_matrices = set()
         for floor_data in self.horizontal_adj.values():
             rooms_in_adj_matrices.update(floor_data["df"].index)
-        
+                
         # Keep canonical order but only for rooms that have adjacency data
-        all_room_uris_str = [str(uri) for uri in self.room_uris if str(uri) in rooms_in_adj_matrices]
+        all_room_URIs_str = [uri for uri in self.room_URIs_str if uri in rooms_in_adj_matrices]
         
-        logger.info(f"Creating combined matrix with {len(all_room_uris_str)} rooms in canonical order")
+        logger.info(f"Creating combined matrix with {len(all_room_URIs_str)} rooms in canonical order")
         
         # Create combined matrix
-        self.combined_horizontal_adj_df = pd.DataFrame(0.0, index=all_room_uris_str, columns=all_room_uris_str)
+        self.combined_horizontal_adj_df = pd.DataFrame(0.0, index=all_room_URIs_str, columns=all_room_URIs_str)
         
         # Fill in the floor-specific adjacencies
-        for floor_num, floor_data in self.horizontal_adj.items():
+        for floor_data in self.horizontal_adj.values():
             floor_df = floor_data["df"]
-            floor_rooms = list(floor_df.index)
-            
-            # Copy the floor adjacency into the appropriate block of the combined matrix
-            for i, room1 in enumerate(floor_rooms):
-                for j, room2 in enumerate(floor_rooms):
-                    self.combined_horizontal_adj_df.at[room1, room2] = floor_df.at[room1, room2]
+            self.combined_horizontal_adj_df.loc[floor_df.index, floor_df.columns] = floor_df
         
-        # Store combined results
-        self.horizontal_adjacency_matrix_df = self.combined_horizontal_adj_df
         self.horizontal_adj_matrix = self.combined_horizontal_adj_df.values
-        
-        # Create URI mapping in canonical order
-        self.uri_str_to_obj = {str(uri): uri for uri in self.room_uris}
-        
-        # Room URIs in the same order as the combined matrix (canonical order)
-        self.adj_matrix_room_uris = [self.uri_str_to_obj[uri_str] for uri_str in self.combined_horizontal_adj_df.index]
-        
-        total_connections = (self.combined_horizontal_adj_df > 0).sum().sum()
-        logger.info(f"Combined horizontal adjacencies into {self.combined_horizontal_adj_df.shape} matrix with {total_connections} total connections")
-        
-        # Log ordering verification
-        logger.info("Room ordering verification:")
-        for floor_num in sorted(self.polygons.keys()):
-            floor_rooms_in_matrix = [self.room_names[uri] for uri in self.adj_matrix_room_uris 
-                                   if self.room_to_floor.get(uri) == floor_num]
-            if floor_rooms_in_matrix:
-                logger.info(f"  Floor {floor_num}: {floor_rooms_in_matrix[:3]}...{floor_rooms_in_matrix[-3:]} ({len(floor_rooms_in_matrix)} total)")
-
+        self.adj_matrix_room_URIs_str = self.combined_horizontal_adj_df.index.tolist()
+        logger.info(f"Combined horizontal adjacencies into {self.combined_horizontal_adj_df.shape} matrix.")
         return None
-
+    
 
     #############################
     # Vertical Adjacency
     #############################
 
     def calculate_binary_vertical_adjacency(
-            self,
-            min_overlap_area: float = 0.1
-            ) -> pd.DataFrame:
-            """
-            Build a full-building binary vertical adjacency matrix.
-            A[i,j] = 1 if room i (on floor f) and room j (on floor f+1 or f-1)
-            have an overlap area greater than min_overlap_area. Otherwise 0.
+        self,
+        min_overlap_area: float = 0.1
+        ) -> pd.DataFrame:
+        """
+        Build a full-building binary vertical adjacency matrix.
+        A[i,j] = 1 if room i (on floor f) and room j (on floor f+1 or f-1)
+        have an overlap area greater than min_overlap_area. Otherwise 0.
 
-            Args:
-                min_overlap_area (float): The minimum area (in square meters) of polygon
-                                        intersection to be considered an overlap.
+        Args:
+            min_overlap_area (float): The minimum area (in square meters) of polygon
+                                    intersection to be considered an overlap.
 
-            Returns:
-                pd.DataFrame: A binary adjacency matrix for the entire building.
-            """
-            # Prepare index/columns in the canonical order established during initialization
-            room_strs = [str(uri) for uri in self.room_uris]
-            # Initialize an empty adjacency matrix with zeros
-            adj_df = pd.DataFrame(0, index=room_strs, columns=room_strs, dtype=int)
+        Returns:
+            pd.DataFrame: A binary adjacency matrix for the entire building.
+        """
+        # Initialize an empty adjacency matrix with zeros
+        adj_df = pd.DataFrame(0, index=self.room_URIs_str, columns=self.room_URIs_str, dtype=int)
 
-            # Iterate over all rooms in their canonical order
-            for i, uri1 in enumerate(self.room_uris):
-                # Get the floor number and polygon for the first room
-                f1 = self.room_to_floor.get(uri1)
-                poly1 = self.polygons.get(f1, {}).get(uri1)
-                
-                # Skip if the room has no valid polygon
-                if poly1 is None:
-                    continue
+        # Iterate over all rooms in their canonical order
+        for uri1_str in self.room_URIs_str:
+            # Get the floor number and polygon for the first room
+            f1 = self.room_to_floor.get(uri1_str)
+            poly1 = self.polygons.get(f1, {}).get(uri1_str)
+            # Skip if the room has no valid polygon
+            if poly1 is None: continue
 
-                # Check for adjacency on the floor above and below
-                for delta in [-1, 1]:
-                    f2 = f1 + delta
-                    # Continue if the adjacent floor doesn't exist
-                    if f2 not in self.polygons:
-                        continue
-
-                    # Iterate through all rooms on the adjacent floor
-                    for uri2 in self.floor_to_rooms.get(f2, []):
-                        poly2 = self.polygons[f2].get(uri2)
-                        
-                        # Skip if the second room has no valid polygon
-                        if poly2 is None:
-                            continue
-
-                        # Calculate the area of intersection between the two room polygons
-                        try:
-                            overlap_area = poly1.intersection(poly2).area
-                        except Exception as e:
-                            logger.warning(f"Error calculating vertical overlap for {uri1}-{uri2}: {e}")
-                            overlap_area = 0.0
-
-                        # If the overlap is significant, mark them as adjacent
-                        if overlap_area > min_overlap_area:
-                            adj_df.at[str(uri1), str(uri2)] = 1
-                            # The relationship is symmetric in a binary context
-                            adj_df.at[str(uri2), str(uri1)] = 1
-
-            return adj_df
-    
+            # Check for adjacency on the floor above and below
+            for delta in [-1, 1]:
+                f2 = f1 + delta
+                # Continue if the adjacent floor doesn't exist
+                if f2 not in self.polygons: continue
+                # Iterate through all rooms on the adjacent floor
+                for uri2_str in self.floor_to_rooms.get(f2, []):
+                    poly2 = self.polygons[f2].get(uri2_str)
+                    # Skip if the second room has no valid polygon
+                    if not poly2: continue
+                    # Add binary adjacency if above the min_overlap_area threshold
+                    if poly1.intersection(poly2).area > min_overlap_area:
+                        adj_df.at[uri1_str, uri2_str] = 1
+        return adj_df
+        
     def calculate_proportional_vertical_adjacency(
         self,
         min_overlap_area: float = 0.1,
         min_weight: float = 0.0
-    ) -> pd.DataFrame:
+        ) -> pd.DataFrame:
         """
         Build a full-building vertical adjacency matrix:
         A[i,j] = overlap_area(poly_i, poly_j) / area(poly_i)
         only if rooms are on floors f and f+1 (adjacent).
         Otherwise 0.
         """
-        # Prepare index/columns in canonical order
-        room_strs = [str(uri) for uri in self.room_uris]
-        uri_str_to_obj = {str(uri): uri for uri in self.room_uris}
-        # Initialize empty adjacency
-        adj_df = pd.DataFrame(0.0, index=room_strs, columns=room_strs)
+        # Initialize empty adjacency (with canonical order)
+        adj_df = pd.DataFrame(0.0, index=self.room_URIs_str, columns=self.room_URIs_str)
 
-        for i, uri1 in enumerate(self.room_uris):
-            f1 = self.room_to_floor[uri1]
-            poly1 = self.polygons.get(f1, {}).get(uri1)
-            if poly1 is None or poly1.area == 0:
-                continue
-            area1 = poly1.area
-
-            # Only consider rooms on floor f1+1 and f1-1
-            for delta in (-1, 1):
+        for uri1_str in self.room_URIs_str:
+            # Get the floor number and polygon for the first room
+            f1 = self.room_to_floor.get(uri1_str)
+            poly1 = self.polygons.get(f1, {}).get(uri1_str)
+            # Skip if the room has no valid polygon
+            if poly1 is None: continue
+            
+            # Check for adjacency on the floor above and below
+            for delta in [-1, 1]:
                 f2 = f1 + delta
-                if f2 not in self.polygons:
-                    continue
+                # Continue if the adjacent floor doesn't exist
+                if f2 not in self.polygons: continue
+                # Iterate through all rooms on the adjacent floor
+                for uri2_str in self.floor_to_rooms.get(f2, []):
+                    poly2 = self.polygons[f2].get(uri2_str)
+                    # Skip if the second room has no valid polygon
+                    if not poly2: continue
+                        # Add binary adjacency if above the min_overlap_area threshold
 
-                for uri2 in self.floor_to_rooms[f2]:
-                    poly2 = self.polygons[f2].get(uri2)
-                    if poly2 is None:
-                        continue
-
-                    # compute overlap area
-                    try:
-                        overlap = poly1.intersection(poly2).area
-                    except Exception as e:
-                        logger.warning(f"Vertical overlap error {uri1}-{uri2}: {e}")
-                        overlap = 0.0
-
-                    # assign weight
-                    if overlap > min_overlap_area:
-                        weight = overlap / area1
-                    else:
-                        weight = min_weight
-
-                    adj_df.at[str(uri1), str(uri2)] = weight
-
+                    overlap = poly1.intersection(poly2).area
+                    adj_df.at[uri1_str, uri2_str] = (overlap / poly1.area) if overlap > min_overlap_area else min_weight
         return adj_df
 
     def build_vertical_adjacency(
-            self,
-            mode: str = "weighted",
-            min_overlap_area: float = 0.1,
-            min_weight: float = 0.0
+        self,
+        mode: str = "weighted",
+        min_overlap_area: float = 0.1,
+        min_weight: float = 0.0
         ) -> None:
-            """
-            Build and store the combined vertical adjacency matrix for the entire building.
-            
-            Args:
-                mode (str): The type of adjacency to calculate.
-                            - 'weighted': A[i,j] = overlap_area(i, j) / area(i). Non-symmetric.
-                            - 'binary': A[i,j] = 1 if overlap_area(i, j) > min_overlap_area. Symmetric.
-                min_overlap_area (float): Minimum overlap area to consider a connection.
-                                        Used by both proportional and binary modes.
-                min_weight (float): Minimum weight for the proportional mode if overlap is small but non-zero.
-                                    (Not used in 'binary' mode).
-            
-            Stores the result in:
-            - self.combined_vertical_adj_df
-            - self.vertical_adj_matrix  (NumPy array)
-            - self.adj_matrix_room_uris (list of URIRefs)
-            """
-            logger.info(f"Building '{mode}' vertical adjacency for entire building...")
-            
-            # Select the appropriate calculation function based on the mode
-            if mode == "weighted":
-                v_df = self.calculate_proportional_vertical_adjacency(
-                    min_overlap_area=min_overlap_area,
-                    min_weight=min_weight
-                )
-            elif mode == "binary":
-                v_df = self.calculate_binary_vertical_adjacency(
-                    min_overlap_area=min_overlap_area
-                )
-            else:
-                raise ValueError(f"Unknown mode '{mode}'. Use 'weighted' or 'binary'.")
-            
-            # Store the results
-            self.vertical_adj_type = mode
-            self.combined_vertical_adj_df = v_df
-            self.vertical_adj_matrix = v_df.values
-            self.adj_matrix_room_uris = list(self.room_uris)
-
-            total_connections = (v_df > 0).sum().sum()
-            logger.info(
-                f"Built '{mode}' vertical adjacency matrix {v_df.shape} with "
-                f"{int(total_connections)} non-zero connections."
+        """Builds the combined vertical adjacency matrix."""
+        logger.info(f"Building '{mode}' vertical adjacency for entire building...")
+        
+        # Select the appropriate calculation function based on the mode
+        if mode == "weighted":
+            v_df = self.calculate_proportional_vertical_adjacency(
+                min_overlap_area=min_overlap_area,
+                min_weight=min_weight
             )
-            return None
+        elif mode == "binary":
+            v_df = self.calculate_binary_vertical_adjacency(
+                min_overlap_area=min_overlap_area
+            )
+        else:
+            raise ValueError(f"Unknown mode '{mode}'. Use 'weighted' or 'binary'.")
+        
+        # Store the results
+        self.vertical_adj_type = mode
+        self.combined_vertical_adj_df = v_df
+        self.vertical_adj_matrix = v_df.values
+        self.adj_matrix_room_URIs_str = list(self.room_URIs_str)
+
+        total_connections = (v_df > 0).sum().sum()
+        logger.info(
+            f"Built '{mode}' vertical adjacency matrix {v_df.shape} with "
+            f"{int(total_connections)} non-zero connections."
+        )
+        return None
 
     #############################
     # Combined Adjacency
@@ -684,7 +570,11 @@ class SpatialBuilderMixin:
     #############################
 
 
-    def calculate_information_propagation_masks(self) -> Dict[int, np.ndarray]:
+    def create_masked_adjacency_matrices(
+        self, 
+        adjacency_matrix: np.ndarray, 
+        uri_str_list: List[str]
+        ) -> Dict[int, np.ndarray]:
         """
         Calculate a series of masking matrices representing information propagation
         from rooms with devices to other rooms in the building, using BOTH
@@ -693,108 +583,57 @@ class SpatialBuilderMixin:
         Step 0: only rooms with devices can pass info.
         Step k: rooms reachable in k hops (horizonal or vertical).
         Continues until no new rooms are added.
+
+        Then, using the propagation masks, produce a series of
+        masked adjacency matrices showing the network at each step.
+
+        Args:
+            adjacency_matrix (np.ndarray): The adjacency matrix to use for calculations.
+            uri_str_list (List[str]): The list of URI strings corresponding to the matrix rows/columns.
         
         Returns:
-            Dict[int, np.ndarray]: step → mask matrix (1 = can pass, 0 = masked)
+            Dict[int, np.ndarray]: A dictionary of {step: masked_adjacency_matrix}.
         """
-        # --- ensure both adjacencies exist ---
-        if not hasattr(self, 'horizontal_adj_matrix') or self.horizontal_adj_matrix is None:
-            raise ValueError("Horizontal adjacency matrix not found. Run build_horizontal_adjacency() first.")
-        if not hasattr(self, 'vertical_adj_matrix') or self.vertical_adj_matrix is None:
-            raise ValueError("Vertical adjacency matrix not found. Run build_vertical_adjacency() first.")
-        
-        # --- Use or build combined adjacency ---
-        if not hasattr(self, 'room_to_room_adj_matrix') or self.room_to_room_adj_matrix is None:
-            logger.info("Combined adjacency matrix not found for propagation masks. Building it now.")
-            self.build_combined_room_to_room_adjacency()
-        
-        adjacency = self.room_to_room_adj_matrix
-        
-        # --- find which rooms start with devices ---
-        n_rooms = len(self.adj_matrix_room_uris)
+        n_rooms = adjacency_matrix.shape[0]
         room_has_device = np.zeros(n_rooms, dtype=bool)
-        for i, uri in enumerate(self.adj_matrix_room_uris):
-            room = self.office_graph.rooms.get(uri)
+
+        # Find which rooms have devices
+        for i, uri_str in enumerate(uri_str_list):
+            if uri_str == "outside":
+                continue
+            room = self.office_graph.rooms[URIRef(uri_str)]
             if room and getattr(room, "devices", None):
                 room_has_device[i] = True
-        
-        logger.info(f"{room_has_device.sum()} rooms have devices / {n_rooms} total")
-        
-        # --- propagation masks ---
-        masks = {}
-        # step 0: only device rooms can PASS
-        can_pass = room_has_device.copy()
-        mask0 = np.zeros_like(adjacency)
-        mask0[can_pass, :] = 1
-        masks[0] = mask0
-        
-        step = 1
+                
+        logger.info(f"{room_has_device.sum()} of {n_rooms} rooms have devices.")
+                
+        # Calculating propagation masks
+        masks, can_pass, step = {}, room_has_device.copy(), 0        
         while True:
-            # who newly gets reachability this round?
-            newly = np.zeros_like(can_pass)
-            for tgt in range(n_rooms):
-                if not can_pass[tgt]:
-                    # any neighbor j that can_pass and adjacency[j,tgt]>0?
-                    if np.any(can_pass & (adjacency[:, tgt] > 0)):
-                        newly[tgt] = True
-            
-            if not newly.any():
-                logger.info(f"Reached equilibrium after {step} steps")
-                break
-            
-            can_pass = can_pass | newly
-            mask = np.zeros_like(adjacency)
-            mask[can_pass, :] = 1
-            masks[step] = mask
-            
-            logger.info(f"Step {step}: +{newly.sum()} newly active rooms")
+            masks[step] = np.tile(can_pass, (n_rooms, 1)).T
+            newly_reachable = (adjacency_matrix.T @ can_pass > 0) & ~can_pass
+            if not newly_reachable.any() or step > n_rooms: break
+            can_pass |= newly_reachable
             step += 1
-            if step > n_rooms:
-                logger.warning("Stopping early to avoid infinite loop")
-                break
-        
-        logger.info(f"Generated {len(masks)} propagation masks")
-        return masks
+        logger.info(f"Generated {len(masks)} propagation masks, reaching equilibrium after {step} steps.")
 
-    def build_masked_adjacency_matrices(self) -> None:
-        """
-        Using the propagation masks (horizontal+vertical), produce a series of
-        masked adjacency matrices showing the network at each step.
-        
-        Args:
-            masks (dict): step→mask from calculate_information_propagation_masks.
-                          If None, that method will be called.
-        
-        Returns:
-            Dict[int, np.ndarray]: step→(adjacency * mask)
-        """
-        # ensure adjacency exists
-        if not hasattr(self, 'horizontal_adj_matrix') or self.horizontal_adj_matrix is None:
-            raise ValueError("Horizontal adjacency matrix not found. Run both build_horizontal_adjacency() first.")
-        if not hasattr(self, 'vertical_adj_matrix') or self.vertical_adj_matrix is None:
-            raise ValueError("Vertical adjacency matrix not found. Run both build_vertical_adjacency() first.")
-        
-        masks = self.calculate_information_propagation_masks()
-        
-        adjacency = self.room_to_room_adj_matrix
-        self.masked_adjacency_matrices = {
-            step: adjacency * mask
+        # Building the masked adjacency matrices
+        masked_adjs = {
+            step: adjacency_matrix * mask
             for step, mask in masks.items()
         }
-        
-        logger.info(f"Created {len(self.masked_adjacency_matrices)} masked adjacency matrices")
-        return None
+        logger.info(f"Created {len(masked_adjs)} masked adjacency matrices.")
 
-
-
+        return masked_adjs
+    
+    
     #############################
     # Outside Adjacency
     #############################
 
-
     def calculate_outside_adjacency(self, floor_number: int, mode: str = "weighted") -> np.ndarray:
         """
-        Compute the outside‐to‐room adjacency vector **for one floor**.
+        Compute the outside‐to‐room adjacency vector for one floor.
 
         Args:
             floor_number: which floor to process
@@ -804,42 +643,26 @@ class SpatialBuilderMixin:
                             non-windowed rooms get 0
 
         Returns:
-            np.ndarray of length = rooms on that floor (in the same order as self.horizontal_adj[floor_number]['room_uris'])
+            np.ndarray of length = rooms on that floor (in the same order as self.horizontal_adj[floor_number]['room_URIs_str'])
         """
-        # Ensure horizontal adjacency is built
         if not hasattr(self, 'horizontal_adj') or floor_number not in self.horizontal_adj:
             raise ValueError(f"No horizontal adjacency for floor {floor_number}. Run build_horizontal_adjacency() first.")
-
+        
         floor_data = self.horizontal_adj[floor_number]
-        df = floor_data['df']                  # pandas DataFrame of horizontal adj for this floor
-        room_uris = floor_data['room_uris']    # List[URIRef] in the same order
+        df = floor_data['df']
+        room_uris_str = floor_data['room_URIs_str']
+        vec = np.zeros(len(room_uris_str), dtype=float)
 
-        if mode == "binary":
-            vec = np.array([
-                1.0 if self.office_graph.rooms[uri].hasWindows else 0.0
-                for uri in room_uris
-            ], dtype=float)
-
-        elif mode == "weighted":
-            # sum of each row = total horizontal weight per room
-            row_sums = df.sum(axis=1)
-            weights = []
-            for uri in room_uris:
-                room = self.office_graph.rooms[uri]
-                if room.hasWindows:
-                    # leftover up to 1.0
-                    w = max(0.0, 1.0 - row_sums[str(uri)])
-                else:
-                    w = 0.0
-                weights.append(w)
-            vec = np.array(weights, dtype=float)
-
-        else:
-            raise ValueError(f"Unknown mode '{mode}'. Use 'binary' or 'weighted'.")
-
+        for i, uri_str in enumerate(room_uris_str):
+            room = self.office_graph.rooms.get(URIRef(uri_str))
+            if not room or not room.hasWindows: continue
+            
+            if mode == "binary":
+                vec[i] = 1.0
+            elif mode == "weighted":
+                vec[i] = max(0.0, 1.0 - df.loc[uri_str].sum())
         return vec
-
-
+    
     def build_outside_adjacency(self, mode: str = "weighted") -> None:
         """
         Build per‐floor outside adjacency vectors and store in self.outside_adj.
@@ -847,26 +670,21 @@ class SpatialBuilderMixin:
         After calling this, we have:
           self.outside_adj[floor_number] = {
              "vector": np.ndarray,
-             "room_uris": [...URIRefs in floor order...]
+             "room_URIs_str": str,
           }
         """
         self.outside_adj = {}
         self.outside_adj_mode = mode
 
         for floor_number in sorted(self.polygons.keys()):
-            vec = self.calculate_outside_adjacency(floor_number, mode=mode)
-            room_uris = self.horizontal_adj[floor_number]['room_uris']
             self.outside_adj[floor_number] = {
-                "vector": vec,
-                "room_uris": room_uris
+                "vector": self.calculate_outside_adjacency(floor_number, mode=mode),
+                "room_URIs_str": self.horizontal_adj[floor_number]['room_URIs_str']
             }
-            logger.info(f"  Floor {floor_number}: outside vector ({mode}) length={len(vec)}")
-
         logger.info(f"Built outside adjacency on {len(self.outside_adj)} floors (mode={mode})")
-        
+
         # Combine all per‐floor outside adjacency vectors into one building‐wide vector
         self._combine_outside_adjacencies()
-
         return None
 
     def _combine_outside_adjacencies(self) -> None:
@@ -879,35 +697,16 @@ class SpatialBuilderMixin:
           - self.combined_outside_adj_series: pandas.Series indexed by str(uri)
           - self.room_to_outside_adjacency: same numpy array (back‐compat)
         """
-
         if not hasattr(self, 'outside_adj') or not self.outside_adj:
             raise ValueError("No outside adjacency found. Run build_outside_adjacency() first.")
 
-        combined = []
-        index = []
-        for uri in self.room_uris:
-            floor = self.room_to_floor[uri]
-            floor_data = self.outside_adj.get(floor)
-            if floor_data is None:
-                combined.append(0.0)
-            else:
-                try:
-                    idx = floor_data["room_uris"].index(uri)
-                    combined.append(float(floor_data["vector"][idx]))
-                except ValueError:
-                    combined.append(0.0)
-            index.append(str(uri))
+        combined = pd.Series(0.0, index=self.room_URIs_str)
+        for floor_num, floor_data in self.outside_adj.items():
+            floor_series = pd.Series(floor_data["vector"], index=floor_data["room_URIs_str"])
+            combined.update(floor_series)
 
-        arr = np.array(combined, dtype=float)
-        series = pd.Series(arr, index=index)
-
-        # store
-        self.combined_outside_adj = arr
-        self.combined_outside_adj_series = series
-        self.room_to_outside_adjacency = arr  # for backward compatibility
-
-        logger.info(
-            f"Combined outside adjacency into length-{len(arr)} vector; "
-            f"total weight={series.sum():.3f}"
-        )
+        self.combined_outside_adj = combined.values
+        self.combined_outside_adj_series = combined
+        self.room_to_outside_adjacency = combined.values # backward compatibility
+        logger.info(f"Combined outside adjacency into vector of length {len(combined)}.")
         return None
