@@ -1,6 +1,6 @@
 #!/bin/bash
 
-#SBATCH --job-name=stgcn
+#SBATCH --job-name=stgcn-experiment
 #SBATCH --partition=gpu_h100
 #SBATCH --gpus=1
 #SBATCH --ntasks=1
@@ -8,19 +8,46 @@
 #SBATCH --mem=32G
 #SBATCH --time=24:00:00
 #SBATCH --array=0-9
-#SBATCH --output=output/experiments/slurm_output_%A_%a.out # %A=job ID, %a=array task ID
-#SBATCH --error=output/experiments/slurm_error_%A_%a.err
+#SBATCH --output=logs/experiments/slurm_output_%A_%a.out # %A=job ID, %a=task ID
+#SBATCH --error=logs/experiments/slurm_error_%A_%a.err
 
-# Define a base output directory for the entire job array
-# SLURM_ARRAY_JOB_ID is the same for all jobs in the array
-export BASE_OUTPUT_DIR=output/experiments/stgcn_${SLURM_ARRAY_JOB_ID}
 
-# Define a specific output directory for this single task in the array
-# SLURM_ARRAY_TASK_ID is unique for each job (0, 1, 2, ...)
-export TASK_OUTPUT_DIR=${BASE_OUTPUT_DIR}/experiment_${SLURM_ARRAY_TASK_ID}
-mkdir -p $TASK_OUTPUT_DIR
+# --- 1. DEFINE PERSISTENT STORAGE DIRECTORIES ---
+PERSISTENT_PROJECT_DIR=$HOME/eSTGNN
+PERSISTENT_DATA_DIR=$PERSISTENT_PROJECT_DIR/data
+PERSISTENT_PROCESSED_DATA_DIR=$PERSISTENT_DATA_DIR/processed
+PERSISTENT_LOG_DIR=$PERSISTENT_PROJECT_DIR/logs/experiments
 
-# Load modules
+# A base output directory on persistent storage for the entire job array
+PERSISTENT_ARRAY_OUTPUT_DIR=$PERSISTENT_PROJECT_DIR/output/experiments/stgcn_experiment_${SLURM_ARRAY_JOB_ID}
+# A unique output directory on persistent storage for this specific task's final results
+PERSISTENT_TASK_OUTPUT_DIR=$PERSISTENT_ARRAY_OUTPUT_DIR/task_${SLURM_ARRAY_TASK_ID}
+
+
+# --- 2. DEFINE SCRATCH SPACE DIRECTORIES ---
+SCRATCH_PROJECT_DIR=$TMPDIR/eSTGNN
+SCRATCH_DATA_DIR=$SCRATCH_PROJECT_DIR/data
+SCRATCH_PROCESSED_DATA_DIR=$SCRATCH_DATA_DIR/processed
+
+# The training script will write its output here on the fast scratch disk
+# Using both Array Job ID and Task ID to ensure the path is unique
+SCRATCH_TASK_OUTPUT_DIR=$SCRATCH_PROJECT_DIR/output/stgcn_experiment_${SLURM_ARRAY_JOB_ID}/task_${SLURM_ARRAY_TASK_ID}
+
+
+# --- 3. ENSURE ALL NECESSARY DIRECTORIES EXIST ---
+echo "Creating directories..."
+# Create persistent directories for final results and logs
+# The -p flag ensures parent directories are also created
+mkdir -p $PERSISTENT_TASK_OUTPUT_DIR
+mkdir -p $PERSISTENT_LOG_DIR
+
+# Create scratch directories for the job to run in
+mkdir -p $SCRATCH_PROCESSED_DATA_DIR
+mkdir -p $SCRATCH_TASK_OUTPUT_DIR
+
+
+# --- 4. LOAD MODULES ---
+echo "Loading required modules..."
 module purge
 module load 2023
 module load Python/3.11.3-GCCcore-12.3.0
@@ -31,65 +58,51 @@ module load Python-bundle-PyPI/2023.06-GCCcore-12.3.0
 module load matplotlib/3.7.2-gfbf-2023a
 module load scikit-learn/1.3.1-gfbf-2023a
 
-# Set PyTorch optimization flags
+
+# --- 5. PREPARE DATA ON SCRATCH ---
+echo "Copying input data from persistent storage to scratch space..."
+# Copy the entire processed data directory
+rsync -a --info=progress2 "$PERSISTENT_PROCESSED_DATA_DIR/" "$SCRATCH_PROCESSED_DATA_DIR"
+
+# Check if data copy succeeded
+if [ ! -d "$SCRATCH_PROCESSED_DATA_DIR" ] || [ -z "$(ls -A "$SCRATCH_PROCESSED_DATA_DIR")" ]; then
+    echo "ERROR: Data directory not copied to scratch space correctly"
+    exit 1
+fi
+echo "Data copy complete."
+
+# Set environment variables for performance
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 export NCCL_DEBUG=INFO
-
-# Move into your project directory (safety)
-cd $HOME/eSTGNN
-
-# Create directories on scratch space
-mkdir -p $TMPDIR/data/processed
+echo "Setting NUMEXPR_NUM_THREADS to $SLURM_CPUS_PER_TASK"
+export NUMEXPR_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 
-##### Dynamically copying the required file to scratch #####
-echo "Determining required data file..."
-REQUIRED_FILE=$(srun python -m src.utils.filename_util "$@")
+# --- 6. RUN THE PYTHON SCRIPT ---
+echo "Starting Python script for Job Array Task ID: ${SLURM_ARRAY_TASK_ID}"
+echo "Project running from: $PERSISTENT_PROJECT_DIR"
+echo "Input data is read from: $SCRATCH_DATA_DIR"
+echo "Output will be written to: $SCRATCH_TASK_OUTPUT_DIR"
 
-# Checking if it returned a filename
-if [ -z "$REQUIRED_FILE" ]; then
-    echo "ERROR: Helper script could not determine a filename from the arguments."
-    exit 1
-fi
+cd $PERSISTENT_PROJECT_DIR
 
-# Define the full source and destination paths
-SOURCE_PATH="$HOME/eSTGNN/data/processed/$REQUIRED_FILE"
-DEST_PATH="$TMPDIR/data/processed/$REQUIRED_FILE"
-
-# Checking if the required file actually exists before trying to copy
-if [ ! -f "$SOURCE_PATH" ]; then
-    echo "ERROR: Required data file not found at: $SOURCE_PATH"
-    exit 1
-fi
-
-# Copying the required file to scratch
-echo "Copying required file '$REQUIRED_FILE' to scratch space..."
-cp "$SOURCE_PATH" "$DEST_PATH"
-
-# Final check
-if [ ! -f "$DEST_PATH" ]; then
-    echo "ERROR: Failed to copy '$REQUIRED_FILE' to scratch space."
-    exit 1
-fi
-##### Dynamically copying the required file to scratch #####
-
-
-# Set directories
-export DATA_DIR=$TMPDIR/data
-
-echo "Job Array Task ID: ${SLURM_ARRAY_TASK_ID}"
-echo "Starting training with data from $DATA_DIR"
-echo "Results for this task will be saved to $TASK_OUTPUT_DIR"
-
-# Run script pointing to scratch, passing the unique experiment_id and output directory
 srun python -m src.models.STGCN4B.homogeneous.experiment \
-  --data_dir $DATA_DIR \
-  --output_dir $TASK_OUTPUT_DIR \
-  --experiment_id ${SLURM_ARRAY_TASK_ID} \
-  --enable_cuda \
-  "$@"
+    --data_dir $SCRATCH_DATA_DIR \
+    --output_dir $SCRATCH_TASK_OUTPUT_DIR \
+    --processed_data_dir $SCRATCH_PROCESSED_DATA_DIR \
+    --experiment_id ${SLURM_ARRAY_TASK_ID} \
+    --enable_cuda \
+    "$@"
 
+
+# --- 7. COPY RESULTS BACK TO PERSISTENT STORAGE ---
+echo "Copying results from scratch back to persistent storage..."
+rsync -a "$SCRATCH_TASK_OUTPUT_DIR/" "$PERSISTENT_TASK_OUTPUT_DIR/"
+echo "Results successfully copied to $PERSISTENT_TASK_OUTPUT_DIR"
+
+
+# --- 8. CLEAN UP SCRATCH SPACE ---
 echo "Cleaning up scratch space..."
-rm -rf $TMPDIR/data
+rm -rf $TMPDIR/*
 
 echo "Job task ${SLURM_ARRAY_TASK_ID} completed successfully!"
