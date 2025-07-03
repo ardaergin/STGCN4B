@@ -6,16 +6,44 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
-#SBATCH --time=04:00:00 # Adjusted time for a single run, change if needed
-#SBATCH --output=output/experiments/slurm_output_%A.out # %A = job ID
-#SBATCH --error=output/experiments/slurm_error_%A.err
+#SBATCH --time=01:00:00
+#SBATCH --output=logs/experiments/slurm_output_%A.out
+#SBATCH --error=logs/experiments/slurm_error_%A.err
 
-# Define a unique output directory for this specific job
-# SLURM_JOB_ID is unique for each job submission
-export RUN_OUTPUT_DIR=output/experiments/stgcn_single_run_${SLURM_JOB_ID}
-mkdir -p $RUN_OUTPUT_DIR
 
-# Load modules
+# --- 1. DEFINE PERSISTENT STORAGE DIRECTORIES ---
+PERSISTENT_PROJECT_DIR=$HOME/eSTGNN
+PERSISTENT_DATA_DIR=$PERSISTENT_PROJECT_DIR/data
+PERSISTENT_PROCESSED_DATA_DIR=$PERSISTENT_DATA_DIR/processed
+PERSISTENT_OUTPUT_DIR=$PERSISTENT_PROJECT_DIR/output/experiments
+PERSISTENT_LOG_DIR=$PERSISTENT_PROJECT_DIR/logs/experiments
+
+# A unique output directory on persistent storage for this specific run's final results
+PERSISTENT_RUN_OUTPUT_DIR=$PERSISTENT_OUTPUT_DIR/stgcn_single_run_${SLURM_JOB_ID}
+
+
+# --- 2. DEFINE SCRATCH SPACE DIRECTORIES ---
+SCRATCH_PROJECT_DIR=$TMPDIR/eSTGNN
+SCRATCH_DATA_DIR=$SCRATCH_PROJECT_DIR/data
+SCRATCH_PROCESSED_DATA_DIR=$SCRATCH_DATA_DIR/processed
+
+# The training script will write its output here on the fast scratch disk
+SCRATCH_RUN_OUTPUT_DIR=$SCRATCH_PROJECT_DIR/output/stgcn_single_run_${SLURM_JOB_ID}
+
+
+# --- 3. ENSURE ALL NECESSARY DIRECTORIES EXIST ---
+echo "Creating directories..."
+# Create persistent directories for final results and logs
+mkdir -p $PERSISTENT_RUN_OUTPUT_DIR
+mkdir -p $PERSISTENT_LOG_DIR
+
+# Create scratch directories for the job to run in
+mkdir -p $SCRATCH_PROCESSED_DATA_DIR
+mkdir -p $SCRATCH_RUN_OUTPUT_DIR
+
+
+# --- 4. LOAD MODULES ---
+echo "Loading required modules..."
 module purge
 module load 2023
 module load Python/3.11.3-GCCcore-12.3.0
@@ -26,65 +54,49 @@ module load Python-bundle-PyPI/2023.06-GCCcore-12.3.0
 module load matplotlib/3.7.2-gfbf-2023a
 module load scikit-learn/1.3.1-gfbf-2023a
 
-# Set PyTorch optimization flags
+
+# --- 5. PREPARE DATA ON SCRATCH ---
+echo "Copying input data from persistent storage to scratch space..."
+rsync -a --info=progress2 "$PERSISTENT_PROCESSED_DATA_DIR/" "$SCRATCH_PROCESSED_DATA_DIR"
+
+# Check if data copy succeeded
+if [ ! -d "$SCRATCH_PROCESSED_DATA_DIR" ] || [ -z "$(ls -A "$SCRATCH_PROCESSED_DATA_DIR")" ]; then
+    echo "ERROR: Data directory not copied to scratch space correctly"
+    exit 1
+fi
+echo "Data copy complete."
+
+# Set environment variables for performance
 export PYTORCH_CUDA_ALLOC_CONF=max_split_size_mb:128
 export NCCL_DEBUG=INFO
-
-# Move into your project directory (safety)
-cd $HOME/eSTGNN
-
-# Create directories on scratch space
-mkdir -p $TMPDIR/data/processed
+echo "Setting NUMEXPR_NUM_THREADS to $SLURM_CPUS_PER_TASK"
+export NUMEXPR_NUM_THREADS=$SLURM_CPUS_PER_TASK
 
 
-##### Dynamically copying the required file to scratch #####
-echo "Determining required data file..."
-REQUIRED_FILE=$(srun python -m src.utils.filename_util "$@")
+# --- 6. RUN THE PYTHON SCRIPT ---
+echo "Starting Python script..."
+echo "Project running from: $PERSISTENT_PROJECT_DIR"
+echo "Input data is read from: $SCRATCH_DATA_DIR"
+echo "Output will be written to: $SCRATCH_RUN_OUTPUT_DIR"
 
-# Checking if it returned a filename
-if [ -z "$REQUIRED_FILE" ]; then
-    echo "ERROR: Helper script could not determine a filename from the arguments."
-    exit 1
-fi
+cd $PERSISTENT_PROJECT_DIR
 
-# Define the full source and destination paths
-SOURCE_PATH="$HOME/eSTGNN/data/processed/$REQUIRED_FILE"
-DEST_PATH="$TMPDIR/data/processed/$REQUIRED_FILE"
-
-# Checking if the required file actually exists before trying to copy
-if [ ! -f "$SOURCE_PATH" ]; then
-    echo "ERROR: Required data file not found at: $SOURCE_PATH"
-    exit 1
-fi
-
-# Copying the required file to scratch
-echo "Copying required file '$REQUIRED_FILE' to scratch space..."
-cp "$SOURCE_PATH" "$DEST_PATH"
-
-# Final check
-if [ ! -f "$DEST_PATH" ]; then
-    echo "ERROR: Failed to copy '$REQUIRED_FILE' to scratch space."
-    exit 1
-fi
-##### Dynamically copying the required file to scratch #####
-
-
-# Set directories
-export DATA_DIR=$TMPDIR/data
-
-echo "Starting single run job: ${SLURM_JOB_ID}"
-echo "Starting training with data from $DATA_DIR"
-echo "Results for this run will be saved to $RUN_OUTPUT_DIR"
-
-# Run the single_run.py script
-# Note: We call the 'single_run' module and remove the '--experiment_id' flag.
 srun python -m src.models.STGCN4B.homogeneous.single_run \
-  --data_dir $DATA_DIR \
-  --output_dir $RUN_OUTPUT_DIR \
-  --enable_cuda \
-  "$@"
+    --data_dir $SCRATCH_DATA_DIR \
+    --output_dir $SCRATCH_RUN_OUTPUT_DIR \
+    --processed_data_dir $SCRATCH_PROCESSED_DATA_DIR \
+    --enable_cuda \
+    "$@"
 
+
+# --- 7. COPY RESULTS BACK TO PERSISTENT STORAGE ---
+echo "Copying results from scratch back to persistent storage..."
+rsync -a "$SCRATCH_RUN_OUTPUT_DIR/" "$PERSISTENT_RUN_OUTPUT_DIR/"
+echo "Results successfully copied to $PERSISTENT_RUN_OUTPUT_DIR"
+
+
+# --- 8. CLEAN UP SCRATCH SPACE ---
 echo "Cleaning up scratch space..."
-rm -rf $TMPDIR/data
+rm -rf $TMPDIR/*
 
-echo "Job ${SLURM_JOB_ID} completed successfully!"
+echo "Job completed successfully!"
