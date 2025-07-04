@@ -245,7 +245,7 @@ def add_base_modelling_args(parser):
                         help='List of (sub-)strings for feature names that should NOT be normalized.')
     
     # Features to drop
-    parser.add_argument('--features-to-drop', type=str, nargs='*',
+    parser.add_argument('--features_to_drop', type=str, nargs='*',
                         default=[],
                         help='A space-separated list of feature columns to drop from the dataframe before training (e.g., --features-to-drop col_a col_b).')
     
