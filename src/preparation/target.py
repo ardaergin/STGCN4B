@@ -76,16 +76,16 @@ class BlockAwareTargetEngineer:
             raise KeyError(f"Required source column '{source_col}' not found in DataFrame.")
         grouping_cols = ['block_id']
         if task_type == "measurement_forecast":
-            if "room_URIRef" not in data_frame.columns:
-                raise KeyError("Task requires 'room_URIRef' for grouping, but it's not in the DataFrame.")
-            grouping_cols.append('room_URIRef')
+            if "room_uri_str" not in data_frame.columns:
+                raise KeyError("Task requires 'room_uri_str' for grouping, but it's not in the DataFrame.")
+            grouping_cols.append('room_uri_str')
         
         logger.info(f"Creating {forecast_type} targets from '{source_col}' for horizons {horizons}...")
         
         df = data_frame.copy()
         df['block_id'] = self._assign_block_id(df)
         
-        # Sorting based on block_id + bucket_idx (+ room_URIRef, optionally)
+        # Sorting based on block_id + bucket_idx (+ room_uri_str, optionally)
         df.sort_values(['bucket_idx'] + grouping_cols, inplace=True)
 
         # Groupby

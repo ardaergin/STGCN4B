@@ -169,6 +169,7 @@ class OfficeGraphBuilder(
     def run_homograph_pipeline(self, args) -> Tuple[pd.DataFrame, Dict[str, Any]]:
         logger.info("========== Running the homogenous graph pipeline... ==========")
         
+        graph_data = {}
         for adjacency_type in ("binary", "weighted"):
             self.build_horizontal_adjacency(mode=adjacency_type, 
                                             distance_threshold=args.distance_threshold)
@@ -202,9 +203,10 @@ class OfficeGraphBuilder(
                 masked_adjacency_matrices = self.create_masked_adjacency_matrices(self.room_to_room_adj_matrix, self.room_URIs_str)
             
             # Saving the adjacency data
-            graph_data = {}
-            graph_data["room_URIRefs"] = room_URIs_str.copy()
-            graph_data["n_nodes"] = len(room_URIs_str)
+            if "rooms" not in graph_data:
+                graph_data["rooms"] = room_URIs_str.copy()
+                graph_data["n_nodes"] = len(room_URIs_str)
+            
             graph_data[adjacency_type] = {
                 "adjacency_matrix":             adj_matrix.copy(),
                 "outside_adjacency_vector":     outside_vector.copy() if outside_vector is not None else None,
@@ -219,9 +221,15 @@ class OfficeGraphBuilder(
     #########################
 
     def save_df_as_parquet(self, df: pd.DataFrame, file_name: str) -> None:
-        """Convenience helper to save DataFrames as parquet files."""
-        if 'room_URIRef' in df.columns:
-            df['room_URIRef'] = df['room_URIRef'].astype(str)
+        """Convenience helper to save DataFrames as parquet files."""        
+        # # Ensuring features are correctly categorical
+        for col in ['hasWindows','has_multiple_windows','isProperRoom', 'has_measurement']:
+            if col in df.columns:
+                df[col] = df[col].astype("category")
+                # OR:   
+                # codes = self.df[col].cat.codes.replace({-1: np.nan})
+                # self.df[col] = codes.astype(float)
+        
         parquet_file_path = os.path.join(self.processed_data_dir, file_name)
         df.to_parquet(parquet_file_path, engine='pyarrow')
         logger.info(f"Successfully saved DataFrame to {parquet_file_path}")

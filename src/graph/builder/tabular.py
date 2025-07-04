@@ -89,17 +89,10 @@ class TabularBuilderMixin:
         
         elif build_mode == "measurement_forecast":            
             base_df = self.add_static_room_features_to_df(df=self.room_level_df)
-            # Add room number as a categorical feature for grouping
-            base_df['room_URIRef'] = base_df['room_URIRef'].astype('category')
-        
+                    
         else:
             raise ValueError(f"Unknown build_mode: {build_mode}")
-
-        # Ensure 'has_measurement' columns are treated as categorical
-        has_measurement_cols = [c for c in base_df.columns if "has_measurement" in c]
-        if has_measurement_cols:
-            base_df[has_measurement_cols] = base_df[has_measurement_cols].astype("category")
-        
+                
         self.tabular_feature_df = base_df
         logger.info(f"Base DataFrame built. Shape: {self.tabular_feature_df.shape}")
         return None
@@ -145,7 +138,7 @@ class TabularBuilderMixin:
         logger.info(f"Generating MAs only for {len(secondary_signals_for_ma_only)} secondary signal columns.")
 
         # Additional grouping col for "measurement_forecast" task
-        extra_grouping_col = ["room_URIRef"] if build_mode == "measurement_forecast" else None
+        extra_grouping_col = ["room_uri_str"] if build_mode == "measurement_forecast" else None
 
         # Defaults for MAs & Lags
         lags = lags or [1, 2, 3, 24]

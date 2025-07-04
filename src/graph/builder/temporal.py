@@ -321,7 +321,7 @@ class TemporalBuilderMixin:
                 continue
             
             records.append({
-                "device_URIRef": meas.device_uri,
+                "device_uri_str": str(meas.device_uri),
                 "property_type": prop_type,
                 "timestamp": meas.timestamp,
                 "value": meas.value
@@ -341,7 +341,7 @@ class TemporalBuilderMixin:
         if initial_rows > len(df):
             logger.info(f"Dropped {initial_rows - len(df)} rows with invalid/NaN measurement values.")
 
-        df['device_URIRef'] = df['device_URIRef'].astype('category')
+        df['device_uri_str'] = df['device_uri_str'].astype('category')
         df['property_type'] = df['property_type'].astype('category')
         
 
@@ -355,7 +355,7 @@ class TemporalBuilderMixin:
 
         # Defining aggregation stats, aggregate with pandas groupby
         stats = ["mean", "std", "max", "min", "count"]
-        agg_df = df.groupby(["device_URIRef", "property_type", "bucket_idx"])["value"].agg(stats).reset_index()
+        agg_df = df.groupby(["device_uri_str", "property_type", "bucket_idx"])["value"].agg(stats).reset_index()
 
 
         # === Stage 4: Grid Expansion & Reindexing ===
@@ -363,13 +363,13 @@ class TemporalBuilderMixin:
 
         full_idx = pd.MultiIndex.from_product(
             [
-                agg_df['device_URIRef'].unique(),
+                agg_df['device_uri_str'].unique(),
                 agg_df['property_type'].unique(),
                 range(len(self.time_buckets))
             ],
-            names=["device_URIRef", "property_type", "bucket_idx"]
+            names=["device_uri_str", "property_type", "bucket_idx"]
         )
-        full_df = agg_df.set_index(['device_URIRef', 'property_type', 'bucket_idx']).reindex(full_idx).reset_index()
+        full_df = agg_df.set_index(['device_uri_str', 'property_type', 'bucket_idx']).reindex(full_idx).reset_index()
         
         
         # === Stage 5: Final Imputation & Feature Creation ===
@@ -408,7 +408,7 @@ class TemporalBuilderMixin:
 
         This method pivots the `self.device_level_df` (keyed by device, property,
         and time bucket) into a wide-format DataFrame where each row represents a
-        unique room and time bucket (`room_URIRef`, `bucket_idx`).
+        unique room and time bucket (`room_uri_str`, `bucket_idx`).
 
         For each property type (e.g., "Temperature"), it generates a set of features
         by aggregating data from all devices of that type within a single room.
@@ -437,14 +437,14 @@ class TemporalBuilderMixin:
         df = self.device_level_df.copy()
         
         
-        # 2) Mapping each device_URIRef → room_URIRef
-        df["room_URIRef"] = df['device_URIRef'].apply(self.office_graph._map_DeviceURIRef_to_RoomURIRef)
-        df['room_URIRef'] = df['room_URIRef'].astype('category')
+        # 2) Mapping each device_uri_str → room_uri_str
+        df["room_uri_str"] = df['device_uri_str'].apply(self.office_graph._map_device_uri_str_to_room_uri_str)
+        df['room_uri_str'] = df['room_uri_str'].astype('category')
         
         # ---------- Intermediate logging ----------
         unique_buckets = df['bucket_idx'].nunique()
-        unique_devices = df['device_URIRef'].nunique()
-        unique_rooms_mapped = df['room_URIRef'].nunique()
+        unique_devices = df['device_uri_str'].nunique()
+        unique_rooms_mapped = df['room_uri_str'].nunique()
 
         logger.info(f"Mapped {unique_devices} unique devices "
                     f"into {unique_rooms_mapped} rooms ")
@@ -455,7 +455,7 @@ class TemporalBuilderMixin:
         # 3) Using pivot_table to aggregate and pivot
         wide = pd.pivot_table(
             df,
-            index=['room_URIRef', 'bucket_idx'],
+            index=['room_uri_str', 'bucket_idx'],
             columns='property_type',
             values=['mean', 'std', 'max', 'min', 'count', 'has_measurement'],
             aggfunc={
@@ -540,22 +540,22 @@ class TemporalBuilderMixin:
 
         # 1. Get the complete set of all rooms and time buckets
         # These are the dimensions of our final grid.
-        all_room_urirefs = list(self.office_graph.rooms.keys())
+        all_room_uri_strs = [str(uri) for uri in self.office_graph.rooms.keys()]
         all_bucket_indices = range(len(self.time_buckets))
 
         # 2. Create the full MultiIndex from the product of all rooms and all buckets
         # This represents every possible (room, bucket_idx) pair.
         full_grid_index = pd.MultiIndex.from_product(
-            [all_room_urirefs, all_bucket_indices],
-            names=["room_URIRef", "bucket_idx"]
+            [all_room_uri_strs, all_bucket_indices],
+            names=["room_uri_str", "bucket_idx"]
         )
         
         # 3. Re-index the existing DataFrame to this full grid
         expanded_df = (
             df
-            .set_index(["room_URIRef", "bucket_idx"])   # make these two levels the index
+            .set_index(["room_uri_str", "bucket_idx"])   # make these two levels the index
             .reindex(full_grid_index)                   # add missing (room, bucket) pairs
-            .reset_index()                              # restore columns 'room_URIRef' & 'bucket_idx'
+            .reset_index()                              # restore columns 'room_uri_str' & 'bucket_idx'
         )
 
         # 4. For the newly added rows, some values can be safely imputed.
@@ -580,8 +580,8 @@ class TemporalBuilderMixin:
 
         n_rows, n_cols = expanded_df.shape
         logger.info(f"DataFrame expanded. New shape: {n_rows} rows, {n_cols} columns.")
-        logger.info(f"Grid covers {len(all_room_urirefs)} rooms × {len(all_bucket_indices)} buckets "
-                    f"= {len(all_room_urirefs) * len(all_bucket_indices)} theoretical rows.")
+        logger.info(f"Grid covers {len(all_room_uri_strs)} rooms × {len(all_bucket_indices)} buckets "
+                    f"= {len(all_room_uri_strs) * len(all_bucket_indices)} theoretical rows.")
         
         return None
 
@@ -602,8 +602,8 @@ class TemporalBuilderMixin:
         
         # 1. Create a list of dictionaries, one for each room in your graph.
         room_data = []
-        for room_URIRef, room_obj in self.office_graph.rooms.items():
-            features = {'room_URIRef': room_URIRef}
+        for room_uri_str, room_obj in [(str(uri), obj) for uri, obj in self.office_graph.rooms.items()]:
+            features = {'room_uri_str': room_uri_str}
             for attr_string in self.static_room_attributes:
 
                 # Case 2: Special handling for normalized area attributes
@@ -612,8 +612,8 @@ class TemporalBuilderMixin:
                     source_dict = getattr(self, attr_string, None)
                     
                     if source_dict:
-                        floor_num = self.room_to_floor.get(str(room_URIRef))
-                        val = source_dict.get(floor_num, {}).get(str(room_URIRef), np.nan)
+                        floor_num = self.room_to_floor.get(room_uri_str)
+                        val = source_dict.get(floor_num, {}).get(room_uri_str, np.nan)
                         features[attr_string] = val
                     else:
                         logger.warning(f"Normalized area dictionary '{attr_string}' not found. Did you run normalize_room_areas()?")
@@ -626,8 +626,8 @@ class TemporalBuilderMixin:
 
             # Special handling for 'floor number', which is not in static_room_attributes,
             # but still it is a feature for the room we want to include.
-            floor_URIRef = self.office_graph._map_RoomURIRef_to_FloorURIRef(room_URIRef)
-            floor_num = self.office_graph._map_FloorURIRef_to_FloorNumber(floor_URIRef)
+            floor_uri_str = self.office_graph._map_room_uri_str_to_floor_uri_str(room_uri_str)
+            floor_num = self.office_graph._map_floor_uri_str_to_floor_number(floor_uri_str)
             features["floor"] = floor_num
             
             # Adding features for a single room back to the list
@@ -642,17 +642,8 @@ class TemporalBuilderMixin:
 
         # 3. Merge this static data into the main DataFrame
         merged_df = pd.merge(df.copy(), static_features_df,
-                             on='room_URIRef', how='left')
-        
-        # 4. Ensuring features are correctly categorical
-        categorical_static_cols = [
-            col for col in ['room_URIRef', 'isProperRoom', 
-                            'hasWindows', 'has_multiple_windows']
-            if col in merged_df.columns]
-        if categorical_static_cols:
-            merged_df[categorical_static_cols] = (
-                merged_df[categorical_static_cols].astype('category'))
-        
+                             on='room_uri_str', how='left')
+                        
         logger.info("Successfully merged static room features. Returning the DataFrame.")
         
         return merged_df
@@ -684,12 +675,12 @@ class TemporalBuilderMixin:
 
         # 1) Add floor_number mapping to the room-level data
         room_to_floor_map = {
-            room_uri: self.office_graph._map_FloorURIRef_to_FloorNumber(
-                self.office_graph._map_RoomURIRef_to_FloorURIRef(room_uri)
+            room_uri_str: self.office_graph._map_floor_uri_str_to_floor_number(
+                self.office_graph._map_room_uri_str_to_floor_uri_str(room_uri_str)
             )
-            for room_uri in df['room_URIRef'].unique()
+            for room_uri_str in df['room_uri_str'].unique()
         }
-        df['floor_number'] = df['room_URIRef'].map(room_to_floor_map)
+        df['floor_number'] = df['room_uri_str'].map(room_to_floor_map)
         df['floor_number'] = df['floor_number'].astype(int)
 
         # For later use

@@ -1,6 +1,5 @@
 from typing import Dict, Tuple, List
 import numpy as np
-from rdflib import URIRef
 import pandas as pd
 
 import logging
@@ -12,7 +11,7 @@ class HomogGraphBuilderMixin:
     def incorporate_weather_as_an_outside_room(
         self, 
         room_level_df: pd.DataFrame
-        ) -> Tuple[np.ndarray, List[URIRef], pd.DataFrame, Dict[int, np.ndarray]]:
+        ) -> Tuple[np.ndarray, List[str], pd.DataFrame, Dict[int, np.ndarray]]:
         """
         Computes a new graph structure and feature DataFrame by incorporating weather data as an "outside" room.
         This method is immutable: it does not modify the instance's state (self).
@@ -20,7 +19,7 @@ class HomogGraphBuilderMixin:
         Returns:
             A tuple containing four new objects:
             1. new_adj_matrix (np.ndarray): The (N+1)x(N+1) adjacency matrix.
-            2. new_uri_list (List[URIRef]): The list of N+1 room URIs, including the new 'outside' URI.
+            2. new_uri_list (List[str]): The list of N+1 room URI strings, including the new 'outside' URI.
             3. new_masked_adjs (Dict[int, np.ndarray]): The dictionary of patched, masked adjacency matrices.
             4. new_room_level_df (pd.DataFrame): The DataFrame with weather columns and new rows for the outside node.
         """
@@ -44,7 +43,7 @@ class HomogGraphBuilderMixin:
         old_uris = self.adj_matrix_room_URIs_str
         N = old_adj.shape[0]
         
-        # Validations (no changes here)
+        # Validations
         if len(old_uris) != N:
             raise ValueError(f"Mismatch: len(self.adj_matrix_room_URIs_str)={len(old_uris)} vs adjacency shape={old_adj.shape}")
         if self.combined_outside_adj.shape[0] != N:
@@ -73,19 +72,15 @@ class HomogGraphBuilderMixin:
         df = room_level_df.copy()
         
         # Validations
-        if 'room_URIRef' not in df.columns or 'bucket_idx' not in df.columns:
-            raise ValueError("room_level_df must have columns 'room_URIRef' and 'bucket_idx'.")
-        orig_cols = [c for c in df.columns if c not in ('room_URIRef', 'bucket_idx')]
+        if 'room_uri_str' not in df.columns or 'bucket_idx' not in df.columns:
+            raise ValueError("room_level_df must have columns 'room_uri_str' and 'bucket_idx'.")
+        orig_cols = [c for c in df.columns if c not in ('room_uri_str', 'bucket_idx')]
         if not orig_cols:
             raise ValueError("No original feature-columns found in room_level_df.")
         
-        # Convert URIRef column to string for simplicity and compatibility
-        df['room_URIRef'] = df['room_URIRef'].astype(str)
-        df['room_URIRef'] = df['room_URIRef'].astype('category')
-        
-        orig_cols = [c for c in df.columns if c not in ('room_URIRef', 'bucket_idx')]
-        if not orig_cols:
-            raise ValueError("No original feature-columns found in room_level_df.")
+        # Ensure room_uri_str is string type and categorical
+        df['room_uri_str'] = df['room_uri_str'].astype(str)
+        df['room_uri_str'] = df['room_uri_str'].astype('category')
         
         # Create new DataFrame with weather features
         buckets = sorted(df['bucket_idx'].unique())
@@ -97,7 +92,7 @@ class HomogGraphBuilderMixin:
         # Build new rows for the 'outside' node
         new_rows = []
         for b in buckets:
-            row_dict = {'room_URIRef': outside_URI_str, 'bucket_idx': b}
+            row_dict = {'room_uri_str': outside_URI_str, 'bucket_idx': b}
             # Original room features are NaN for the 'outside' node
             for fc in orig_cols:
                 row_dict[fc] = np.nan
@@ -107,7 +102,14 @@ class HomogGraphBuilderMixin:
             new_rows.append(row_dict)
         
         outside_df = pd.DataFrame(new_rows)
-        outside_df['room_URIRef'] = outside_df['room_URIRef'].astype(temp_df['room_URIRef'].dtype)
+        outside_df['room_uri_str'] = outside_df['room_uri_str'].astype(temp_df['room_uri_str'].dtype)
+
+        # Ensure that any column that was categorical in the original DataFrame
+        # maintains that same categorical type in the new 'outside_df'. This
+        # prevents pandas from upcasting the column to 'object' during concatenation.
+        for col in temp_df.columns:
+            if pd.api.types.is_categorical_dtype(temp_df[col].dtype):
+                outside_df[col] = outside_df[col].astype(temp_df[col].dtype)
 
         # Concatenate old data (with new columns) and the new 'outside' data
         new_room_level_df = pd.concat([temp_df, outside_df], ignore_index=True)

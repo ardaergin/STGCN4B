@@ -172,7 +172,7 @@ class BaseDataPreparer(ABC):
         - consumption_forecast:
             - end-of-block NaNs (due to grouping by block)
         - measurement_forecast:
-            - end-of-block NaNs (due to grouping by block & room_URIRef)
+            - end-of-block NaNs (due to grouping by block & room_uri_str)
             - Missing measurements in certain time buckets, resulting in NaNs in target columns
         """
         pass
@@ -325,7 +325,7 @@ class STGCNDataPreparer(BaseDataPreparer):
         self._drop_targets_from_df()
 
         # Identify feature columns (all numeric cols except identifiers and targets)
-        identifier_cols = ['bucket_idx', 'block_id', 'room_URIRef']
+        identifier_cols = ['bucket_idx', 'block_id', 'room_uri_str']
         feature_cols = sorted([c for c in self.df.columns if c not in identifier_cols])
         
         # Save
@@ -372,15 +372,15 @@ class STGCNDataPreparer(BaseDataPreparer):
         
         # Case for data WITH a room dimension (Features for all task types, targets for measurement_forecast)
         if has_room_dimension:
-            room_order = self.metadata["room_URIRefs"]
+            room_order = self.metadata["rooms"]
             T = sum(len(v["bucket_indices"]) for v in self.metadata["blocks"].values())
             R = len(room_order)
             F = len(columns_to_pivot)
             
             full_index = pd.MultiIndex.from_product(
-                [range(T), room_order], names=['bucket_idx', 'room_URIRef']
+                [range(T), room_order], names=['bucket_idx', 'room_uri_str']
             )
-            pivoted_df = df.set_index(['bucket_idx', 'room_URIRef'])[columns_to_pivot].reindex(full_index)
+            pivoted_df = df.set_index(['bucket_idx', 'room_uri_str'])[columns_to_pivot].reindex(full_index)
             
             np_array = pivoted_df.values.reshape(T, R, F)
             logger.info(f"Created 3D NumPy array of shape {np_array.shape}")
@@ -410,7 +410,7 @@ class STGCNDataPreparer(BaseDataPreparer):
             "block_size": self.metadata["block_size"],
             
             # Graph structure
-            "room_URIRefs": self.metadata["room_URIRefs"],
+            "rooms": self.metadata["rooms"],
             "n_nodes": self.metadata["n_nodes"],
             
             # Adjacency

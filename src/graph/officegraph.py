@@ -364,6 +364,44 @@ class OfficeGraph(NamespaceMixin, OfficeGraphExtractor):
 
         return floor_obj.floor_number
 
+    def _map_device_uri_str_to_room_uri_str(self, dev_uri_str: str) -> str:
+        """Map device URI string to room URI string."""
+        from rdflib import URIRef
+        device_obj = self.devices.get(URIRef(dev_uri_str))
+        if device_obj is None:
+            raise KeyError(f"Device with URI <{dev_uri_str}> not found in self.devices.")
+        
+        room_uriref = device_obj.room
+        if room_uriref is None:
+            raise ValueError(f"Device <{dev_uri_str}> does not have an associated room.")
+            
+        return str(room_uriref)
+
+    def _map_room_uri_str_to_floor_uri_str(self, room_uri_str: str) -> str:
+        """Map room URI string to floor URI string."""
+        from rdflib import URIRef
+        room_obj = self.rooms.get(URIRef(room_uri_str))
+        if room_obj is None:
+            raise KeyError(f"Room with URI <{room_uri_str}> not found in self.rooms.")
+
+        floor_uriref = room_obj.floor
+        if floor_uriref is None:
+            raise ValueError(f"Room <{room_uri_str}> does not have an associated floor.")
+
+        return str(floor_uriref)
+
+    def _map_floor_uri_str_to_floor_number(self, floor_uri_str: str) -> int:
+        """Map floor URI string to floor number."""
+        from rdflib import URIRef
+        floor_obj = self.floors.get(URIRef(floor_uri_str))
+        if floor_obj is None:
+            raise KeyError(f"Floor with URI <{floor_uri_str}> not found in self.floors.")
+            
+        if not hasattr(floor_obj, 'floor_number') or floor_obj.floor_number is None:
+            raise AttributeError(f"Floor <{floor_uri_str}> does not have a 'floor_number' attribute.")
+
+        return floor_obj.floor_number
+    
     @staticmethod
     def _get_nested_attr(obj: Any, attr_string: str, default: Any = np.nan) -> Any:
         """
