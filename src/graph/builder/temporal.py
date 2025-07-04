@@ -557,6 +557,8 @@ class TemporalBuilderMixin:
             .reindex(full_grid_index)                   # add missing (room, bucket) pairs
             .reset_index()                              # restore columns 'room_uri_str' & 'bucket_idx'
         )
+        expanded_df['room_uri_str'] = expanded_df['room_uri_str'].astype('str')
+        expanded_df['room_uri_str'] = expanded_df['room_uri_str'].astype('category')
 
         # 4. For the newly added rows, some values can be safely imputed.
         for prop in self.used_property_types:
@@ -639,6 +641,7 @@ class TemporalBuilderMixin:
         
         # 2. Convert the list of dicts into a clean DataFrame.
         static_features_df = pd.DataFrame(room_data)
+        static_features_df['room_uri_str'] = static_features_df['room_uri_str'].astype('category')
 
         # 3. Merge this static data into the main DataFrame
         merged_df = pd.merge(df.copy(), static_features_df,
