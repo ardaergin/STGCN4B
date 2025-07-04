@@ -320,6 +320,12 @@ class LGBMExperimentRunner:
                 # The final absolute target is the base value + the true delta
                 targets_final = reconstruction_t_h_df.values
 
+                # squeeze so both are 1-D arrays of length n_samples
+                base_vals    = reconstruction_t_df.values.squeeze()
+                true_abs     = reconstruction_t_h_df.values.squeeze()
+                preds_final  = base_vals + preds
+                targets_final= true_abs
+
             else:
                 # If not in delta mode, preds and targets are already absolute
                 preds_final = preds
