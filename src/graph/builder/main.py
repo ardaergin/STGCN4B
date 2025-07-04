@@ -224,9 +224,7 @@ class OfficeGraphBuilder(
         """Convenience helper to save DataFrames as parquet files."""        
         
         # # Ensuring features are correctly categorical
-        df['room_uri_str'] = df['room_uri_str'].astype('category')
-        
-        for col in ['hasWindows','has_multiple_windows','isProperRoom', 'has_measurement']:
+        for col in ['room_uri_str', 'hasWindows','has_multiple_windows','isProperRoom', 'has_measurement']:
             if col in df.columns:
                 df[col] = df[col].astype("category")
                 # OR:   
