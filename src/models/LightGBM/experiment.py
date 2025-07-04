@@ -109,7 +109,7 @@ class LGBMExperimentRunner:
         # Delta forecasting logic
         reconstruction_df = None
         if self.args.prediction_type == "delta":
-            reconstruction_t_df = split_df[self.input_dict["source_col"]].copy()
+            reconstruction_t_df = split_df[self.input_dict["source_colname"]].copy()
             reconstruction_t_h_df = split_df[self.input_dict["delta_colnames"]].copy()
         
         # Get features (X)
