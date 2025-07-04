@@ -131,11 +131,19 @@ class BaseDataPreparer(ABC):
         self.feature_engineer = BlockAwareFeatureEngineer(self.metadata['blocks'])
 
     def _drop_requested_columns(self) -> None:
-        """Drop any column specified in args.features_to_drop list."""
-        cols_to_drop = [col for col in self.args.features_to_drop if col in self.df.columns]
+        """Drop any column whose name contains a substring from args.features_to_drop."""
+        if not self.args.features_to_drop:
+            return
+        
+        substrings_to_drop = self.args.features_to_drop
+        
+        cols_to_drop = [col for col in self.df.columns 
+                        if any(sub in col for sub in substrings_to_drop)]
+        
         if cols_to_drop:
             self.df.drop(columns=cols_to_drop, inplace=True)
-            logger.info(f"Dropped {len(cols_to_drop)} columns: {cols_to_drop}")
+            logger.info(f"Dropped {len(cols_to_drop)} columns containing substrings {substrings_to_drop}.")
+            logger.debug(f"Dropped columns: {cols_to_drop}")
 
     @abstractmethod
     def _prepare_target(self) -> None:
