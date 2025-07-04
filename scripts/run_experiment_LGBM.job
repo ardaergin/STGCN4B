@@ -7,20 +7,20 @@
 #SBATCH --mem=64G
 #SBATCH --time=05:00:00
 #SBATCH --array=0-9
-#SBATCH --output=logs/experiments/slurm_output_%A_%a.out # %A=job ID, %a=array task ID
-#SBATCH --error=logs/experiments/slurm_error_%A_%a.err
+#SBATCH --output=output/experiments/lgbm/slurm_output_%A_%a.out # %A=job ID, %a=array task ID
+#SBATCH --error=output/experiments/lgbm/slurm_error_%A_%a.err
 
 
 # --- 1. DEFINE PERSISTENT STORAGE DIRECTORIES ---
 PERSISTENT_PROJECT_DIR=$HOME/eSTGNN
 PERSISTENT_DATA_DIR=$PERSISTENT_PROJECT_DIR/data
 PERSISTENT_PROCESSED_DATA_DIR=$PERSISTENT_DATA_DIR/processed
-PERSISTENT_LOG_DIR=$PERSISTENT_PROJECT_DIR/logs/experiments
+PERSISTENT_LOG_DIR=$PERSISTENT_PROJECT_DIR/output/experiments/lgbm
 
 # Base output directory on persistent storage for the entire job array
-PERSISTENT_BASE_OUTPUT_DIR=$PERSISTENT_PROJECT_DIR/output/experiments/lgbm_array_${SLURM_ARRAY_JOB_ID}
+PERSISTENT_BASE_OUTPUT_DIR=$PERSISTENT_PROJECT_DIR/output/experiments/lgbm/lgbm_array_${SLURM_ARRAY_JOB_ID}
 # A unique output directory on persistent storage for this specific task's final results
-PERSISTENT_TASK_OUTPUT_DIR=$PERSISTENT_BASE_OUTPUT_DIR/task_${SLURM_ARRAY_TASK_ID}
+PERSISTENT_TASK_OUTPUT_DIR=$PERSISTENT_BASE_OUTPUT_DIR/experiment_${SLURM_ARRAY_TASK_ID}
 
 
 # --- 2. DEFINE SCRATCH SPACE DIRECTORIES ---
@@ -29,7 +29,7 @@ SCRATCH_DATA_DIR=$SCRATCH_PROJECT_DIR/data
 SCRATCH_PROCESSED_DATA_DIR=$SCRATCH_DATA_DIR/processed
 
 # The training script will write its output here on the fast scratch disk for this task
-SCRATCH_RUN_OUTPUT_DIR=$SCRATCH_PROJECT_DIR/output/task_${SLURM_ARRAY_TASK_ID}
+SCRATCH_RUN_OUTPUT_DIR=$SCRATCH_PROJECT_DIR/output/experiment_${SLURM_ARRAY_TASK_ID}
 
 
 # --- 3. ENSURE ALL NECESSARY DIRECTORIES EXIST ---
