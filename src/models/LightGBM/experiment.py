@@ -1,4 +1,7 @@
+#!/usr/bin/env python
+
 import os
+import json
 import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Tuple
@@ -23,7 +26,6 @@ from sklearn.metrics import (
     mean_squared_error,
     r2_score)
 
-from ...utils.filename_util import get_data_filename
 from ...utils.train_utils import ResultHandler
 from ...preparation.split import StratifiedBlockSplitter
 from ...preparation.preparer import LGBMDataPreparer
@@ -77,6 +79,9 @@ class LGBMExperimentRunner:
         # Set up the specific output directory for this run's artifacts
         self.output_dir = args.output_dir
         logger.info(f"Experiment outputs will be saved in: {self.output_dir}")
+
+        # Save configuration (some config are to be disregarded, as they are not used and just defaults)
+        self._save_arguments()
 
         # The preparer returns everything we need for the experiment
         logger.info("Handling data preparation...")
@@ -347,6 +352,26 @@ class LGBMExperimentRunner:
             }
         
         return final_model, metrics, history
+
+    def _save_arguments(self):
+        """Saves the experiment configuration arguments to a JSON file."""
+        # Define the full path for the arguments file
+        args_path = os.path.join(self.output_dir, "args.json")
+        
+        # Convert the argparse.Namespace object to a dictionary
+        args_dict = vars(self.args)
+        
+        logger.info(f"Saving experiment configuration to {args_path}...")
+        try:
+            # Open the file and write the dictionary as a JSON object
+            # indent=4 makes the file human-readable
+            with open(args_path, 'w') as f:
+                json.dump(args_dict, f, indent=4)
+            logger.info("Successfully saved arguments.")
+        except TypeError as e:
+            logger.error(f"Could not serialize args to JSON: {e}. Check if args contain non-serializable objects.")
+        except Exception as e:
+            logger.error(f"An error occurred while saving arguments to {args_path}: {e}")
 
 # Threshold Helper
 def find_optimal_threshold_lgbm(model: LGBMWrapper, X_val: pd.DataFrame, y_val: pd.Series):
