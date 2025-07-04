@@ -84,21 +84,20 @@ class BaseDataPreparer(ABC):
         
         # Targets for certain tasks
         if self.args.task_type == "workhour_classification":
-            filename = f'target_workhour_{self.args.interval}.parquet'
+            filename = f'target_workhour_{self.args.interval}.npy'
             file_path = os.path.join(self.args.processed_data_dir, filename)
             logger.info(f"Loading workhour labels from: {file_path}")
-            workhour_df = pd.read_parquet(file_path)
-            self.df = pd.merge(self.df, workhour_df, on='bucket_idx', how='left')
+            workhour_array = np.load(file_path)
+            self.df["target_workhour"] = workhour_array
             self.target_colnames.append('target_workhour')
 
         elif self.args.task_type == "consumption_forecast":
-            filename = f'target_consumption_{self.args.interval}.parquet'
+            filename = f'target_consumption_{self.args.interval}.npy'
             file_path = os.path.join(self.args.processed_data_dir, filename)
             logger.info(f"Loading consumption values from: {file_path}")
-            consumption_df = pd.read_parquet(file_path)
-            self.df = pd.merge(self.df, consumption_df, on='bucket_idx', how='left')
-            # Not adding "consumption" to self.target_colnames, as it can still be used as a feature
-        
+            consumption_array = np.load(file_path)
+            self.df["consumption"] = consumption_array
+            
     @staticmethod
     def _reduce_mem_usage(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
         """
