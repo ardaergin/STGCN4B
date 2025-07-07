@@ -199,18 +199,18 @@ class TemporalBuilderMixin:
         logger.info(f"Work hours: {labels.sum()} ({labels.sum()/len(labels):.1%} of time buckets)")
         logger.info("Workhour labels are saved as an array to 'self.workhour_labels'.")
         
-        # # Create a DataFrame with bucket indices and labels
-        # self.workhour_labels_df = pd.DataFrame({
-        #     'bucket_idx': range(len(labels_list)),
-        #     'target_workhour': labels_list
-        # })
+        # Create a DataFrame with bucket indices and labels
+        self.workhour_labels_df = pd.DataFrame({
+            'bucket_idx': range(len(labels_list)),
+            'target_workhour': labels_list
+        })
         
         if save:
-            file_name = f'target_workhour_{self.interval}.npy'
+            file_name = f'target_workhour_{self.interval}.parquet'
             file_full_path = os.path.join(self.processed_data_dir, file_name)
             
-            np.save(file_full_path, labels)
-            logger.info(f"Saved workhour labels to {file_full_path}")
+            logger.info(f"Saving workhour labels DataFrame to: {file_full_path}")
+            self.workhour_labels_df.to_parquet(file_full_path, index=False)
         
         return None
     
@@ -250,20 +250,20 @@ class TemporalBuilderMixin:
         self.consumption_values = final_consumption_array
         logger.info("Consumption values are saved as an array to 'self.consumption_values'.")
 
-        # # 3) Convert dictionary to a DataFrame
-        # # This creates a DataFrame from the dictionary's items with named columns.
-        # consumption_df = pd.DataFrame(
-        #     bucket_consumption.items(), 
-        #     columns=['bucket_idx', 'consumption']
-        # )
-        # self.consumption_df = consumption_df
-        # logger.info("Consumption values are saved as a DataFrame to 'self.consumption_df'.")
-                
+        # 3) Convert dictionary to a DataFrame
+        # This creates a DataFrame from the dictionary's items with named columns.
+        consumption_df = pd.DataFrame(
+            bucket_consumption.items(), 
+            columns=['bucket_idx', 'consumption']
+        )
+        self.consumption_df = consumption_df
+        logger.info("Consumption values are saved as a DataFrame to 'self.consumption_df'.")
+
         if save:
-            file_name = f'target_consumption_{self.interval}.npy'
+            file_name = f'target_consumption_{self.interval}.parquet'
             file_full_path = os.path.join(self.processed_data_dir, file_name)
-            logger.info(f"Saving consumption to: {file_full_path}")
-            np.save(file_full_path, final_consumption_array)
+            logger.info(f"Saving consumption DataFrame to: {file_full_path}")
+            self.consumption_df.to_parquet(file_full_path, index=False)
         
         return None
     
