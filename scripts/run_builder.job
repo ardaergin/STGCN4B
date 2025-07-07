@@ -6,8 +6,8 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=16G
 #SBATCH --time=00:10:00
-#SBATCH --output=logs/builder/slurm_output_%A.out
-#SBATCH --error=logs/builder/slurm_error_%A.err
+#SBATCH --output=logs/builder/%A.out
+#SBATCH --error=logs/builder/%A.err
 
 
 # --- 1. DEFINE PERSISTENT STORAGE DIRECTORIES ---

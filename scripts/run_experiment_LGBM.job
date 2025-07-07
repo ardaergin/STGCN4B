@@ -3,22 +3,41 @@
 #SBATCH --job-name=lgbm-array
 #SBATCH --partition=rome
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=4
 #SBATCH --mem=64G
-#SBATCH --time=05:00:00
-#SBATCH --array=0-9
-#SBATCH --output=output/experiments/lgbm/slurm_output_%A_%a.out # %A=job ID, %a=array task ID
-#SBATCH --error=output/experiments/lgbm/slurm_error_%A_%a.err
+#SBATCH --time=06:00:00
+#SBATCH --array=0-4
+#SBATCH --output=logs/experiments/lgbm/%A_%a.out # %A=job ID, %a=array task ID
+#SBATCH --error=logs/experiments/lgbm/%A_%a.err
 
 
 # --- 1. DEFINE PERSISTENT STORAGE DIRECTORIES ---
 PERSISTENT_PROJECT_DIR=$HOME/eSTGNN
 PERSISTENT_DATA_DIR=$PERSISTENT_PROJECT_DIR/data
 PERSISTENT_PROCESSED_DATA_DIR=$PERSISTENT_DATA_DIR/processed
-PERSISTENT_LOG_DIR=$PERSISTENT_PROJECT_DIR/output/experiments/lgbm
+PERSISTENT_LOG_DIR=$PERSISTENT_PROJECT_DIR/logs/experiments/lgbm
+
+
+# --- 1.5. CUSTOM SUFFIX FOR FOLDER (OPTIONAL) ---
+
+# Set a default empty value for the suffix.
+# So, if no argument is given, the suffix is empty.
+CUSTOM_NAME_SUFFIX=""
+
+# Check if the first argument is our dedicated flag
+if [[ "$1" == "--folder_suffix" ]]; then
+  # Check that a name was actually provided after the flag
+  if [ -n "$2" ]; then
+    CUSTOM_NAME_SUFFIX="_$2"
+    shift 2 # IMPORTANT: Shift away both the flag and its value
+  else
+    echo "Error: --folder_suffix option requires a value." >&2
+    exit 1
+  fi
+fi
 
 # Base output directory on persistent storage for the entire job array
-PERSISTENT_BASE_OUTPUT_DIR=$PERSISTENT_PROJECT_DIR/output/experiments/lgbm/lgbm_array_${SLURM_ARRAY_JOB_ID}
+PERSISTENT_BASE_OUTPUT_DIR=$PERSISTENT_PROJECT_DIR/output/experiments/lgbm/${SLURM_ARRAY_JOB_ID}_lgbmA${CUSTOM_NAME_SUFFIX}
 # A unique output directory on persistent storage for this specific task's final results
 PERSISTENT_TASK_OUTPUT_DIR=$PERSISTENT_BASE_OUTPUT_DIR/experiment_${SLURM_ARRAY_TASK_ID}
 
@@ -84,6 +103,7 @@ srun python -m src.models.LightGBM.experiment \
     --data_dir $SCRATCH_DATA_DIR \
     --output_dir $SCRATCH_RUN_OUTPUT_DIR \
     --processed_data_dir $SCRATCH_PROCESSED_DATA_DIR \
+    --n_experiments 5 \
     --experiment_id ${SLURM_ARRAY_TASK_ID} \
     --model_family tabular \
     --model LightGBM \
@@ -100,4 +120,26 @@ echo "Results for task ${SLURM_ARRAY_TASK_ID} successfully copied to $PERSISTENT
 echo "Cleaning up scratch space..."
 rm -rf $TMPDIR/*
 
-echo "Job task ${SLURM_ARRAY_TASK_ID} completed successfully!"
+# --- 9. MOVE LOG FILES TO TASK-SPECIFIC EXPERIMENT DIRECTORY ---
+echo "Moving log files for task ${SLURM_ARRAY_TASK_ID}..."
+
+# Construct the original, full path to the log files
+# These are based on your #SBATCH directives
+SLURM_OUT_FILE_ORIGINAL="$PERSISTENT_LOG_DIR/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.out"
+SLURM_ERR_FILE_ORIGINAL="$PERSISTENT_LOG_DIR/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.err"
+
+# The destination is the unique output directory for this specific task
+LOG_DESTINATION_DIR=$PERSISTENT_TASK_OUTPUT_DIR
+
+# Move the files, but only if they actually exist
+if [ -f "$SLURM_OUT_FILE_ORIGINAL" ]; then
+    mv "$SLURM_OUT_FILE_ORIGINAL" "$LOG_DESTINATION_DIR/"
+    echo "Moved .out log to $LOG_DESTINATION_DIR"
+fi
+
+if [ -f "$SLURM_ERR_FILE_ORIGINAL" ]; then
+    mv "$SLURM_ERR_FILE_ORIGINAL" "$LOG_DESTINATION_DIR/"
+    echo "Moved .err log to $LOG_DESTINATION_DIR"
+fi
+
+echo "Job task ${SLURM_ARRAY_TASK_ID} fully completed and logs moved!"

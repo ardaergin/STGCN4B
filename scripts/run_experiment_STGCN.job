@@ -7,19 +7,38 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=24:00:00
-#SBATCH --array=0-9
-#SBATCH --output=output/experiments/stgcn/slurm_output_%A_%a.out # %A=job ID, %a=task ID
-#SBATCH --error=output/experiments/stgcn/slurm_error_%A_%a.err
+#SBATCH --array=0-4
+#SBATCH --output=logs/experiments/stgcn/%A_%a.out # %A=job ID, %a=task ID
+#SBATCH --error=logs/experiments/stgcn/%A_%a.err
 
 
 # --- 1. DEFINE PERSISTENT STORAGE DIRECTORIES ---
 PERSISTENT_PROJECT_DIR=$HOME/eSTGNN
 PERSISTENT_DATA_DIR=$PERSISTENT_PROJECT_DIR/data
 PERSISTENT_PROCESSED_DATA_DIR=$PERSISTENT_DATA_DIR/processed
-PERSISTENT_LOG_DIR=$PERSISTENT_PROJECT_DIR/output/experiments/stgcn
+PERSISTENT_LOG_DIR=$PERSISTENT_PROJECT_DIR/logs/experiments/stgcn
+
+
+# --- 1.5. CUSTOM SUFFIX FOR FOLDER (OPTIONAL) ---
+
+# Set a default empty value for the suffix.
+# So, if no argument is given, the suffix is empty.
+CUSTOM_NAME_SUFFIX=""
+
+# Check if the first argument is our dedicated flag
+if [[ "$1" == "--folder_suffix" ]]; then
+  # Check that a name was actually provided after the flag
+  if [ -n "$2" ]; then
+    CUSTOM_NAME_SUFFIX="_$2"
+    shift 2 # IMPORTANT: Shift away both the flag and its value
+  else
+    echo "Error: --folder_suffix option requires a value." >&2
+    exit 1
+  fi
+fi
 
 # A base output directory on persistent storage for the entire job array
-PERSISTENT_ARRAY_OUTPUT_DIR=$PERSISTENT_PROJECT_DIR/output/experiments/stgcn_array_${SLURM_ARRAY_JOB_ID}
+PERSISTENT_ARRAY_OUTPUT_DIR=$PERSISTENT_PROJECT_DIR/output/experiments/stgcn/${SLURM_ARRAY_JOB_ID}_stgcnA${CUSTOM_NAME_SUFFIX}
 # A unique output directory on persistent storage for this specific task's final results
 PERSISTENT_TASK_OUTPUT_DIR=$PERSISTENT_ARRAY_OUTPUT_DIR/experiment_${SLURM_ARRAY_TASK_ID}
 
@@ -31,7 +50,7 @@ SCRATCH_PROCESSED_DATA_DIR=$SCRATCH_DATA_DIR/processed
 
 # The training script will write its output here on the fast scratch disk
 # Using both Array Job ID and Task ID to ensure the path is unique
-SCRATCH_TASK_OUTPUT_DIR=$SCRATCH_PROJECT_DIR/output/stgcn_array_${SLURM_ARRAY_JOB_ID}/experiment_${SLURM_ARRAY_TASK_ID}
+SCRATCH_TASK_OUTPUT_DIR=$SCRATCH_PROJECT_DIR/output/stgcnA_${SLURM_ARRAY_JOB_ID}/experiment_${SLURM_ARRAY_TASK_ID}
 
 
 # --- 3. ENSURE ALL NECESSARY DIRECTORIES EXIST ---
@@ -54,6 +73,7 @@ module load Python/3.11.3-GCCcore-12.3.0
 module load CUDA/12.1.1
 module load cuDNN/8.9.2.26-CUDA-12.1.1
 module load PyTorch/2.1.2-foss-2023a-CUDA-12.1.1
+module load torchvision/0.16.0-foss-2023a-CUDA-12.1.1
 module load Python-bundle-PyPI/2023.06-GCCcore-12.3.0
 module load matplotlib/3.7.2-gfbf-2023a
 module load scikit-learn/1.3.1-gfbf-2023a
@@ -90,7 +110,10 @@ srun python -m src.models.STGCN4B.homogeneous.experiment \
     --data_dir $SCRATCH_DATA_DIR \
     --output_dir $SCRATCH_TASK_OUTPUT_DIR \
     --processed_data_dir $SCRATCH_PROCESSED_DATA_DIR \
+    --n_experiments 5 \
     --experiment_id ${SLURM_ARRAY_TASK_ID} \
+    --model_family graph \
+    --model STGCN \
     --enable_cuda \
     "$@"
 
@@ -105,4 +128,27 @@ echo "Results successfully copied to $PERSISTENT_TASK_OUTPUT_DIR"
 echo "Cleaning up scratch space..."
 rm -rf $TMPDIR/*
 
-echo "Job task ${SLURM_ARRAY_TASK_ID} completed successfully!"
+
+# --- 9. MOVE LOG FILES TO TASK-SPECIFIC EXPERIMENT DIRECTORY ---
+echo "Moving log files for task ${SLURM_ARRAY_TASK_ID}..."
+
+# Construct the original, full path to the log files
+# These are based on your #SBATCH directives
+SLURM_OUT_FILE_ORIGINAL="$PERSISTENT_LOG_DIR/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.out"
+SLURM_ERR_FILE_ORIGINAL="$PERSISTENT_LOG_DIR/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.err"
+
+# The destination is the unique output directory for this specific task
+LOG_DESTINATION_DIR=$PERSISTENT_TASK_OUTPUT_DIR
+
+# Move the files, but only if they actually exist
+if [ -f "$SLURM_OUT_FILE_ORIGINAL" ]; then
+    mv "$SLURM_OUT_FILE_ORIGINAL" "$LOG_DESTINATION_DIR/"
+    echo "Moved .out log to $LOG_DESTINATION_DIR"
+fi
+
+if [ -f "$SLURM_ERR_FILE_ORIGINAL" ]; then
+    mv "$SLURM_ERR_FILE_ORIGINAL" "$LOG_DESTINATION_DIR/"
+    echo "Moved .err log to $LOG_DESTINATION_DIR"
+fi
+
+echo "Job task ${SLURM_ARRAY_TASK_ID} fully completed and logs moved!"
