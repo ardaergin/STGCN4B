@@ -136,7 +136,7 @@ class STGCNChebGraphConv(nn.Module):
 
         elif self.task_type == 'consumption_forecast':
             x = self.global_pool(x)                # [B,1,1,1]
-            return x.view(x.size(0))               # [B]
+            return x.squeeze(-1).squeeze(-1)       # [B, n_pred]
 
         elif self.task_type == 'workhour_classification':
             # Global pooling to get final classification output
@@ -247,7 +247,7 @@ class STGCNGraphConv(nn.Module):
 
         elif self.task_type == 'consumption_forecast':
             x = self.global_pool(x)                # [B,1,1,1]
-            return x.view(x.size(0))               # [B]
+            return x.squeeze(-1).squeeze(-1)       # [B, n_pred]
     
         elif self.task_type == 'workhour_classification':
             # Global pooling to get final classification output

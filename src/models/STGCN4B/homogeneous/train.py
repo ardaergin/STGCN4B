@@ -470,7 +470,7 @@ def find_optimal_threshold(model, val_loader):
     model.eval()
     all_probs, all_labels = [], []
     with torch.no_grad():
-        for X_batch, y_batch, _ in val_loader:
+        for X_batch, y_batch, _, _, _ in val_loader:
             outputs = model(X_batch.permute(0, 3, 1, 2)).squeeze()
             probs = torch.sigmoid(outputs)
             all_probs.extend(probs.cpu().numpy())
