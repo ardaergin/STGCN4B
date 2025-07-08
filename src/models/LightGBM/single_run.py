@@ -128,7 +128,11 @@ class LGBMSingleRunner:
         X_train, y_train, _ = self._get_split_data(block_ids=train_ids)
         X_val, y_val, _ = self._get_split_data(block_ids=val_ids)
         model = LGBMWrapper(**params)
-        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], use_early_stopping=True, verbose=True)
+        model.fit(X_train, y_train, 
+                eval_set=[(X_train, y_train), (X_val, y_val)],
+                eval_names=['train', 'valid'],
+                use_early_stopping=True, 
+                verbose=True)
         
         # Get validation results
         val_results = {}
@@ -146,12 +150,21 @@ class LGBMSingleRunner:
         """Evaluate the model on the test set."""
         logger.info("Evaluating model on the hold-out test set...")
         X_test, y_test, reconstruction_t_df_test = self._get_split_data(block_ids=test_ids)
+
         # Get training history
         raw_history = model.evals_result_
-        metric_name = list(raw_history['valid_0'].keys())[0]
+
+        # Get the validation loss
+        val_metric_name = list(raw_history['valid'].keys())[0]
+        val_loss = raw_history['valid'][val_metric_name]
+
+        # Get the training loss
+        train_metric_name = list(raw_history['train'].keys())[0]
+        train_loss = raw_history['train'][train_metric_name]
+
         history = {
-            "train_loss": None,  # Not available with early stopping on a validation set
-            "val_loss": raw_history['valid_0'][metric_name]
+            "train_loss": train_loss,
+            "val_loss": val_loss
         }
         # Compute test metrics
         metrics = {}
