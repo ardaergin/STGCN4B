@@ -97,119 +97,84 @@ class LGBMSingleRunner:
     def run_experiment(self):
         """Executes the single run pipeline."""
         logger.info(f"===== Starting Single LGBM Experiment | Seed: {self.seed} =====")
-
         splitter = StratifiedBlockSplitter(output_dir=self.output_dir, blocks=self.input_dict['blocks'], 
-                                         stratum_size=self.args.stratum_size, seed=self.seed)
+                                            stratum_size=self.args.stratum_size, seed=self.seed)
         
         # Get train/validation/test split
         splitter.get_train_test_split()
         train_ids, val_ids = splitter.get_single_split()
         test_ids = splitter.test_block_ids
-
         # Get default parameters
         default_params = self._get_default_params()
         logger.info(f"Using default parameters: {default_params}")
-
         # Train model with validation set for early stopping
-        model, val_metrics = self._train_with_validation(default_params, train_ids, val_ids)
+        model, val_results = self._train_with_validation(default_params, train_ids, val_ids)
         
-        # Evaluate on test set
-        test_metrics, final_history = self._evaluate_on_test(model, test_ids)
+        # Evaluate on test set, passing the optimal threshold from the validation results
+        test_metrics, final_history = self._evaluate_on_test(model, test_ids, val_results)
         
         # Process and save results
         handler = ResultHandler(output_dir=self.output_dir, task_type=self.args.task_type,
-                              history=final_history, metrics=test_metrics, model=model)
+                                history=final_history, metrics=test_metrics, model=model)
         handler.process()
         
         # Save test metrics
         scalar_metrics = {k: v for k, v in test_metrics.items() if np.isscalar(v)}
         pd.DataFrame([scalar_metrics]).to_csv(os.path.join(self.output_dir, "results_test.csv"), index=False)
-
         logger.info(f"===== Single Experiment COMPLETED =====")
-
-    def _get_default_params(self) -> Dict[str, Any]:
-        """Returns default LightGBM parameters."""
-        params = {
-            "learning_rate": 0.05,
-            "num_leaves": 100,
-            "max_depth": 6,
-            "min_child_samples": 20,
-            "min_child_weight": 0.001,
-            "min_split_gain": 0.001,
-            "feature_fraction": 0.8,
-            "bagging_fraction": 0.8,
-            "bagging_freq": 1,
-            "lambda_l1": 0.01,
-            "lambda_l2": 0.01,
-            "n_jobs": -1,  # Use all available CPUs
-            "n_estimators": self.args.n_estimators,  # Default is 1500
-            "early_stopping_rounds": self.args.early_stopping_rounds,
-        }
-
-        if self.args.task_type == "workhour_classification":
-            params["objective"] = "binary"
-            params["metric"] = "auc"
-            params["is_unbalance"] = True
-        else:  # Forecasting tasks
-            params["objective"] = "regression_l1"  # MAE
-            params["metric"] = "mae"
-
-        return params
 
     def _train_with_validation(self, params: Dict[str, Any], train_ids: List[int], val_ids: List[int]):
         """Train model with validation set for early stopping."""
         X_train, y_train, _ = self._get_split_data(block_ids=train_ids)
         X_val, y_val, _ = self._get_split_data(block_ids=val_ids)
-
         model = LGBMWrapper(**params)
         model.fit(X_train, y_train, eval_set=[(X_val, y_val)], use_early_stopping=True, verbose=True)
-
-        # Get validation metrics
-        val_metrics = {}
+        
+        # Get validation results
+        val_results = {}
         if self.args.task_type == "workhour_classification":
             # Find optimal threshold on validation set
             optimal_threshold = find_optimal_threshold_lgbm(model, X_val, y_val)
-            val_metrics['optimal_threshold'] = optimal_threshold
-            logger.info(f"Found optimal threshold: {optimal_threshold:.4f}")
+            val_results['optimal_threshold'] = optimal_threshold
+            logger.info(f"Found optimal threshold on validation set: {optimal_threshold:.4f}")
         
-        val_metrics['best_iteration'] = model.best_iteration_
+        val_results['best_iteration'] = model.best_iteration_
         logger.info(f"Best iteration: {model.best_iteration_}")
+        return model, val_results
 
-        return model, val_metrics
-
-    def _evaluate_on_test(self, model: LGBMWrapper, test_ids: List[int]):
+    def _evaluate_on_test(self, model: LGBMWrapper, test_ids: List[int], val_results: Dict[str, Any]):
         """Evaluate the model on the test set."""
         logger.info("Evaluating model on the hold-out test set...")
-
         X_test, y_test, reconstruction_t_df_test = self._get_split_data(block_ids=test_ids)
-
         # Get training history
         raw_history = model.evals_result_
         metric_name = list(raw_history['valid_0'].keys())[0]
         history = {
-            "train_loss": None,  # Not available with early stopping
+            "train_loss": None,  # Not available with early stopping on a validation set
             "val_loss": raw_history['valid_0'][metric_name]
         }
-
         # Compute test metrics
         metrics = {}
         if self.args.task_type == "workhour_classification":
             preds_proba = model.predict_proba(X_test)
             
-            # Use the optimal threshold found on validation set
-            optimal_threshold = find_optimal_threshold_lgbm(model, X_test, y_test)
+            # Use the optimal threshold found on the validation set
+            optimal_threshold = val_results.get('optimal_threshold', 0.5)
             preds_label = (preds_proba > optimal_threshold).astype(int)
-
+            
             metrics = {
-                'accuracy': (preds_label == y_test).mean(),
+                'test_loss': log_loss(y_test, preds_proba),
+                'accuracy': accuracy_score(y_test, preds_label),
                 'balanced_accuracy': balanced_accuracy_score(y_test, preds_label),
+                'precision': precision_score(y_test, preds_label),
+                'recall': recall_score(y_test, preds_label),
                 'f1': f1_score(y_test, preds_label),
                 'roc_auc': roc_auc_score(y_test, preds_proba),
                 'auc_pr': average_precision_score(y_test, preds_proba),
                 'predictions': preds_label,
                 'probabilities': preds_proba,
                 'labels': y_test.values,
-                'optimal_threshold': optimal_threshold
+                'threshold': optimal_threshold # Standardize key name to 'threshold'
             }
         else:  # Forecasting
             preds = model.predict(X_test)
@@ -257,6 +222,35 @@ class LGBMSingleRunner:
             }
         
         return metrics, history
+
+    def _get_default_params(self) -> Dict[str, Any]:
+        """Returns default LightGBM parameters."""
+        params = {
+            "learning_rate": 0.05,
+            "num_leaves": 100,
+            "max_depth": 6,
+            "min_child_samples": 20,
+            "min_child_weight": 0.001,
+            "min_split_gain": 0.001,
+            "feature_fraction": 0.8,
+            "bagging_fraction": 0.8,
+            "bagging_freq": 1,
+            "lambda_l1": 0.01,
+            "lambda_l2": 0.01,
+            "n_jobs": -1,  # Use all available CPUs
+            "n_estimators": self.args.n_estimators,  # Default is 1500
+            "early_stopping_rounds": self.args.early_stopping_rounds,
+        }
+
+        if self.args.task_type == "workhour_classification":
+            params["objective"] = "binary"
+            params["metric"] = "auc"
+            params["is_unbalance"] = True
+        else:  # Forecasting tasks
+            params["objective"] = "regression_l1"  # MAE
+            params["metric"] = "mae"
+
+        return params
 
 
 # Threshold Helper
