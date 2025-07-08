@@ -65,7 +65,7 @@ class LGBMSingleRunner:
         self.input_dict = data_preparer.get_input_dict()
         self.delta_to_absolute_map = self.input_dict.get("delta_to_absolute_map", {})
 
-    def _get_split_data(self, block_ids: List[int]) -> Tuple[pd.DataFrame, pd.Series]:
+    def _get_split_data(self, block_ids: List[int]) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
         """Helper to filter the final DataFrame based on block IDs."""
         indices = []
         blocks = self.input_dict['blocks']
@@ -84,18 +84,16 @@ class LGBMSingleRunner:
 
         # Delta forecasting logic
         reconstruction_t_df = None
-        reconstruction_t_h_df = None
         if self.args.prediction_type == "delta":
             reconstruction_t_df = split_df[self.input_dict["source_colname"]].copy()
-            reconstruction_t_h_df = split_df[self.input_dict["delta_colnames"]].copy()
         
         # Get features (X)
-        cols_to_drop = ['bucket_idx'] + target_colnames + self.input_dict["delta_colnames"]
+        cols_to_drop = ['bucket_idx'] + target_colnames + self.input_dict.get("delta_colnames", [])
         cols_to_drop = [col for col in cols_to_drop if col in split_df.columns]
         X = split_df.drop(columns=cols_to_drop)
         
-        return X, y, reconstruction_t_df, reconstruction_t_h_df
-        
+        return X, y, reconstruction_t_df
+            
     def run_experiment(self):
         """Executes the single run pipeline."""
         logger.info(f"===== Starting Single LGBM Experiment | Seed: {self.seed} =====")
@@ -160,8 +158,8 @@ class LGBMSingleRunner:
 
     def _train_with_validation(self, params: Dict[str, Any], train_ids: List[int], val_ids: List[int]):
         """Train model with validation set for early stopping."""
-        X_train, y_train, _, _ = self._get_split_data(block_ids=train_ids)
-        X_val, y_val, _, _ = self._get_split_data(block_ids=val_ids)
+        X_train, y_train, _ = self._get_split_data(block_ids=train_ids)
+        X_val, y_val, _ = self._get_split_data(block_ids=val_ids)
 
         model = LGBMWrapper(**params)
         model.fit(X_train, y_train, eval_set=[(X_val, y_val)], use_early_stopping=True, verbose=True)
@@ -183,7 +181,7 @@ class LGBMSingleRunner:
         """Evaluate the model on the test set."""
         logger.info("Evaluating model on the hold-out test set...")
 
-        X_test, y_test, reconstruction_t_df, reconstruction_t_h_df = self._get_split_data(block_ids=test_ids)
+        X_test, y_test, reconstruction_t_df_test = self._get_split_data(block_ids=test_ids)
 
         # Get training history
         raw_history = model.evals_result_
@@ -218,11 +216,15 @@ class LGBMSingleRunner:
             
             if self.args.prediction_type == "delta":
                 logger.info("Reconstructing absolute values from delta predictions for evaluation...")
-                # The final absolute prediction is the base value + the predicted delta
-                preds_final = reconstruction_t_df.values + preds
+                # Get the base values at time t (test set)
+                values_at_t = reconstruction_t_df_test.values
+
+                # Calculate final absolute predictions: value at t + predicted delta
+                preds_final = values_at_t + preds
                 
-                # The final absolute target is the base value + the true delta
-                targets_final = reconstruction_t_h_df.values
+                # Calculate final absolute targets: value at t + actual delta (y_test)
+                targets_final = values_at_t + y_test.values
+
             else:
                 # If not in delta mode, preds and targets are already absolute
                 preds_final = preds
