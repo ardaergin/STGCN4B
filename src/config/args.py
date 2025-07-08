@@ -333,7 +333,7 @@ def add_STGCN_args(parser):
 
     # Common training parameters
     parser.add_argument('--lr', type=float, 
-                        default=0.0001, 
+                        default=0.0005, 
                         help='Learning rate')
     parser.add_argument('--optimizer', type=str, 
                         default='adamw', 
@@ -347,7 +347,7 @@ def add_STGCN_args(parser):
                         help='Gamma for learning rate scheduler')
 
     parser.add_argument('--droprate', type=float, 
-                        default=0.5, 
+                        default=0.2, 
                         help='Dropout rate')
     parser.add_argument('--weight_decay_rate', type=float, 
                         default=0.001, 
