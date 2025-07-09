@@ -183,7 +183,9 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
                 loss_train = criterion(outputs.squeeze(), y_batch.squeeze().float())
                 running_train_loss += loss_train.item()
             else: # Forecasting tasks
-                preds, targets, mask = get_preds_targets_mask(outputs, y_batch, mask_batch, args.task_type)
+                preds = outputs
+                targets = y_batch.float()
+                mask = mask_batch
                 loss_train = criterion(preds, targets, mask)
 
                 # Update running train loss: accumulating the per-batch MSE into running_train_loss
@@ -222,7 +224,9 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
                         all_probs.extend(probs.cpu().tolist())
                         all_targets_class.extend(y_batch.squeeze().cpu().tolist())
                     else: # Forecasting tasks
-                        preds, targets, mask = get_preds_targets_mask(outputs, y_batch, mask_batch, args.task_type)
+                        preds = outputs
+                        targets = y_batch.float()
+                        mask = mask_batch
                         loss_val = criterion(preds, targets, mask)
                         
                         # Collect only valid predictions and targets for R² score
@@ -346,7 +350,9 @@ def evaluate_model(args, model, test_loader, processor: STGCNNormalizer, thresho
                 all_probs.extend(probs.cpu().tolist())
                 all_class_labels.extend(y_batch.squeeze().cpu().tolist())
             else:
-                preds_norm, targets_norm, mask = get_preds_targets_mask(outputs, y_batch, mask_batch, args.task_type)
+                preds_norm = outputs
+                targets_norm = y_batch.float()
+                mask = mask_batch
                 # Collect only valid predictions and targets for R² score
                 valid_mask = mask.bool()
                 valid_preds_norm = preds_norm[valid_mask]
@@ -443,18 +449,6 @@ def evaluate_model(args, model, test_loader, processor: STGCNNormalizer, thresho
 
 
 # Helpers
-def get_preds_targets_mask(outputs, y_batch, mask_batch, task_type):
-    """Helper to get predictions, targets, and masks based on task type."""
-    if task_type == "consumption_forecast":
-        preds = outputs.view(-1)                # (B, 1, 1, 1) or (B, 1) -> (B)
-        targets = y_batch.view(-1).float()      # (B, 1) -> (B)
-        mask = mask_batch.view(-1)              # (B, 1) -> (B)
-    else: # args.task_type == "measurement_forecast"
-        preds   = outputs                       # (B, n_pred, N) -> No change
-        targets = y_batch.float()               # (B, n_pred, N) -> No change, just ensuring float type
-        mask = mask_batch                       # (B, n_pred, N) -> No change
-    return preds, targets, mask
-
 class MaskedMSELoss(nn.Module):
     def forward(self, preds, targets, mask):
         error = preds - targets
