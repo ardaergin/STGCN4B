@@ -88,18 +88,14 @@ class BaseDataPreparer(ABC):
             filename = f'target_workhour_{self.args.interval}.parquet'
             file_path = os.path.join(self.args.processed_data_dir, filename)
             logger.info(f"Loading workhour labels from: {file_path}")
-            workhour_df = pd.read_parquet(file_path)
-            self.df = pd.merge(self.df, workhour_df, on='bucket_idx', how='left')
-            self.target_colnames.append('target_workhour')
-        
+            self.workhour_df = pd.read_parquet(file_path)
+            
         elif self.args.task_type == "consumption_forecast":
             filename = f'target_consumption_{self.args.interval}.parquet'
             file_path = os.path.join(self.args.processed_data_dir, filename)
             logger.info(f"Loading consumption values from: {file_path}")
-            consumption_df = pd.read_parquet(file_path)
-            self.df = pd.merge(self.df, consumption_df, on='bucket_idx', how='left')
-            # Not adding "consumption" to self.target_colnames, as it can still be used as a feature
-    
+            self.consumption_df = pd.read_parquet(file_path)
+        
     @staticmethod
     def _reduce_mem_usage(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
         """
@@ -156,8 +152,9 @@ class BaseDataPreparer(ABC):
         then add any model-specific target processing.
         """
         if self.args.task_type == "workhour_classification":
-            # This task type has pre-loaded targets, nothing more to do here.
-            pass
+            self.target_colnames.append('target_workhour')
+            self.target_source_df = pd.DataFrame()
+            self.target_df = self.workhour_df.copy()
         else:
             # 1. Get the source column name based on the task
             if self.args.task_type == "measurement_forecast":
@@ -168,17 +165,19 @@ class BaseDataPreparer(ABC):
             if self.args.prediction_type == "delta":
                 logger.info(f"Preserving source column '{self.source_colname}' for delta reconstruction.")
                 if self.args.task_type == "consumption_forecast":
-                    self.target_source_df = self.df[['bucket_idx', self.source_colname]].copy()
+                    self.target_source_df = self.consumption_df.copy() # just bucket_idx and consumption
                 else: # self.args.task_type == "measurement_forecast"
                     self.target_source_df = self.df[['bucket_idx', 'room_uri_str', self.source_colname]].copy()
             
             # 2. Call the engineer to add target columns to the DataFrame
-            self.df, self.target_colnames, = self.target_engineer.add_forecast_targets_to_df(
-                task_type=self.args.task_type, data_frame=self.df,
+            target_df_with_source_col, self.target_colnames, = self.target_engineer.add_forecast_targets_to_df(
+                task_type=self.args.task_type, data_frame=self.target_source_df,
                 source_colname=self.source_colname, horizons=self.args.forecast_horizons,
                 prediction_type=self.args.prediction_type
             )
-            logger.info(f"Prepared {len(self.target_colnames)} target columns: {self.target_colnames}")
+            self.target_df = target_df_with_source_col.drop(columns=self.source_colname)
+            logger.info(f"Prepared {len(self.target_colnames)} target columns from {self.source_colname}. "
+                        f"New columns: {self.target_colnames}")
     
     @abstractmethod
     def _handle_nan_targets(self) -> None:
@@ -220,6 +219,15 @@ class LGBMDataPreparer(BaseDataPreparer):
     def _prepare_target(self) -> None:
         """Generates forecast targets for the LGBM model."""
         super()._prepare_target()
+
+        # NOTE: For LGBM, we have the target columns and feature columns in one DataFrame
+        #       1. It is just easier to slice for train/val/test splits
+        #       2. For the LGBM model, there can be missing buckets, so there can be a mismatch
+        #          between the target_df and the feature_df if we just use as they are.
+        if self.args.task_type == "measurement_forecast": 
+            self.df = pd.merge(self.df, self.target_df, on=['bucket_idx', 'room_uri_str'], how='left')
+        else:
+            self.df = pd.merge(self.df, self.target_df, on='bucket_idx', how='left')
     
     def _handle_nan_targets(self) -> None:
         """
@@ -240,7 +248,12 @@ class LGBMDataPreparer(BaseDataPreparer):
             raise ValueError("DataFrame is empty after dropping NaN targets.")
     
     def _prepare_features(self) -> None:
-        """Engineers features for the LGBM model."""
+        """
+        Engineers features for the LGBM model.
+        
+        This is mainly for adding lag and moving average features for the consumption variable,
+        if the task is consumption forecasting and the feature is not already requested to be dropped.
+        """
         if self.args.task_type == "consumption_forecast" and "consumption" not in self.args.features_to_drop:
             logger.info("Engineering lag and moving average features for consumption...")
             
@@ -277,11 +290,11 @@ class STGCNDataPreparer(BaseDataPreparer):
     def _prepare_target(self) -> None:
         super()._prepare_target()
         if self.args.task_type == "workhour_classification":
-            workhour_array = self.df.sort_values('bucket_idx')['target_workhour'].to_numpy()
+            workhour_array = self.workhour_df.sort_values('bucket_idx')['target_workhour'].to_numpy()
             self.target_data["target_array"] = workhour_array
             self.target_data["target_mask"] = np.ones_like(workhour_array)
         else:
-            # Using the helper to create the target array and mask
+            # Using the helper to create the target array, mask array, and source array (if delta prediction)
             if self.args.task_type == "consumption_forecast":
                 has_room_dimension = False
             else: # measurement_forecast
@@ -289,13 +302,15 @@ class STGCNDataPreparer(BaseDataPreparer):
             
             # Target array
             self.target_data["raw_target_array"] = self._pivot_df_to_numpy(
-                df=self.df, columns_to_pivot=self.target_colnames, has_room_dimension=has_room_dimension)
+                df=self.target_df, 
+                columns_to_pivot=self.target_colnames, 
+                has_room_dimension=has_room_dimension)
             
-            # Delta reconstruction data
+            # Source array (for delta prediction)
             if self.args.prediction_type == "delta":
-                # Value at t
                 self.target_data["raw_target_source_array"] = self._pivot_df_to_numpy(
-                    df=self.target_source_df, columns_to_pivot=[self.source_colname],
+                    df=self.target_source_df, 
+                    columns_to_pivot=[self.source_colname],
                     has_room_dimension=has_room_dimension)
     
     def _handle_nan_targets(self) -> None:
@@ -319,12 +334,7 @@ class STGCNDataPreparer(BaseDataPreparer):
             #       But it does not hurt to impute NaNs just in case.
             raw_target_source_array = self.target_data['raw_target_source_array']
             self.target_data['target_source_array'] = np.nan_to_num(raw_target_source_array, nan=0.0)
-    
-    def _drop_targets_from_df(self) -> None:
-        """Drops target columns from self.df, before the feature array preparation."""
-        self.df.drop(columns=self.target_colnames, inplace=True)
-        logger.info(f"Dropped {len(self.target_colnames)} target columns.")
-        
+            
     def _prepare_features(self) -> None:
         # Before starting feature array preparation, dropping the target columns
         self._drop_targets_from_df()
