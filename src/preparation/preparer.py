@@ -159,16 +159,11 @@ class BaseDataPreparer(ABC):
             # 1. Get the source column name based on the task
             if self.args.task_type == "measurement_forecast":
                 self.source_colname = f'{self.args.measurement_variable}_{self.args.measurement_variable_stat}'
+                self.target_source_df = self.df[['bucket_idx', 'room_uri_str', self.source_colname]].copy()
             else:  # consumption_forecast
                 self.source_colname = 'consumption'
-            
-            if self.args.prediction_type == "delta":
-                logger.info(f"Preserving source column '{self.source_colname}' for delta reconstruction.")
-                if self.args.task_type == "consumption_forecast":
-                    self.target_source_df = self.consumption_df.copy() # just bucket_idx and consumption
-                else: # self.args.task_type == "measurement_forecast"
-                    self.target_source_df = self.df[['bucket_idx', 'room_uri_str', self.source_colname]].copy()
-            
+                self.target_source_df = self.consumption_df.copy() # just bucket_idx and consumption
+                        
             # 2. Call the engineer to add target columns to the DataFrame
             target_df_with_source_col, self.target_colnames, = self.target_engineer.add_forecast_targets_to_df(
                 task_type=self.args.task_type, data_frame=self.target_source_df,
