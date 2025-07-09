@@ -16,24 +16,23 @@ class BlockAwareSTGCNDataset(Dataset):
         - and y_target is the target y_t corresponding to the final time step.
 
     Args:
-        feature_tensor: torch.Tensor of shape (T, R, F)
         blocks: List of Lists, each sublist contains bucket‐indices for one block
+        feature_tensor: torch.Tensor of shape (T, R, F)
         target_tensor: torch.Tensor of shape (T, ...) giving the label/target for each bucket
-        target_mask: torch.Tensor of shape (T, ...), binary mask for the target
+        target_mask_tensor: torch.Tensor of shape (T, ...), binary mask for the target
+        target_source_tensor: torch.Tensor of shape (T, ...), original source values for the target (for delta prediction)
+        max_target_offset: The maximum future step required by any target. Used to ensure sample validity.
         n_his: history length (number of past buckets)
-        max_target_offset: The maximum future step required by any target.
-                            Used to ensure sample validity.
     """
 
     def __init__(
         self,
         args,
-        feature_tensor: torch.Tensor,
         blocks: List[List[int]],
+        feature_tensor: torch.Tensor,
         target_tensor: torch.Tensor,
-        target_mask: torch.Tensor,
-        reconstruction_tensor_t: torch.Tensor,
-        reconstruction_tensor_t_h: torch.Tensor,
+        target_mask_tensor: torch.Tensor,
+        target_source_tensor: torch.Tensor,
         max_target_offset: int,
         n_his: int,
     ):
@@ -42,9 +41,8 @@ class BlockAwareSTGCNDataset(Dataset):
         self.blocks = blocks
         self.target_tensor = target_tensor
         self.n_his = n_his
-        self.target_mask = target_mask
-        self.reconstruction_tensor_t = reconstruction_tensor_t
-        self.reconstruction_tensor_t_h = reconstruction_tensor_t_h
+        self.target_mask = target_mask_tensor
+        self.target_source_tensor = target_source_tensor
         self.max_target_offset = max_target_offset
 
         # Precompute valid samples as (block_idx, start_pos)
@@ -83,9 +81,8 @@ class BlockAwareSTGCNDataset(Dataset):
         # Get the mask for the target
         m = self.target_mask[target_idx]
 
-        # Get the reconstruction values
-        r_t = self.reconstruction_tensor_t[target_idx]
-        r_t_h = self.reconstruction_tensor_t_h[target_idx]
+        # Get the target source values (for delta prediction)
+        s = self.target_source_tensor[target_idx]
         
         # Transpose the last two dimensions to align with the model's output (H, R)
         # This is only necessary for tasks with a room dimension.
@@ -93,10 +90,9 @@ class BlockAwareSTGCNDataset(Dataset):
             y = y.transpose(0, 1) # Shape (R, H) -> (H, R)
             m = m.transpose(0, 1) # Shape (R, H) -> (H, R)
             if self.args.prediction_type == "delta": 
-                r_t = r_t.transpose(0, 1)
-                r_t_h = r_t_h.transpose(0, 1)
-        
-        return X, y, m, r_t, r_t_h
+                s = s.transpose(0, 1)
+                
+        return X, y, m, s
 
 def homo_collate(batch):
     """
@@ -106,35 +102,35 @@ def homo_collate(batch):
         batch: List of samples, each is (X, y, target_mask) where
         - X is a tensor of shape (n_his, R, F)
         - y is a tensor for a single time step (e.g., shape (R,) or a scalar)
-        - target_mask is a tensor with the same shape as y
+        - m (mask for y) is a tensor with the same shape as y
+        - s (source of y) is a tensor with the same shape as y
     
     Returns:
         (X_batch, y_batch, mask_batch)
         - X_batch: tensor of shape (batch_size, n_his, R, F)
         - y_batch: tensor of shape (batch_size, ...)
-        - target_mask_batch: tensor of shape (batch_size, ...)
+        - m_batch: tensor of shape (batch_size, ...)
+        - s_batch: tensor of shape (batch_size, ...)
     """
-    Xs, ys, target_masks, r_t, r_t_h = zip(*batch)
+    X, y, m, s = zip(*batch)
 
     # Stack into a single batch tensor
-    X_batch = torch.stack(Xs, dim=0)  # Shape: (batch_size, n_his, R, F)
+    X_batch = torch.stack(X, dim=0)  # Shape: (batch_size, n_his, R, F)
 
-    y_batch = torch.stack(ys, dim=0)
-    target_mask_batch = torch.stack(target_masks, dim=0)
-    r_t_batch = torch.stack(r_t, dim=0)
-    r_t_h_batch = torch.stack(r_t_h, dim=0)
-
-    return X_batch, y_batch, target_mask_batch, r_t_batch, r_t_h_batch
+    y_batch = torch.stack(y, dim=0)
+    m_batch = torch.stack(m, dim=0)
+    s_batch = torch.stack(s, dim=0)
+    
+    return X_batch, y_batch, m_batch, s_batch
 
 def get_data_loaders(
         args,
         blocks: Dict[int, Dict[str, List[int]]],
         block_size: int,
         feature_tensor: torch.Tensor,
-        target_tensor,
-        target_mask,
-        reconstruction_tensor_t: torch.Tensor,
-        reconstruction_tensor_t_h: torch.Tensor,
+        target_tensor: torch.Tensor,
+        target_mask_tensor: torch.Tensor,
+        target_source_tensor: torch.Tensor,
         max_target_offset: int,
         *, # for safety
         train_block_ids: List[int],
@@ -143,10 +139,7 @@ def get_data_loaders(
         ):
     """
     Builds train/val/test DataLoaders from pre-loaded, in-memory data tensors.
-
-    This function is designed for efficiency, avoiding disk I/O by operating
-    on data that is already loaded.
-
+        
     VERY IMPORTANT: This function assumes that all blocks in the dataset have the same size.
                     If the blocks have varying sizes, this batch size will not align perfectly 
                     with the boundaries of other blocks. So ensure equal block sizes.
@@ -154,26 +147,25 @@ def get_data_loaders(
     # 1) Partition into train/val/test block‐lists
     def _blocks(ids):
         return [ blocks[b]["bucket_indices"] for b in ids ]
-
+    
     train_block_lists: List[List[int]] = _blocks(train_block_ids)
     val_block_lists: List[List[int]]   = _blocks(val_block_ids)  if val_block_ids else []
     test_block_lists: List[List[int]]  = _blocks(test_block_ids) if test_block_ids else []
-
+    
     logger.info(
         f"Using {len(train_block_lists)} train-block(s), "
         f"{len(val_block_lists)} val-block(s), "
         f"{len(test_block_lists)} test-block(s)"
     )
-
+    
     # 2) Construct Datasets
     train_ds = BlockAwareSTGCNDataset(
         args,
-        feature_tensor,
         train_block_lists,
+        feature_tensor,
         target_tensor,
-        target_mask,
-        reconstruction_tensor_t,
-        reconstruction_tensor_t_h,
+        target_mask_tensor,
+        target_source_tensor,
         max_target_offset,
         args.n_his)
     
@@ -181,23 +173,21 @@ def get_data_loaders(
     if val_block_lists:
         val_ds = BlockAwareSTGCNDataset(
             args,
-            feature_tensor,
             val_block_lists,
+            feature_tensor,
             target_tensor,
-            target_mask,
-            reconstruction_tensor_t,
-            reconstruction_tensor_t_h,
+            target_mask_tensor,
+            target_source_tensor,
             max_target_offset,
             args.n_his)
     
     test_ds = BlockAwareSTGCNDataset(
         args,
-        feature_tensor,
         test_block_lists,
+        feature_tensor,
         target_tensor,
-        target_mask,
-        reconstruction_tensor_t,
-        reconstruction_tensor_t_h,
+        target_mask_tensor,
+        target_source_tensor,
         max_target_offset,
         args.n_his)
     

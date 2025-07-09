@@ -140,17 +140,15 @@ class STGCNExperimentRunner:
         else: # workhour_classification, consumption_forecast
             final_mask = torch.ones_like(final_targets)
         
-        # Handle reconstruction tensor for delta forecasting
+        # Handling the target source tensor for delta forecasting
         # NOTE: These tensors are NOT normalized. They are kept in their original scale for reconstruction.
         if self.args.prediction_type == "delta":
-            reconstruction_tensor_t = torch.from_numpy(self.input_dict["reconstruction_array_t"]).float().to(device)
-            reconstruction_tensor_t_h = torch.from_numpy(self.input_dict["reconstruction_array_t_h"]).float().to(device)
+            target_source_tensor = torch.from_numpy(self.input_dict["target_source_array"]).float().to(device)
         else:
             # If not in delta mode, create a dummy tensors of zeros with the same shape as targets.
             # This simplifies the data loader's interface.
-            reconstruction_tensor_t = torch.zeros_like(final_targets)
-            reconstruction_tensor_t_h = torch.zeros_like(final_targets)
-        
+            target_source_tensor = torch.zeros_like(final_targets)
+                
         # --- 5. Get DataLoaders ---
         max_target_offset = max(self.args.forecast_horizons) if self.args.task_type != "workhour_classification" else 1
         loaders = get_data_loaders(
@@ -160,8 +158,7 @@ class STGCNExperimentRunner:
             feature_tensor=norm_feature_tensor,
             target_tensor=final_targets,
             target_mask=final_mask,
-            reconstruction_tensor_t=reconstruction_tensor_t,
-            reconstruction_tensor_t_h=reconstruction_tensor_t_h,
+            target_source_tensor=target_source_tensor,
             max_target_offset=max_target_offset,
             train_block_ids=train_block_ids,
             val_block_ids=val_block_ids,

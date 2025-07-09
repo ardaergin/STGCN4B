@@ -119,7 +119,7 @@ def setup_model(args, data):
     criterion = None
     if args.task_type == "workhour_classification":
         all_labels = []
-        for _, labels, _, _, _ in data['train_loader']:
+        for _, labels, _, _ in data['train_loader']:
             all_labels.extend(labels.cpu().numpy().flatten().tolist())
         n_samples = len(all_labels)
         n_work_hours = sum(all_labels)
@@ -168,7 +168,7 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
         running_train_loss = 0.0
         total_valid_points_train = 0
         
-        for X_batch, y_batch, mask_batch, _, _ in train_loader:
+        for X_batch, y_batch, mask_batch, _ in train_loader:
             # NOTE: we are not using the reconstruction_batch here, so left it as "_"
             # Zero the gradients
             optimizer.zero_grad()
@@ -210,7 +210,7 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
             all_probs, all_targets_class = [], [] 
             
             with torch.no_grad():
-                for X_batch, y_batch, mask_batch, _, _ in val_loader:
+                for X_batch, y_batch, mask_batch, _ in val_loader:
 
                     # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
                     x = X_batch.permute(0, 3, 1, 2)
@@ -259,10 +259,10 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
                 if len(all_targets) > 0:
                     epoch_metrics['r2'] = r2_score(all_targets, all_preds)
                     epoch_metrics['mae'] = mean_absolute_error(all_targets, all_preds)
-
+            
             for metric_name, metric_val in epoch_metrics.items():
                 history['val_metrics'].setdefault(metric_name, []).append(metric_val)
-
+            
             # --- PRUNING LOGIC ---
             if trial:
                 # For classification, we prune based on the primary metric (e.g., F1-score)
@@ -274,13 +274,13 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
                 
                 # Report the intermediate metric to Optuna
                 trial.report(metric_to_report, epoch + epoch_offset)
-
+                
                 # Check if the trial should be pruned based on the pruner's decision
                 if trial.should_prune():
                     logger.info(f"Pruning trial {trial.number} at epoch {epoch} due to poor performance.")
                     raise optuna.exceptions.TrialPruned()
             # --- END OF PRUNING LOGIC ---
-
+            
             # Logging
             metrics_log_str = " | ".join([f"{k}: {v:.4f}" for k, v in epoch_metrics.items()])
             logger.info(
@@ -288,7 +288,7 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
                 f"Val Loss: {epoch_val_loss:.4f} | {metrics_log_str} | "
                 f"LR: {scheduler.get_last_lr()[0]:.6f}"
             )
-
+            
             # Check early stopping
             if args.task_type == "workhour_classification":
                 # We want to MAXIMIZE AUC, so we MINIMIZE (-AUC) for the early stopping class
@@ -300,24 +300,24 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
             if early_stopping.early_stop:
                 logger.info("Early stopping triggered")
                 break
-
+        
         else: # No validation
             logger.info(f"Epoch [{epoch+1}/{args.epochs}] | Train Loss: {epoch_train_loss:.4f}")
         
         # Update learning rate
         scheduler.step()
-                
+    
     # Load the best model
     if val_loader is not None and early_stopping.early_stop:
         logger.info(f"Loading best model from epoch {early_stopping.best_epoch}")
         model.load_state_dict(early_stopping.best_model_state)
-    
+        
         # Add best AUC to history for the objective function
         if args.task_type == "workhour_classification":
             best_epoch_idx = early_stopping.best_epoch - 1
             best_auc = history['val_metrics']['val_auc'][best_epoch_idx]
             history['best_val_auc'] = best_auc
-
+    
     return model, history
 
 def evaluate_model(args, model, test_loader, processor: STGCNNormalizer, threshold=0.5):
@@ -333,11 +333,10 @@ def evaluate_model(args, model, test_loader, processor: STGCNNormalizer, thresho
     all_class_labels = []
 
     # If delta forecasting:
-    all_reconstruction_t_values = []
-    all_reconstruction_t_h_values = []
-
+    all_y_source_values = []
+    
     with torch.no_grad():
-        for X_batch, y_batch, mask_batch, r_t_batch, r_t_h_batch in test_loader:
+        for X_batch, y_batch, mask_batch, y_source_batch in test_loader:
 
             # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
             x = X_batch.permute(0, 3, 1, 2)
@@ -363,12 +362,9 @@ def evaluate_model(args, model, test_loader, processor: STGCNNormalizer, thresho
                 if args.prediction_type == "delta":
                     # The reconstruction batches has the same shape as y_batch and mask_batch
                     # We need to filter it with the same mask to keep them aligned
-                    valid_r_t = r_t_batch[valid_mask]
-                    all_reconstruction_t_values.extend(valid_r_t.cpu().tolist())
-                    
-                    valid_r_t_h = r_t_h_batch[valid_mask]
-                    all_reconstruction_t_h_values.extend(valid_r_t_h.cpu().tolist())
-                    
+                    valid_y_source = y_source_batch[valid_mask]
+                    all_y_source_values.extend(valid_y_source.cpu().tolist())
+    
     if args.task_type == "workhour_classification":
         all_preds_class = [1 if prob >= threshold else 0 for prob in all_probs]
         roc_auc = roc_auc_score(all_class_labels, all_probs)
@@ -407,15 +403,16 @@ def evaluate_model(args, model, test_loader, processor: STGCNNormalizer, thresho
         # Delta reconstruction logic
         if args.prediction_type == "delta":
             logger.info("Reconstructing absolute values from delta predictions...")
-            r_t_np = np.array(all_reconstruction_t_values)
-            r_t_h_np = np.array(all_reconstruction_t_h_values)
+            
+            # Source values (value at t)
+            y_source_np = np.array(all_y_source_values)
             
             # Final absolute predictions = value at t + predicted delta
-            preds_final = r_t_np + preds_processed
+            preds_final = y_source_np + preds_processed
             
-            # Ground truth absolute targets = value at t_h
-            targets_final = r_t_h_np
-            
+            # Final absolute targets: value at t + actual delta (y_test)
+            targets_final = y_source_np + targets_processed
+        
         else: # Absolute forecasting (no change from before)
             preds_final = preds_processed
             targets_final = targets_processed
@@ -464,7 +461,7 @@ def find_optimal_threshold(model, val_loader):
     model.eval()
     all_probs, all_labels = [], []
     with torch.no_grad():
-        for X_batch, y_batch, _, _, _ in val_loader:
+        for X_batch, y_batch, _, _ in val_loader:
             outputs = model(X_batch.permute(0, 3, 1, 2)).squeeze()
             probs = torch.sigmoid(outputs)
             all_probs.extend(probs.cpu().numpy())

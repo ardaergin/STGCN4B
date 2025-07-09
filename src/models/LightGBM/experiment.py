@@ -87,8 +87,7 @@ class LGBMExperimentRunner:
         logger.info("Handling data preparation...")
         data_preparer = LGBMDataPreparer(args)
         self.input_dict = data_preparer.get_input_dict()
-        self.delta_to_absolute_map = self.input_dict.get("delta_to_absolute_map", {})
-
+    
     def _get_split_data(self, block_ids: List[int]) -> Tuple[pd.DataFrame, pd.Series, pd.Series]:
         """Helper to filter the final DataFrame based on block IDs."""
         indices = []
@@ -111,15 +110,15 @@ class LGBMExperimentRunner:
         reconstruction_t_df = None
         if self.args.prediction_type == "delta":
             source_col_name = self.input_dict["source_colname"]
-            source_col_df = self.input_dict["source_col_df"]
+            target_source_df = self.input_dict["target_source_df"]
 
             # Merging with the split_df on bucket_idx to get the correctly aligned source values
             # This is more robust, and ensures the values correspond to the correct rows in X and y.
-            merged_df = pd.merge(split_df[['bucket_idx']], source_col_df, on='bucket_idx', how='left')
+            merged_df = pd.merge(split_df[['bucket_idx']], target_source_df, on='bucket_idx', how='left')
             reconstruction_t_df = merged_df[source_col_name]
         
         # Get features (X)
-        cols_to_drop = ['bucket_idx'] + target_colnames + self.input_dict.get("delta_colnames", [])
+        cols_to_drop = ['bucket_idx'] + target_colnames
         cols_to_drop = [col for col in cols_to_drop if col in split_df.columns]
         X = split_df.drop(columns=cols_to_drop)
         

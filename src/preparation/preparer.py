@@ -24,11 +24,11 @@ class BaseDataPreparer(ABC):
         self.args = args
         self.raw_df: pd.DataFrame = pd.DataFrame()
         self.metadata: Dict[str, Any] = {}
-
+        
         # Initializing the main product(s) of the class
-        self.source_col_df: pd.DataFrame = None
+        self.source_colname: str = ""
+        self.target_source_df: pd.DataFrame = pd.DataFrame()
         self.target_colnames: List[str] = []
-        self.delta_to_absolute_map: Dict[str, str] = {}
         self.input_dict: Dict[str, Any] = {}
     
     def get_input_dict(self) -> Dict[str, Any]:
@@ -39,10 +39,10 @@ class BaseDataPreparer(ABC):
         """
         # Step 1: Load data and metadata from disk
         self._load_data_from_disk()
-
+        
         # Step 2: Initialize block-aware engineers
         self._initialize_engineers()
-
+        
         # Step 3: Prepare targets (subclass-specific logic)
         self._prepare_target()
         if not self.args.task_type == "workhour_classification":
@@ -50,7 +50,7 @@ class BaseDataPreparer(ABC):
         
         # Step 4: Drop features if requested, before _prepare_features()
         self._drop_requested_columns()
-
+        
         # Step 5: Prepare features (subclass-specific logic)
         self._prepare_features()
         
@@ -91,7 +91,7 @@ class BaseDataPreparer(ABC):
             workhour_df = pd.read_parquet(file_path)
             self.df = pd.merge(self.df, workhour_df, on='bucket_idx', how='left')
             self.target_colnames.append('target_workhour')
-
+        
         elif self.args.task_type == "consumption_forecast":
             filename = f'target_consumption_{self.args.interval}.parquet'
             file_path = os.path.join(self.args.processed_data_dir, filename)
@@ -99,7 +99,7 @@ class BaseDataPreparer(ABC):
             consumption_df = pd.read_parquet(file_path)
             self.df = pd.merge(self.df, consumption_df, on='bucket_idx', how='left')
             # Not adding "consumption" to self.target_colnames, as it can still be used as a feature
-        
+    
     @staticmethod
     def _reduce_mem_usage(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
         """
@@ -130,7 +130,7 @@ class BaseDataPreparer(ABC):
         """Initializes the feature and target engineers."""
         self.target_engineer = BlockAwareTargetEngineer(self.metadata['blocks'])
         self.feature_engineer = BlockAwareFeatureEngineer(self.metadata['blocks'])
-
+    
     def _drop_requested_columns(self) -> None:
         """Drop any column whose name contains a substring from args.features_to_drop."""
         if not self.args.features_to_drop:
@@ -145,13 +145,13 @@ class BaseDataPreparer(ABC):
             self.df.drop(columns=cols_to_drop, inplace=True)
             logger.info(f"Dropped {len(cols_to_drop)} columns containing substrings {substrings_to_drop}.")
             logger.debug(f"Dropped columns: {cols_to_drop}")
-
+    
     @abstractmethod
     def _prepare_target(self) -> None:
         """
         Prepares the target columns. The common logic for identifying the source
         column and generating forecast targets is handled here.
-
+        
         Subclasses should call this method via `super()._prepare_target()` and
         then add any model-specific target processing.
         """
@@ -161,20 +161,24 @@ class BaseDataPreparer(ABC):
         else:
             # 1. Get the source column name based on the task
             if self.args.task_type == "measurement_forecast":
-                self.source_col = f'{self.args.measurement_variable}_{self.args.measurement_variable_stat}'
+                self.source_colname = f'{self.args.measurement_variable}_{self.args.measurement_variable_stat}'
             else:  # consumption_forecast
-                self.source_col = 'consumption'
-
+                self.source_colname = 'consumption'
+            
+            if self.args.prediction_type == "delta":
+                logger.info(f"Preserving source column '{self.source_colname}' for delta reconstruction.")
+                if self.args.task_type == "consumption_forecast":
+                    self.target_source_df = self.df[['bucket_idx', self.source_colname]].copy()
+                else: # self.args.task_type == "measurement_forecast"
+                    self.target_source_df = self.df[['bucket_idx', 'room_uri_str', self.source_colname]].copy()
+            
             # 2. Call the engineer to add target columns to the DataFrame
-            self.df, self.target_colnames, self.delta_to_absolute_map = self.target_engineer.add_forecast_targets_to_df(
+            self.df, self.target_colnames, = self.target_engineer.add_forecast_targets_to_df(
                 task_type=self.args.task_type, data_frame=self.df,
-                source_col=self.source_col, horizons=self.args.forecast_horizons,
+                source_colname=self.source_colname, horizons=self.args.forecast_horizons,
                 prediction_type=self.args.prediction_type
             )
-
-            if self.args.prediction_type == "delta":
-                logger.info(f"Preserving source column '{self.source_col}' for delta reconstruction.")
-                self.source_col_df = self.df[['bucket_idx', self.source_col]].copy()
+            logger.info(f"Prepared {len(self.target_colnames)} target columns: {self.target_colnames}")
     
     @abstractmethod
     def _handle_nan_targets(self) -> None:
@@ -189,12 +193,12 @@ class BaseDataPreparer(ABC):
             - Missing measurements in certain time buckets, resulting in NaNs in target columns
         """
         pass
-            
+    
     @abstractmethod
     def _prepare_features(self) -> None:
         """Abstract method for model-specific feature engineering."""
         pass
-
+    
     @abstractmethod
     def _prepare_input_dict(self) -> None:
         """
@@ -207,12 +211,12 @@ class BaseDataPreparer(ABC):
 
 class LGBMDataPreparer(BaseDataPreparer):
     """Prepares data for the LightGBM model."""
-
+    
     def __init__(self, args: Any):
         super().__init__(args)
         assert self.args.model_family == "tabular", "LGBMDataPreparer only supports 'tabular' model_family."
         assert self.args.model == "LightGBM", "LGBMDataPreparer only supports LightGBM model."
-        
+    
     def _prepare_target(self) -> None:
         """Generates forecast targets for the LGBM model."""
         super()._prepare_target()
@@ -220,7 +224,7 @@ class LGBMDataPreparer(BaseDataPreparer):
     def _handle_nan_targets(self) -> None:
         """
         Handling NaN targets for the LGBM model.
-
+        
         Method: After target preparation, any row with a NaN in one of the target columns will be dropped.
         """
         initial_rows = len(self.df)
@@ -228,18 +232,18 @@ class LGBMDataPreparer(BaseDataPreparer):
         final_rows = len(self.df)
         lost_rows = initial_rows - final_rows
         lost_percentage = (lost_rows / initial_rows) * 100
-
+        
         logger.info(f"Dropped {lost_rows} rows with NaN targets. {final_rows} rows remaining.")
         logger.info(f"Lost {lost_percentage:.2f}% of the data due to NaN targets.")
-
+        
         if self.df.empty:
             raise ValueError("DataFrame is empty after dropping NaN targets.")
-
+    
     def _prepare_features(self) -> None:
         """Engineers features for the LGBM model."""
         if self.args.task_type == "consumption_forecast" and "consumption" not in self.args.features_to_drop:
             logger.info("Engineering lag and moving average features for consumption...")
-
+            
             self.df = self.feature_engineer.add_moving_average_features(
                 windows=self.args.windows, shift_amount=self.args.shift_amount, 
                 data_frame=self.df, cols=['consumption'],
@@ -249,29 +253,26 @@ class LGBMDataPreparer(BaseDataPreparer):
                 lags=self.args.lags,
                 data_frame=self.df, cols=['consumption'],
                 use_only_original_columns=True, extra_grouping_cols=None)
-        
+    
     def _prepare_input_dict(self) -> None:
         self.input_dict = {
             "blocks": self.metadata["blocks"],
             "df": self.df,
-            "target_colnames": self.target_colnames,
-            "delta_colnames": list(self.delta_to_absolute_map.values()),
-            "source_colname": self.source_col,
-            "source_col_df": self.source_col_df,
-            "delta_to_absolute_map": self.delta_to_absolute_map, # Empty if not in delta mode
+            "source_colname": self.source_colname,
+            "target_source_df": self.target_source_df,
+            "target_colnames": self.target_colnames
         }
 
 
 class STGCNDataPreparer(BaseDataPreparer):
     """Prepares data specifically for the STGCN model."""
-
+    
     def __init__(self, args: Any):
         super().__init__(args)
         assert self.args.model_family == "graph", "STGCNDataPreparer only supports 'graph' model_family."
         assert self.args.model == "STGCN", "STGCNDataPreparer only supports STGCN model."
         self.target_data: Dict[str, Any] = {}
         self.feature_data: Dict[str, Any] = {}
-        self.reconstruction_data: Dict[str, Any] = {} # for storing delta
     
     def _prepare_target(self) -> None:
         super()._prepare_target()
@@ -286,21 +287,17 @@ class STGCNDataPreparer(BaseDataPreparer):
             else: # measurement_forecast
                 has_room_dimension = True
             
+            # Target array
             self.target_data["raw_target_array"] = self._pivot_df_to_numpy(
                 df=self.df, columns_to_pivot=self.target_colnames, has_room_dimension=has_room_dimension)
             
             # Delta reconstruction data
             if self.args.prediction_type == "delta":
                 # Value at t
-                self.reconstruction_data["raw_reconstruction_array_t"] = self._pivot_df_to_numpy(
-                    df=self.df, columns_to_pivot=[self.source_col], has_room_dimension=has_room_dimension)
-
-                # Value at t+h
-                absolute_target_columns = list(self.delta_to_absolute_map.values())
-                self.reconstruction_data["raw_reconstruction_array_t_h"] = self._pivot_df_to_numpy(
-                    df=self.df, columns_to_pivot=absolute_target_columns, has_room_dimension=has_room_dimension)
-                
-
+                self.target_data["raw_target_source_array"] = self._pivot_df_to_numpy(
+                    df=self.target_source_df, columns_to_pivot=[self.source_colname],
+                    has_room_dimension=has_room_dimension)
+    
     def _handle_nan_targets(self) -> None:
         """
         Handling NaN targets for the STGCN model. 
@@ -313,31 +310,25 @@ class STGCNDataPreparer(BaseDataPreparer):
         
         # Impute the NaNs to get the final, clean target array
         self.target_data['target_array'] = np.nan_to_num(self.target_data["raw_target_array"], nan=0.0)
-
+        
         if self.args.prediction_type == "delta":
-            # Impute the NaNs for the absolute values as well
-            # NOTE: Since the target_mask is created based on the NaNs in the delta target arrays, 
+            # Impute the NaNs for the source values as well
+            # NOTE: Since the target_mask is created based on the NaNs in the target array, 
             #       and that same mask will be used during evaluation to filter which points are compared, 
-            #       the corresponding NaNs in reconstruction arrays would be ignored. 
+            #       the corresponding NaNs in the raw_target_source_array would be ignored. 
             #       But it does not hurt to impute NaNs just in case.
-            raw_absolute_array = self.reconstruction_data['raw_reconstruction_array_t']
-            self.reconstruction_data['reconstruction_array_t'] = np.nan_to_num(raw_absolute_array, nan=0.0)
+            raw_target_source_array = self.target_data['raw_target_source_array']
+            self.target_data['target_source_array'] = np.nan_to_num(raw_target_source_array, nan=0.0)
     
-            raw_absolute_array = self.reconstruction_data['raw_reconstruction_array_t_h']
-            self.reconstruction_data['reconstruction_array_t_h'] = np.nan_to_num(raw_absolute_array, nan=0.0)
-
     def _drop_targets_from_df(self) -> None:
         """Drops target columns from self.df, before the feature array preparation."""
         self.df.drop(columns=self.target_colnames, inplace=True)
         logger.info(f"Dropped {len(self.target_colnames)} target columns.")
-        if self.args.prediction_type == "delta":
-            self.df.drop(columns=list(self.delta_to_absolute_map.values()), inplace=True)
-            logger.info(f"Dropped {len(self.delta_to_absolute_map)} absolute target columns.")
-    
+        
     def _prepare_features(self) -> None:
         # Before starting feature array preparation, dropping the target columns
         self._drop_targets_from_df()
-
+        
         # Identify feature columns (all numeric cols except identifiers and targets)
         identifier_cols = ['bucket_idx', 'block_id', 'room_uri_str']
         feature_cols = sorted([c for c in self.df.columns if c not in identifier_cols])
@@ -345,7 +336,7 @@ class STGCNDataPreparer(BaseDataPreparer):
         # Save
         self.feature_data["feature_names"] = feature_cols
         self.feature_data["n_features"] = len(feature_cols)
-
+        
         # Use the generic helper to create the feature array and a feature mask (which we might ignore)
         feature_array = self._pivot_df_to_numpy(self.df, columns_to_pivot=feature_cols)
         self.feature_data["feature_array"] = feature_array
@@ -357,11 +348,11 @@ class STGCNDataPreparer(BaseDataPreparer):
                            ) -> np.ndarray:
         """
         Helper to convert DataFrame columns to a model-ready NumPy array, preserving NaNs.
-
+        
         This helper is crucial for creating the correct array shapes for different tasks. 
         The model's input features are always 3D (T, R, F), but the target shapes differ based on the prediction task. 
         This function handles that distinction.
-
+        
         +------------------------+------------------------------------+-----------------+----------------------+
         | Task Name                 | What it Predicts                  | Target Shape    | has_room_dimension |
         +========================+====================================+=================+======================+
@@ -372,7 +363,7 @@ class STGCNDataPreparer(BaseDataPreparer):
         | `workhour_classification` | Single value for the floor        | ``(T, 1)``      | ``False``          |
         +------------------------------------------------------------------------------------------------------+
         * T: Time steps, R: Rooms, F: Features, H: Horizons
-
+        
         Args:
             df (pd.DataFrame): The source DataFrame containing the data.
             columns_to_pivot (List[str]): A list of column names to be pivoted.
@@ -399,7 +390,7 @@ class STGCNDataPreparer(BaseDataPreparer):
             np_array = pivoted_df.values.reshape(T, R, F)
             logger.info(f"Created 3D NumPy array of shape {np_array.shape}")
             return np_array
-
+        
         # Case for data WITHOUT a room dimension (targets for consumption_forecast)
         else:
             total_timesteps = sum(len(v["bucket_indices"]) for v in self.metadata["blocks"].values())
@@ -414,7 +405,7 @@ class STGCNDataPreparer(BaseDataPreparer):
         
         # Getting the requested adj, and already converting the obtained graph structures to tensors
         adj_matrix, masked_adj_dict, outside_adj = self._get_requested_adjacency_tensors(device=device)
-                
+          
         # Creatign the input dict
         self.input_dict = {
             "device": device,
@@ -440,11 +431,7 @@ class STGCNDataPreparer(BaseDataPreparer):
             # Target
             "target_array": self.target_data["target_array"],
             "target_mask": self.target_data["target_mask"],
-
-            # Delta reconstruction data
-            "reconstruction_array_t": self.reconstruction_data.get("reconstruction_array_t", None),
-            "reconstruction_array_t_h": self.reconstruction_data.get("reconstruction_array_t_h", None),
-            "delta_to_absolute_map": self.delta_to_absolute_map,
+            "target_source_array": self.target_data.get("target_source_array", None), # for delta prediction
         }
     
     def _get_requested_adjacency_tensors(
@@ -474,5 +461,5 @@ class STGCNDataPreparer(BaseDataPreparer):
             outside_adj_tensor = torch.from_numpy(adjacency_data["outside_adjacency_vector"]).float().to(device)
         else:
             outside_adj_tensor = None
-
+        
         return adj_matrix_tensor, masked_adj_dict_tensor, outside_adj_tensor
