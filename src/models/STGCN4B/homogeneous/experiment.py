@@ -157,7 +157,7 @@ class STGCNExperimentRunner:
             block_size=self.input_dict["block_size"],
             feature_tensor=norm_feature_tensor,
             target_tensor=final_targets,
-            target_mask=final_mask,
+            target_mask_tensor=final_mask,
             target_source_tensor=target_source_tensor,
             max_target_offset=max_target_offset,
             train_block_ids=train_block_ids,
