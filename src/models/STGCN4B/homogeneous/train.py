@@ -150,9 +150,18 @@ def setup_model(args, data):
     return model, criterion, optimizer, scheduler, early_stopping
 
 
-def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
-                train_loader, val_loader=None,
-                trial: optuna.trial.Trial = None, epoch_offset: int = 0):
+def train_model(
+        args, 
+        model: nn.Module,
+        criterion: nn.Module,
+        optimizer: torch.optim.Optimizer, 
+        scheduler: torch.optim.lr_scheduler._LRScheduler,
+        early_stopping: EarlyStopping,
+        train_loader: torch.utils.data.DataLoader,
+        val_loader: torch.utils.data.DataLoader = None,
+        trial: optuna.trial.Trial = None, 
+        epoch_offset: int = 0
+        ):
     """Train the STGCN model for forecasting."""
     logger.info("Starting model training...")
     
@@ -320,129 +329,175 @@ def train_model(args, model, criterion, optimizer, scheduler, early_stopping,
     
     return model, history
 
-def evaluate_model(args, model, test_loader, processor: STGCNNormalizer, threshold=0.5):
-    """Evaluate the trained model on the test set."""
-    logger.info("Evaluating model on test set...")
+def evaluate_model(
+        args,
+        model: torch.nn.Module,
+        test_loader: torch.utils.data.DataLoader,
+        processor: "STGCNNormalizer",
+        *,
+        threshold: float = 0.5,
+        ):
+    """
+    Run the trained model on the test set.
     
+    Returns:
+    - overall metrics  (unchanged: rmse, mae, r2, …)
+    - per-horizon metrics  in `per_horizon_metrics`
+    - optionally also as a DataFrame in `per_horizon_df`
+    """
+    logger.info("Evaluating model on test set...")
     model.eval()
-    all_preds_norm = []
-    all_targets_norm = []
-
-    # For classification
-    all_probs = []
-    all_class_labels = []
-
-    # If delta forecasting:
-    all_y_source_values = []
+    
+    ####################
+    # Classification
+    ####################
+    
+    if args.task_type == "workhour_classification":
+        all_probs, all_labels = [], []
+        with torch.no_grad():
+            for X_batch, y_batch, *_ in test_loader:
+                # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
+                x = X_batch.permute(0, 3, 1, 2)
+                # Forward pass
+                outputs = model(x)
+                preds = torch.sigmoid(outputs.squeeze())
+                # Add probabilities and labels to lists
+                all_probs.extend(preds.cpu().tolist())
+                all_labels.extend(y_batch.squeeze().cpu().tolist())
+        
+        y_hat = np.array(all_probs)
+        y_true = np.array(all_labels)
+        y_pred = (y_hat >= threshold).astype(int)
+        
+        return {
+            "test_loss":           0, # Not applicable for classification
+            "accuracy":            accuracy_score(y_true, y_pred),
+            "balanced_accuracy":   balanced_accuracy_score(y_true, y_pred),
+            "precision":           precision_score(y_true, y_pred, zero_division=0),
+            "recall":              recall_score(y_true, y_pred, zero_division=0),
+            "f1":                  f1_score(y_true, y_pred, zero_division=0),
+            "roc_auc":             roc_auc_score(y_true, y_hat),
+            "auc_pr":              average_precision_score(y_true, y_hat),
+            "confusion_matrix":    confusion_matrix(y_true, y_pred),
+            "threshold":           threshold,
+            "probabilities":       y_hat,
+            "predictions":         y_pred,
+            "labels":              y_true,
+        }
+    
+    ####################
+    # Forecasting
+    ####################
+    
+    # Horizon-related variables
+    H = len(args.forecast_horizons)
+    preds_norm_per_h = [[] for _ in range(H)]
+    targets_norm_per_h = [[] for _ in range(H)]
+    y_source_per_h = [[] for _ in range(H)] if args.prediction_type == "delta" else None
     
     with torch.no_grad():
         for X_batch, y_batch, mask_batch, y_source_batch in test_loader:
-
             # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
             x = X_batch.permute(0, 3, 1, 2)
-
             # Forward pass
-            outputs = model(x)
+            preds_norm = model(x)
+            # Get targets & masks
+            targets_norm = y_batch.float()
+            mask = mask_batch
             
-            if args.task_type == "workhour_classification":
-                probs = torch.sigmoid(outputs.squeeze())
-                all_probs.extend(probs.cpu().tolist())
-                all_class_labels.extend(y_batch.squeeze().cpu().tolist())
-            else:
-                preds_norm = outputs
-                targets_norm = y_batch.float()
-                mask = mask_batch
-                # Collect only valid predictions and targets for R² score
-                valid_mask = mask.bool()
-                valid_preds_norm = preds_norm[valid_mask]
-                valid_targets_norm = targets_norm[valid_mask]
-                all_preds_norm.extend(valid_preds_norm.cpu().tolist())
-                all_targets_norm.extend(valid_targets_norm.cpu().tolist())
-
+            for h in range(H):
+                valid = mask[:, h].bool()
+                pred = preds_norm[:, h][valid]
+                target = targets_norm[:, h][valid]
+                
+                preds_norm_per_h[h].extend(pred.reshape(-1).cpu().tolist())
+                targets_norm_per_h[h].extend(target.reshape(-1).cpu().tolist())
+                
                 if args.prediction_type == "delta":
                     # The reconstruction batches has the same shape as y_batch and mask_batch
                     # We need to filter it with the same mask to keep them aligned
-                    valid_y_source = y_source_batch[valid_mask]
-                    all_y_source_values.extend(valid_y_source.cpu().tolist())
+                    y_source = y_source_batch[valid]
+                    y_source_per_h[h].extend(y_source.reshape(-1).cpu().tolist())
     
-    if args.task_type == "workhour_classification":
-        all_preds_class = [1 if prob >= threshold else 0 for prob in all_probs]
-        roc_auc = roc_auc_score(all_class_labels, all_probs)
-        ap_score = average_precision_score(all_class_labels, all_probs)
-        return {
-            "test_loss": 0, # Not applicable here
-            "accuracy": accuracy_score(all_class_labels, all_preds_class),
-            "balanced_accuracy": balanced_accuracy_score(all_class_labels, all_preds_class),
-            "precision": precision_score(all_class_labels, all_preds_class, zero_division=0),
-            "recall": recall_score(all_class_labels, all_preds_class, zero_division=0),
-            "f1": f1_score(all_class_labels, all_preds_class, zero_division=0),
-            "roc_auc": roc_auc,
-            "auc_pr": ap_score,
-            "confusion_matrix": confusion_matrix(all_class_labels, all_preds_class),
-            "predictions": all_preds_class,
-            "labels": all_class_labels,
-            "probabilities": all_probs,
-            "threshold": threshold
-        }
-    else: # Forecasting tasks
-        if not all_preds_norm:
-            logger.warning("No valid targets in test set to evaluate.")
-            return {"test_loss": 0, "rmse": 0, "mae": 0, "r2": 0, "mape": 0, 
-                    "predictions": np.array([]), "targets": np.array([])}
-
+    # Calculate per-horizon metrics on original scale
+    per_horizon_metrics = {}
+    for h, horizon in enumerate(args.forecast_horizons):
+        if not preds_norm_per_h[h]:          # no valid data → skip
+            logger.warning(f"No valid targets for horizon {horizon}.")
+            continue
+        
         # Converting the lists of normalized values to NumPy arrays
-        preds_norm_np = np.array(all_preds_norm)
-        targets_norm_np = np.array(all_targets_norm)
-
+        p_norm = np.array(preds_norm_per_h[h])
+        t_norm = np.array(targets_norm_per_h[h])
+        
         # Inverse-transform the normalized predictions and targets.
         # NOTE: - For 'delta', these are now deltas in their original scale.
         #       - For 'absolute', these are the final predictions.
-        preds_processed = processor.inverse_transform_target(preds_norm_np)
-        targets_processed = processor.inverse_transform_target(targets_norm_np)
-
-        # Delta reconstruction logic
+        p = processor.inverse_transform_target(p_norm)
+        t = processor.inverse_transform_target(t_norm)
+        
+        # Delta -> Absolute reconstruction
         if args.prediction_type == "delta":
-            logger.info("Reconstructing absolute values from delta predictions...")
-            
-            # Source values (value at t)
-            y_source_np = np.array(all_y_source_values)
-            
-            # Final absolute predictions = value at t + predicted delta
-            preds_final = y_source_np + preds_processed
-            
-            # Final absolute targets: value at t + actual delta (y_test)
-            targets_final = y_source_np + targets_processed
+            src = np.array(y_source_per_h[h])
+            p   = src + p
+            t   = src + t
         
-        else: # Absolute forecasting (no change from before)
-            preds_final = preds_processed
-            targets_final = targets_processed
-        
-        # Calculating all metrics on the original-scale data
-        mse = mean_squared_error(targets_final, preds_final)
+        mse  = mean_squared_error(t, p)
         rmse = np.sqrt(mse)
-        mae = mean_absolute_error(targets_final, preds_final)
-        r2 = r2_score(targets_final, preds_final)
-
-        ## Calculating MAPE safely, avoiding division by zero:
-        mape_mask = targets_final != 0
-        if np.sum(mape_mask) > 0:
-            mape = np.mean(np.abs((targets_final[mape_mask] - preds_final[mape_mask]) / targets_final[mape_mask])) * 100
-        else:
-            mape = 0.0
-
-        logger.info(
-            f"Evaluation Metrics (original scale): MSE: {mse:.4f}, RMSE: {rmse:.4f}, MAE: {mae:.4f}, R²: {r2:.4f}, MAPE: {mape:.2f}%"
-        )
-
-        return {
-            "test_loss": mse, 
-            "rmse": rmse, 
-            "mae": mae, 
-            "r2": r2, 
-            "mape": mape,
-            "predictions": preds_final, 
-            "targets": targets_final,
+        mae  = mean_absolute_error(t, p)
+        r2   = r2_score(t, p)
+        
+        mape_mask = t != 0
+        mape = (np.mean(np.abs((t[mape_mask] - p[mape_mask]) / t[mape_mask])) * 100
+                if mape_mask.any() else 0.0)
+        
+        per_horizon_metrics[f"h_{horizon}"] = {
+            "mse": mse, "rmse": rmse, "mae": mae, "r2": r2, "mape": mape
         }
+        logger.info(f"Horizon {horizon:>3}:  RMSE={rmse:.4f} | MAE={mae:.4f} | "
+                    f"R²={r2:.4f} | MAPE={mape:.2f}%")
+    
+    if not per_horizon_metrics: # Nothing to evaluate
+        logger.warning("No valid targets in the entire test set.")
+        return {"test_loss": 0, "rmse": 0, "mae": 0, "r2": 0, "mape": 0, 
+                "predictions": np.array([]), "targets": np.array([])}
+    
+    # Aggregate overall metrics (flattening all horizons)
+    all_p = np.concatenate([
+        processor.inverse_transform_target(np.array(preds_norm_per_h[h]))
+        if args.prediction_type == "absolute"
+        else np.array(y_source_per_h[h]) +            # recon for delta
+             processor.inverse_transform_target(np.array(preds_norm_per_h[h]))
+        for h in range(H) if preds_norm_per_h[h]
+    ])
+    all_t = np.concatenate([
+        processor.inverse_transform_target(np.array(targets_norm_per_h[h]))
+        if args.prediction_type == "absolute"
+        else np.array(y_source_per_h[h]) +
+             processor.inverse_transform_target(np.array(targets_norm_per_h[h]))
+        for h in range(H) if targets_norm_per_h[h]
+    ])
+    
+    overall_mse  = mean_squared_error(all_t, all_p)
+    overall_rmse = np.sqrt(overall_mse)
+    overall_mae  = mean_absolute_error(all_t, all_p)
+    overall_r2   = r2_score(all_t, all_p)
+    mape_mask    = all_t != 0
+    overall_mape = (np.mean(np.abs((all_t[mape_mask] - all_p[mape_mask]) / all_t[mape_mask])) * 100
+                    if mape_mask.any() else 0.0)
+    logger.info(f"Overall: RMSE={overall_rmse:.4f} | MAE={overall_mae:.4f} | "
+                f"R²={overall_r2:.4f} | MAPE={overall_mape:.2f}%")
+    
+    return {
+        # Overall metrics
+        "test_loss": overall_mse,
+        "rmse":      overall_rmse,
+        "mae":       overall_mae,
+        "r2":        overall_r2,
+        "mape":      overall_mape,
+        # Per horizon metrics
+        "per_horizon_metrics": per_horizon_metrics,
+    }
 
 
 # Helpers
