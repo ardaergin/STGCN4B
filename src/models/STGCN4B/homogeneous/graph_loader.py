@@ -41,7 +41,7 @@ class BlockAwareSTGCNDataset(Dataset):
         self.blocks = blocks
         self.target_tensor = target_tensor
         self.n_his = n_his
-        self.target_mask = target_mask_tensor
+        self.target_mask_tensor = target_mask_tensor
         self.target_source_tensor = target_source_tensor
         self.max_target_offset = max_target_offset
 
@@ -79,7 +79,7 @@ class BlockAwareSTGCNDataset(Dataset):
         y = self.target_tensor[target_idx]
 
         # Get the mask for the target
-        m = self.target_mask[target_idx]
+        m = self.target_mask_tensor[target_idx]
 
         # Get the target source values (for delta prediction)
         s = self.target_source_tensor[target_idx]
@@ -99,7 +99,7 @@ def homo_collate(batch):
     Collate function for homogeneous STGCN windows, with optional masking.
 
     Args:
-        batch: List of samples, each is (X, y, target_mask) where
+        batch: List of samples, each is (X, y, target_mask, target_source) where
         - X is a tensor of shape (n_his, R, F)
         - y is a tensor for a single time step (e.g., shape (R,) or a scalar)
         - m (mask for y) is a tensor with the same shape as y
@@ -160,37 +160,38 @@ def get_data_loaders(
     
     # 2) Construct Datasets
     train_ds = BlockAwareSTGCNDataset(
-        args,
-        train_block_lists,
-        feature_tensor,
-        target_tensor,
-        target_mask_tensor,
-        target_source_tensor,
-        max_target_offset,
-        args.n_his)
+        args=args,
+        blocks=train_block_lists,
+        feature_tensor=feature_tensor,
+        target_tensor=target_tensor,
+        target_mask_tensor=target_mask_tensor,
+        target_source_tensor=target_source_tensor,
+        max_target_offset=max_target_offset,
+        n_his=args.n_his)
     
+    # If no validation set is provided, set it to None
     val_ds = None
     if val_block_lists:
         val_ds = BlockAwareSTGCNDataset(
-            args,
-            val_block_lists,
-            feature_tensor,
-            target_tensor,
-            target_mask_tensor,
-            target_source_tensor,
-            max_target_offset,
-            args.n_his)
-    
+            args=args,
+            blocks=val_block_lists,
+            feature_tensor=feature_tensor,
+            target_tensor=target_tensor,
+            target_mask_tensor=target_mask_tensor,
+            target_source_tensor=target_source_tensor,
+            max_target_offset=max_target_offset,
+            n_his=args.n_his)
+        
     test_ds = BlockAwareSTGCNDataset(
-        args,
-        test_block_lists,
-        feature_tensor,
-        target_tensor,
-        target_mask_tensor,
-        target_source_tensor,
-        max_target_offset,
-        args.n_his)
-    
+            args=args,
+            blocks=test_block_lists,
+            feature_tensor=feature_tensor,
+            target_tensor=target_tensor,
+            target_mask_tensor=target_mask_tensor,
+            target_source_tensor=target_source_tensor,
+            max_target_offset=max_target_offset,
+            n_his=args.n_his)
+        
     # 3) Determine windows_per_block for batch_size
     windows_per_block = block_size - (args.n_his + max_target_offset) + 1
     logger.info(f"Calculated batch size: {windows_per_block}")
