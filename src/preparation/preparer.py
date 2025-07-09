@@ -335,10 +335,7 @@ class STGCNDataPreparer(BaseDataPreparer):
             raw_target_source_array = self.target_data['raw_target_source_array']
             self.target_data['target_source_array'] = np.nan_to_num(raw_target_source_array, nan=0.0)
             
-    def _prepare_features(self) -> None:
-        # Before starting feature array preparation, dropping the target columns
-        self._drop_targets_from_df()
-        
+    def _prepare_features(self) -> None:        
         # Identify feature columns (all numeric cols except identifiers and targets)
         identifier_cols = ['bucket_idx', 'block_id', 'room_uri_str']
         feature_cols = sorted([c for c in self.df.columns if c not in identifier_cols])
