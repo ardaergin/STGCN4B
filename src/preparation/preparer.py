@@ -26,6 +26,7 @@ class BaseDataPreparer(ABC):
         self.metadata: Dict[str, Any] = {}
 
         # Initializing the main product(s) of the class
+        self.source_col_df: pd.DataFrame = None
         self.target_colnames: List[str] = []
         self.delta_to_absolute_map: Dict[str, str] = {}
         self.input_dict: Dict[str, Any] = {}
@@ -170,6 +171,10 @@ class BaseDataPreparer(ABC):
                 source_col=self.source_col, horizons=self.args.forecast_horizons,
                 prediction_type=self.args.prediction_type
             )
+
+            if self.args.prediction_type == "delta":
+                logger.info(f"Preserving source column '{self.source_col}' for delta reconstruction.")
+                self.source_col_df = self.df[['bucket_idx', self.source_col]].copy()
     
     @abstractmethod
     def _handle_nan_targets(self) -> None:
@@ -252,6 +257,7 @@ class LGBMDataPreparer(BaseDataPreparer):
             "target_colnames": self.target_colnames,
             "delta_colnames": list(self.delta_to_absolute_map.values()),
             "source_colname": self.source_col,
+            "source_col_df": self.source_col_df,
             "delta_to_absolute_map": self.delta_to_absolute_map, # Empty if not in delta mode
         }
 
