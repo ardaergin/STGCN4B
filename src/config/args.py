@@ -235,6 +235,7 @@ def add_base_modelling_args(parser):
                         default=5,
                         help='Number of outer loop train-test splits for nested CV.')
     parser.add_argument('--experiment_id', type=int, 
+                        default=0,
                         help='The ID of the outer loop train-test split to run (for parallel execution).')
     parser.add_argument('--parellelize_experiments', action='store_true', 
                         help='Parellelize the outer loop (Default: False).')

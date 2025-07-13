@@ -46,7 +46,7 @@ class BaseExperimentRunner(ABC):
         # Args
         self.args = args
         # A unique ID for this specific experiment run (e.g., from SLURM_ARRAY_TASK_ID)
-        self.experiment_id = getattr(args, "experiment_id", 0)
+        self.experiment_id = args.experiment_id # (default of args.experiment_id==0, for test run)
         # Create a unique seed for this run to ensure data splits are different
         self.seed = args.seed + self.experiment_id
 
