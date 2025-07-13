@@ -44,3 +44,4 @@ lightgbm==4.6.0
 
 # Hyperparameter tuning
 optuna==4.3.0
+optuna-integration==4.4.0

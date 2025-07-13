@@ -6,7 +6,7 @@ import pandas as pd
 from typing import Dict, Any, List, Tuple
 
 import optuna
-from optuna.integration import LightGBMPruningCallback
+from optuna_integration.lightgbm import LightGBMPruningCallback
 
 from ..preparation.preparer import LGBMDataPreparer
 from ..models.LightGBM.train import LGBMTrainer
