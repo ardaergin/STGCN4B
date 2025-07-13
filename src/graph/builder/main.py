@@ -190,6 +190,10 @@ class OfficeGraphBuilder(
                 plot_missing_values(final_df, df_name=f"Room-level DF, Expanded {self.plot_suffix}",
                                     save=True, output_dir=self.missing_plots_dir)
             
+            # Add time features
+            if args.task_type != "workhour_classification":
+                final_df = self.add_time_features_to_df(df=final_df)
+            
             # Incorporate weather data as outside 'space' if specified
             if args.incorporate_weather:
                 logger.info("Integrating outside node with weather data into homogeneous graph...")

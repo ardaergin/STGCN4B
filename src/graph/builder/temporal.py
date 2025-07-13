@@ -859,3 +859,48 @@ class TemporalBuilderMixin:
         logger.info(f"Successfully built building-level DataFrame. Shape: {self.building_level_df.shape}")
         
         return None
+
+    ##############################
+    # Building-level DataFrame
+    ##############################
+    
+    def add_time_features_to_df(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Enriches a DataFrame with cyclical time-based features.
+
+        This method requires the DataFrame to have a 'bucket_idx' column and
+        for `self.time_buckets` to be initialized. It adds columns for sine and
+        cosine transformations of the hour of the day and the day of the week.
+
+        Args:
+            df: The input DataFrame to add time features to.
+
+        Returns:
+            The DataFrame with added time features.
+        """
+        if 'bucket_idx' not in df.columns:
+            raise ValueError("Input DataFrame must contain a 'bucket_idx' column.")
+        if not hasattr(self, 'time_buckets'):
+            raise ValueError("Time buckets not found. Call initialize_time_parameters() first.")
+
+        logger.info("Adding cyclical time features (hour, day of week)...")
+
+        # Create a mapping from bucket index to its start timestamp
+        ts_map = {i: tb[0] for i, tb in enumerate(self.time_buckets)}
+        timestamps = df['bucket_idx'].map(ts_map)
+
+        # Ensure timestamps are in datetime format for feature extraction
+        dt = pd.to_datetime(timestamps)
+
+        # --- Hour of Day ---
+        hours = dt.dt.hour
+        df['hour_sin'] = np.sin(2 * np.pi * hours / 24)
+        df['hour_cos'] = np.cos(2 * np.pi * hours / 24)
+
+        # --- Day of Week ---
+        dows = dt.dt.dayofweek  # Monday=0, Sunday=6
+        df['dow_sin'] = np.sin(2 * np.pi * dows / 7)
+        df['dow_cos'] = np.cos(2 * np.pi * dows / 7)
+
+        logger.info("Successfully added time features.")
+        return df

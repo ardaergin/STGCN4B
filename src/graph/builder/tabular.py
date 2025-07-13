@@ -1,5 +1,4 @@
 import pandas as pd
-import numpy as np
 from typing import List
 
 from ...preparation.feature import BlockAwareFeatureEngineer
@@ -36,35 +35,6 @@ class TabularBuilderMixin:
 
         # Store
         self.tabular_feature_df = merged
-        return None
-
-    def integrate_time_features(self) -> None:
-        """
-        Extract cyclical time features (hour, day of week) from the time buckets.
-        Adds 'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos' to tabular_feature_df.
-        """
-        if not hasattr(self, 'time_buckets'):
-            raise ValueError("time_buckets not found; ensure initialize_time_parameters() was called.")
-        if not hasattr(self, 'tabular_feature_df'):
-            raise ValueError("tabular_feature_df not found. Get it first.")
-
-        # Map bucket_idx to start timestamp
-        ts_map = {i: tb[0] for i, tb in enumerate(self.time_buckets)}
-        df = getattr(self, 'tabular_feature_df')
-        df['timestamp'] = df['bucket_idx'].map(ts_map)
-        dt = pd.to_datetime(df['timestamp'])
-
-        # Hour of day
-        hours = dt.dt.hour
-        df['hour_sin'] = np.sin(2 * np.pi * hours / 24)
-        df['hour_cos'] = np.cos(2 * np.pi * hours / 24)
-        # Day of week
-        dows = dt.dt.dayofweek
-        df['dow_sin'] = np.sin(2 * np.pi * dows / 7)
-        df['dow_cos'] = np.cos(2 * np.pi * dows / 7)
-        
-        # Drop helper timestamp
-        df.drop(columns=['timestamp'], inplace=True)
         return None
     
     def build_base_tabular_df(self, build_mode: str) -> None:
@@ -167,7 +137,7 @@ class TabularBuilderMixin:
         #         as time features are direct leakage for the classifying classifying
         #         whether an hour is work hour or not.
         if build_mode != "workhour_classification":
-            self.integrate_time_features()
+            self.tabular_feature_df = self.add_time_features_to_df(df=self.tabular_feature_df)
 
         logger.info(f"Final feature set built. Shape: {self.tabular_feature_df.shape}")
         return None
