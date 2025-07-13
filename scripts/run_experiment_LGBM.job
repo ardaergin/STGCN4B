@@ -99,10 +99,11 @@ echo "Output will be written to: $SCRATCH_RUN_OUTPUT_DIR"
 
 cd $PERSISTENT_PROJECT_DIR
 
-srun python -m src.models.LightGBM.experiment \
+srun python -m src.experiment.lgbm \
     --data_dir $SCRATCH_DATA_DIR \
     --output_dir $SCRATCH_RUN_OUTPUT_DIR \
     --processed_data_dir $SCRATCH_PROCESSED_DATA_DIR \
+    --run_mode experiment \
     --n_experiments 5 \
     --experiment_id ${SLURM_ARRAY_TASK_ID} \
     --model_family tabular \

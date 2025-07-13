@@ -1,25 +1,22 @@
-#!/usr/bin/env python
-
+from typing import Tuple, Dict, Any
 import torch
 import torch.nn as nn
 import numpy as np
 from torch_geometric.utils import dense_to_sparse
-# Forecasting metrics
-from sklearn.metrics import (mean_squared_error, mean_absolute_error, r2_score)
-# Classificaation metrics
-from sklearn.metrics import (confusion_matrix, accuracy_score, 
-                             precision_score, recall_score, f1_score, precision_recall_curve,
-                             roc_auc_score, average_precision_score, balanced_accuracy_score)
 import optuna
-
-import logging
-logger = logging.getLogger(__name__)
 
 from ....utils.graph_utils import calc_gso_edge
 from ....utils.early_stopping import EarlyStopping
+from ....utils.tracking import TrainingHistory, TrainingResult
+from ....utils.metrics import (regression_results, binary_classification_results, find_optimal_f1_threshold)
 from .normalizer import STGCNNormalizer
 
-def setup_model(args, data):
+import logging; logger = logging.getLogger(__name__)
+
+
+def setup_model(
+        args, data
+    ) -> Tuple[nn.Module, nn.Module, torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
     """Set up the STGCN model and training components."""
     logger.info(f"Setting up model for the task type '{args.task_type}'...")
     device   = data['device']
@@ -96,6 +93,8 @@ def setup_model(args, data):
         blocks.append([args.output_channels])
     elif Ko > 0:
         blocks.append([args.output_channels, args.output_channels])
+    else:
+        raise ValueError(f"Problematic Ko={Ko}. Try a different combination of n_his, stblock_num, and Kt.")
     
     # Output dimension determined by n_pred
     n_pred = len(args.forecast_horizons)
@@ -141,13 +140,11 @@ def setup_model(args, data):
     
     # Learning rate scheduler
     scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
-    
-    # Early stopping
-    early_stopping = EarlyStopping(patience=args.patience, verbose=True)
-    
+        
     logger.info(f"Model setup complete with {sum(p.numel() for p in model.parameters())} parameters")
     
-    return model, criterion, optimizer, scheduler, early_stopping
+    return model, criterion, optimizer, scheduler
+
 
 
 def train_model(
@@ -156,21 +153,36 @@ def train_model(
         criterion: nn.Module,
         optimizer: torch.optim.Optimizer, 
         scheduler: torch.optim.lr_scheduler._LRScheduler,
-        early_stopping: EarlyStopping,
         train_loader: torch.utils.data.DataLoader,
         val_loader: torch.utils.data.DataLoader = None,
         trial: optuna.trial.Trial = None, 
         epoch_offset: int = 0
-        ):
-    """Train the STGCN model for forecasting."""
+        ) -> Tuple[nn.Module, TrainingHistory, TrainingResult]:
     logger.info("Starting model training...")
     
-    history = {
-        'train_loss': [],
-        'val_loss': [],
-        'val_metrics': {}
-    }
-
+    # Instantiate training history
+    train_metric        = "logloss" if args.task_type == "workhour_classification" else "mse"
+    train_objective     = "minimize"
+    optuna_metric, optuna_objective = None, None
+    if trial:
+        optuna_metric       = "auc" if args.task_type == "workhour_classification" else "mse"
+        optuna_objective    = "maximize" if args.task_type == "workhour_classification" else "minimize"
+    history = TrainingHistory(
+        train_metric    = train_metric, 
+        train_objective = train_objective, 
+        optuna_metric   = optuna_metric,
+        optuna_objective = optuna_objective
+    )
+    
+    # Early stopping
+    if val_loader is not None:
+        early_stopping = EarlyStopping(
+            direction   = optuna_objective if trial else train_objective,
+            patience    = args.es_patience, 
+            delta       = args.es_delta,
+            verbose     = True)
+    
+    # Training loop
     for epoch in range(args.epochs):
         # Training phase
         model.train()
@@ -203,16 +215,18 @@ def train_model(
             # Backward pass
             loss_train.backward()
             optimizer.step()
-                            
+        
         # Average training loss for the epoch
         epoch_train_loss = running_train_loss / len(train_loader) if len(train_loader) > 0 else 0.0
-        history['train_loss'].append(epoch_train_loss)
-                
+        
+        # Log training loss
+        train_metrics = {train_metric: epoch_train_loss}
+        history.log_epoch("train", **train_metrics)
+          
         # Validation phase (Optional)
         if val_loader is not None:
             model.eval()
             running_val_loss = 0.0
-            total_valid_points_val = 0
             # Forecasting:
             all_preds, all_targets = [], []
             # Classification:
@@ -246,52 +260,40 @@ def train_model(
                                             
                     running_val_loss += loss_val.item()
             
-            # Average validation loss (MSE) for the epoch
+            # Average validation loss for the epoch
             epoch_val_loss = running_val_loss / len(val_loader) if len(val_loader) > 0 else 0.0
-            history['val_loss'].append(epoch_val_loss)
             
-            # Append epoch metrics to the history dictionary
-            epoch_metrics = {}
+            ########## LOGGING VALIDATION METRICS ##########
+            valid_metrics = {train_metric: epoch_val_loss}
+            
             if args.task_type == "workhour_classification":
-                if len(all_targets_class) > 0:
-                    # Check if more than one class is present to calculate AUC
-                    if len(np.unique(all_targets_class)) > 1:
-                        epoch_metrics['val_auc'] = roc_auc_score(all_targets_class, all_probs)
-                    else:
-                        epoch_metrics['val_auc'] = 0.5 # Neutral score if only one class is present
-
-                    # For logging, we can still compute metrics at the 0.5 threshold
-                    preds_at_half = [1 if p >= 0.5 else 0 for p in all_probs]
-                    epoch_metrics['accuracy'] = accuracy_score(all_targets_class, preds_at_half)
-                    epoch_metrics['f1'] = f1_score(all_targets_class, preds_at_half, zero_division=0)
+                cls_results = binary_classification_results(all_targets_class, all_probs, threshold=.5)
+                valid_metrics.update({
+                    "auc":   cls_results["roc_auc"],
+                    "accuracy": cls_results["accuracy"],
+                    "f1":   cls_results["f1"],
+                })
             else: # Forecasting
-                if len(all_targets) > 0:
-                    epoch_metrics['r2'] = r2_score(all_targets, all_preds)
-                    epoch_metrics['mae'] = mean_absolute_error(all_targets, all_preds)
+                reg_results = regression_results(np.array(all_targets), np.array(all_preds))
+                valid_metrics.update({
+                    "r2": reg_results["r2"], 
+                    "mae": reg_results["mae"]
+                })
             
-            for metric_name, metric_val in epoch_metrics.items():
-                history['val_metrics'].setdefault(metric_name, []).append(metric_val)
+            history.log_epoch("valid", **valid_metrics)
+            ########## END OF LOGGING VALIDATION METRICS ##########
             
-            # --- PRUNING LOGIC ---
+            ########## PRUNING LOGIC ##########
             if trial:
-                # For classification, we prune based on the primary metric (e.g., F1-score)
-                if args.task_type == "workhour_classification":
-                    metric_to_report = epoch_metrics.get('val_auc', 0.0)
-                # For forecasting, we prune based on validation loss
-                else:
-                    metric_to_report = epoch_val_loss
-                
-                # Report the intermediate metric to Optuna
-                trial.report(metric_to_report, epoch + epoch_offset)
-                
-                # Check if the trial should be pruned based on the pruner's decision
+                optuna_metric_value = valid_metrics.get(optuna_metric, 0.0)
+                trial.report(optuna_metric_value, epoch + epoch_offset)
                 if trial.should_prune():
                     logger.info(f"Pruning trial {trial.number} at epoch {epoch} due to poor performance.")
                     raise optuna.exceptions.TrialPruned()
-            # --- END OF PRUNING LOGIC ---
+            ########## END OF PRUNING LOGIC ##########
             
             # Logging
-            metrics_log_str = " | ".join([f"{k}: {v:.4f}" for k, v in epoch_metrics.items()])
+            metrics_log_str = " | ".join([f"{k}: {v:.4f}" for k, v in valid_metrics.items()])
             logger.info(
                 f"Epoch [{epoch+1}/{args.epochs}] | Train Loss: {epoch_train_loss:.4f} | "
                 f"Val Loss: {epoch_val_loss:.4f} | {metrics_log_str} | "
@@ -299,13 +301,9 @@ def train_model(
             )
             
             # Check early stopping
-            if args.task_type == "workhour_classification":
-                # We want to MAXIMIZE AUC, so we MINIMIZE (-AUC) for the early stopping class
-                current_auc = epoch_metrics.get('val_auc', 0.0)
-                early_stopping(-current_auc, model, epoch + 1)
-            else:
-                early_stopping(epoch_val_loss, model, epoch + 1)
-            
+            metric_for_stopping = optuna_metric_value if trial else epoch_val_loss
+            early_stopping(metric_for_stopping, model, epoch)
+                        
             if early_stopping.early_stop:
                 logger.info("Early stopping triggered")
                 break
@@ -320,23 +318,42 @@ def train_model(
     if val_loader is not None and early_stopping.early_stop:
         logger.info(f"Loading best model from epoch {early_stopping.best_epoch}")
         model.load_state_dict(early_stopping.best_model_state)
-        
-        # Add best AUC to history for the objective function
-        if args.task_type == "workhour_classification":
-            best_epoch_idx = early_stopping.best_epoch - 1
-            best_auc = history['val_metrics']['val_auc'][best_epoch_idx]
-            history['best_val_auc'] = best_auc
     
-    return model, history
+    # Filling the TrainingResult
+    training_result = None
+    if val_loader is not None:
+        best_score = history.get_best_valid_score()
+        best_epoch = early_stopping.best_epoch
+        
+        optimal_threshold = None
+        if args.task_type == "workhour_classification":
+            model.eval()
+            probs, labels = [], []
+            with torch.no_grad():
+                for X, y, *_ in val_loader:
+                    outputs = model(X.permute(0, 3, 1, 2)).squeeze()
+                    probs.extend(torch.sigmoid(outputs).cpu().numpy())
+                    labels.extend(y.cpu().numpy())
+            optimal_threshold = find_optimal_f1_threshold(labels, probs)
+        
+        training_result = TrainingResult(
+            metric=best_score, 
+            best_epoch=best_epoch, 
+            optimal_threshold=optimal_threshold
+        )
+    
+    return model, history, training_result
+
+
 
 def evaluate_model(
         args,
         model: torch.nn.Module,
         test_loader: torch.utils.data.DataLoader,
-        processor: "STGCNNormalizer",
+        normalizer: "STGCNNormalizer",
         *,
         threshold: float = 0.5,
-        ):
+        ) -> Dict[str, Any]:
     """
     Run the trained model on the test set.
     
@@ -365,25 +382,13 @@ def evaluate_model(
                 all_probs.extend(preds.cpu().tolist())
                 all_labels.extend(y_batch.squeeze().cpu().tolist())
         
-        y_hat = np.array(all_probs)
-        y_true = np.array(all_labels)
-        y_pred = (y_hat >= threshold).astype(int)
-        
-        return {
-            "test_loss":           0, # Not applicable for classification
-            "accuracy":            accuracy_score(y_true, y_pred),
-            "balanced_accuracy":   balanced_accuracy_score(y_true, y_pred),
-            "precision":           precision_score(y_true, y_pred, zero_division=0),
-            "recall":              recall_score(y_true, y_pred, zero_division=0),
-            "f1":                  f1_score(y_true, y_pred, zero_division=0),
-            "roc_auc":             roc_auc_score(y_true, y_hat),
-            "auc_pr":              average_precision_score(y_true, y_hat),
-            "confusion_matrix":    confusion_matrix(y_true, y_pred),
-            "threshold":           threshold,
-            "probabilities":       y_hat,
-            "predictions":         y_pred,
-            "labels":              y_true,
+        metrics = binary_classification_results(all_labels, all_probs, threshold)
+        model_outputs = {
+            "probabilities": np.array(all_probs),
+            "predictions": (np.array(all_probs) >= threshold).astype(int),
+            "labels": np.array(all_labels),
         }
+        return metrics, model_outputs
     
     ####################
     # Forecasting
@@ -433,8 +438,8 @@ def evaluate_model(
         # Inverse-transform the normalized predictions and targets.
         # NOTE: - For 'delta', these are now deltas in their original scale.
         #       - For 'absolute', these are the final predictions.
-        p = processor.inverse_transform_target(p_norm)
-        t = processor.inverse_transform_target(t_norm)
+        p = normalizer.inverse_transform_target(p_norm)
+        t = normalizer.inverse_transform_target(t_norm)
         
         # Delta -> Absolute reconstruction
         if args.prediction_type == "delta":
@@ -442,62 +447,67 @@ def evaluate_model(
             p   = src + p
             t   = src + t
         
-        mse  = mean_squared_error(t, p)
-        rmse = np.sqrt(mse)
-        mae  = mean_absolute_error(t, p)
-        r2   = r2_score(t, p)
-        
-        mape_mask = t != 0
-        mape = (np.mean(np.abs((t[mape_mask] - p[mape_mask]) / t[mape_mask])) * 100
-                if mape_mask.any() else 0.0)
-        
+        h_reg_results = regression_results(t, p)
+
         per_horizon_metrics[f"h_{horizon}"] = {
-            "mse": mse, "rmse": rmse, "mae": mae, "r2": r2, "mape": mape
+            "mse": h_reg_results["mse"], 
+            "rmse": h_reg_results["rmse"], 
+            "mae": h_reg_results["mae"], 
+            "r2": h_reg_results["r2"], 
+            "mape": h_reg_results["mape"]
         }
-        logger.info(f"Horizon {horizon:>3}:  RMSE={rmse:.4f} | MAE={mae:.4f} | "
-                    f"R²={r2:.4f} | MAPE={mape:.2f}%")
+        logger.info(
+            f"Horizon {horizon:>3}: "
+            f"MSE={h_reg_results['mse']:.4f} | "
+            f"RMSE={h_reg_results['rmse']:.4f} | "
+            f"MAE={h_reg_results['mae']:.4f} | "
+            f"R²={h_reg_results['r2']:.4f} | "
+            f"MAPE={h_reg_results['mape']:.2f}%"
+        )
     
     if not per_horizon_metrics: # Nothing to evaluate
         logger.warning("No valid targets in the entire test set.")
-        return {"test_loss": 0, "rmse": 0, "mae": 0, "r2": 0, "mape": 0, 
+        return {"mse": 0, "rmse": 0, "mae": 0, "r2": 0, "mape": 0, 
                 "predictions": np.array([]), "targets": np.array([])}
     
     # Aggregate overall metrics (flattening all horizons)
-    all_p = np.concatenate([
-        processor.inverse_transform_target(np.array(preds_norm_per_h[h]))
-        if args.prediction_type == "absolute"
-        else np.array(y_source_per_h[h]) +            # recon for delta
-             processor.inverse_transform_target(np.array(preds_norm_per_h[h]))
-        for h in range(H) if preds_norm_per_h[h]
-    ])
-    all_t = np.concatenate([
-        processor.inverse_transform_target(np.array(targets_norm_per_h[h]))
-        if args.prediction_type == "absolute"
-        else np.array(y_source_per_h[h]) +
-             processor.inverse_transform_target(np.array(targets_norm_per_h[h]))
-        for h in range(H) if targets_norm_per_h[h]
-    ])
+    if args.prediction_type == "absolute":
+        all_p = np.concatenate([
+            normalizer.inverse_transform_target(np.array(preds_norm_per_h[h]))
+            for h in range(H) if preds_norm_per_h[h]
+        ])
+        all_t = np.concatenate([
+            normalizer.inverse_transform_target(np.array(targets_norm_per_h[h]))
+            for h in range(H) if targets_norm_per_h[h]
+        ])
+    else:  # delta → reconstruct absolute values
+        all_p = np.concatenate([
+            np.array(y_source_per_h[h]) +
+            normalizer.inverse_transform_target(np.array(preds_norm_per_h[h]))
+            for h in range(H) if preds_norm_per_h[h]
+        ])
+        all_t = np.concatenate([
+            np.array(y_source_per_h[h]) +
+            normalizer.inverse_transform_target(np.array(targets_norm_per_h[h]))
+            for h in range(H) if targets_norm_per_h[h]
+        ])
+
+    reg_results = regression_results(all_t, all_p)
     
-    overall_mse  = mean_squared_error(all_t, all_p)
-    overall_rmse = np.sqrt(overall_mse)
-    overall_mae  = mean_absolute_error(all_t, all_p)
-    overall_r2   = r2_score(all_t, all_p)
-    mape_mask    = all_t != 0
-    overall_mape = (np.mean(np.abs((all_t[mape_mask] - all_p[mape_mask]) / all_t[mape_mask])) * 100
-                    if mape_mask.any() else 0.0)
-    logger.info(f"Overall: RMSE={overall_rmse:.4f} | MAE={overall_mae:.4f} | "
-                f"R²={overall_r2:.4f} | MAPE={overall_mape:.2f}%")
+    logger.info(f"Overall: "
+                f"MSE={reg_results['mse']:.4f} | "
+                f"RMSE={reg_results['rmse']:.4f} | "
+                f"MAE={reg_results['mae']:.4f} | "
+                f"R²={reg_results['r2']:.4f} | "
+                f"MAPE={reg_results['mape']:.2f}%")
     
-    return {
-        # Overall metrics
-        "test_loss": overall_mse,
-        "rmse":      overall_rmse,
-        "mae":       overall_mae,
-        "r2":        overall_r2,
-        "mape":      overall_mape,
-        # Per horizon metrics
-        "per_horizon_metrics": per_horizon_metrics,
+    metrics = {**reg_results, "per_horizon_metrics": per_horizon_metrics}
+    
+    model_output = {
+        "predictions": all_p,
+        "targets": all_t,
     }
+    return metrics, model_output
 
 
 # Helpers
@@ -509,21 +519,3 @@ class MaskedMSELoss(nn.Module):
         if num_valid_points > 0:
             return torch.sum(masked_squared_error) / num_valid_points
         return torch.tensor(0.0, device=preds.device)
-
-def find_optimal_threshold(model, val_loader):
-    """Find the optimal classification threshold using validation data."""
-    logger.info("Finding optimal threshold on validation set...")
-    model.eval()
-    all_probs, all_labels = [], []
-    with torch.no_grad():
-        for X_batch, y_batch, _, _ in val_loader:
-            outputs = model(X_batch.permute(0, 3, 1, 2)).squeeze()
-            probs = torch.sigmoid(outputs)
-            all_probs.extend(probs.cpu().numpy())
-            all_labels.extend(y_batch.cpu().numpy())
-    precisions, recalls, thresholds = precision_recall_curve(all_labels, all_probs)
-    f1_scores = [2 * p * r / (p + r) if (p + r) > 0 else 0 for p, r in zip(precisions, recalls)]
-    optimal_idx = np.argmax(f1_scores[:-1]) if len(thresholds) > 0 else -1
-    optimal_threshold = thresholds[optimal_idx] if optimal_idx != -1 else 0.5
-    logger.info(f"Optimal classification threshold: {optimal_threshold:.4f}")
-    return optimal_threshold

@@ -1,44 +1,57 @@
-# from https://github.com/hazdzz/stgcn/blob/main/script/earlystopping.py
-# Made some slight updates
-
 import torch
 
-import logging
-logger = logging.getLogger(__name__)
+import logging; logger = logging.getLogger(__name__)
 
 class EarlyStopping:
-    """Early stopping to prevent overfitting."""
-    def __init__(self, patience=7, verbose=False, delta=0):
-        self.patience = patience
-        self.verbose = verbose
-        self.delta = delta
-        self.counter = 0
-        self.best_score = None
-        self.early_stop = False
-        self.val_loss_min = float('inf')
-        self.best_model_state = None
-        self.best_epoch = 0
+    """
+    Early stopping utility.
 
-    def __call__(self, val_loss, model, epoch):
-        score = -val_loss
+    Args:
+    - direction : {"minimize", "maximize"}. Whether lower or higher metric is better.
+    - patience : int. Number of epochs to wait without improvement.
+    - delta : float. Minimal *meaningful* improvement.
+    - verbose : bool. If True, print checkpoint messages.
+    """
+    def __init__(self, direction: str = "minimize", 
+                 patience: int = 10, 
+                 delta: float = 1e-5,
+                 verbose: bool = False):
+        assert direction in {"minimize", "maximize"}
+        self.direction  = direction
+        self.patience   = patience
+        self.delta      = delta
+        self.verbose    = verbose
+
+        self.counter          = 0
+        self.best_score       = None
+        self.best_metric      = None
+        self.best_epoch       = 0
+        self.best_model_state = None
+        self.early_stop       = False
+    
+    def __call__(self, metric: float, model: torch.nn.Module, epoch: int):
+        """Update with a new validation metric."""
+        # Decide whether the new metric is better
+        improved = (
+            self.best_metric is None
+            or (self.direction == "minimize" and metric < self.best_metric - self.delta)
+            or (self.direction == "maximize" and metric > self.best_metric + self.delta)
+        )
         
-        if self.best_score is None:
-            self.best_score = score
-            self.save_checkpoint(val_loss, model, epoch)
-        elif score < self.best_score + self.delta:
+        if improved:
+            self._save_checkpoint(metric, model, epoch)
+        else:
             self.counter += 1
             if self.verbose:
-                logger.info(f'EarlyStopping counter: {self.counter} out of {self.patience}')
+                logger.info("EarlyStopping counter: %d / %d", self.counter, self.patience)
             if self.counter >= self.patience:
                 self.early_stop = True
-        else:
-            self.best_score = score
-            self.save_checkpoint(val_loss, model, epoch)
-            self.counter = 0
-            
-    def save_checkpoint(self, val_loss, model, epoch):
-        if self.verbose:
-            logger.info(f'Validation loss decreased ({self.val_loss_min:.6f} --> {val_loss:.6f}). Saving model...')
-        self.best_model_state = model.state_dict()
-        self.val_loss_min = val_loss
+    
+    def _save_checkpoint(self, metric: float, model: torch.nn.Module, epoch: int):
+        """Record the current model & metric as the best so far."""
+        self.best_model_state = {k: v.clone() for k, v in model.state_dict().items()}
+        self.best_metric = metric
         self.best_epoch = epoch
+        self.counter = 0
+        if self.verbose:
+            logger.info("New best %.6f at epoch %d", metric, epoch)

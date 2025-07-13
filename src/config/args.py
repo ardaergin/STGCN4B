@@ -160,30 +160,6 @@ def add_OfficeGraph_args(parser):
     parser.add_argument('--min_periods_ratio', type=float,
                         default=0.5,
                         help="The minimum ratio of non-null data points required in a window to compute a value. Default is 0.5.")
-        
-    ##############################
-    #  GSO
-    ##############################
-
-    parser.add_argument('--gso_mode', type=str, default='dynamic',
-                        choices=['static', 'dynamic'], 
-                        help='Adjacency matrix type')
-    
-    parser.add_argument('--gso_type', type=str, default='rw_norm_adj',
-        choices=[
-            'sym_norm_adj',  'sym_renorm_adj',  'sym_norm_lap',  'sym_renorm_lap',
-            'rw_norm_adj',   'rw_renorm_adj',   'rw_norm_lap',   'rw_renorm_lap',
-        ],
-        help=(
-            "Which Graph-Shift Operator to build:\n"
-            "  • sym_norm_adj   : D^{-½} A D^{-½}\n"
-            "  • sym_renorm_adj : D^{-½}(A+I)D^{-½}\n"
-            "  • sym_norm_lap   : I - D^{-½} A D^{-½}\n"
-            "  • sym_renorm_lap : I - D^{-½}(A+I)D^{-½}\n"
-            "  • rw_norm_adj    : D^{-1} A\n"
-            "  • rw_renorm_adj  : D^{-1}(A+I)\n"
-            "  • rw_norm_lap    : I - D^{-1} A\n"
-            "  • rw_renorm_lap  : I - D^{-1}(A+I)"))
 
 
 
@@ -222,7 +198,7 @@ def add_base_modelling_args(parser):
     # Common training arguments
     parser.add_argument('--batch_size', type=int, default=144, 
                         help='Batch size')
-    parser.add_argument('--epochs', type=int, default=100, 
+    parser.add_argument('--epochs', type=int, default=300, 
                         help='Number of epochs')
     
     # Stratified data splitting
@@ -251,7 +227,7 @@ def add_base_modelling_args(parser):
     
     ########## Experimental Setup ##########
     parser.add_argument('--n_experiments', type=int,
-                        default=10,
+                        default=5,
                         help='Number of outer loop train-test splits for nested CV.')
     parser.add_argument('--experiment_id', type=int, 
                         help='The ID of the outer loop train-test split to run (for parallel execution).')
@@ -262,6 +238,11 @@ def add_base_modelling_args(parser):
     parser.add_argument('--n_optuna_trials', type=int, 
                         default=20,
                         help='Number of Optuna trials for HPO.')
+    
+    parser.add_argument('--n_jobs', type=int, 
+                        default=1,
+                        help='Number of parallel threads to use for training (-1 to use all available cores)')
+    
     parser.add_argument('--optuna_crash_mode', type=str, default='safe',
                         choices=['fail_fast', 'safe'], 
                         help="whether to add 'study.optimize(..., catch=(Exception,))'.")
@@ -276,8 +257,6 @@ def add_base_modelling_args(parser):
     parser.add_argument('--interval_steps', type=int, default=3,
                         help='Interval (in steps/epochs) at which to check for pruning possibilities '
                              'after the warmup period is over.')
-    parser.add_argument('--max_epochs', type=int, default=100, 
-                        help='Number of epochs')
 
 
 def add_STGCN_args(parser):
@@ -287,6 +266,28 @@ def add_STGCN_args(parser):
     STGCN: Spatio-temporal graph convolutional network.
     (Yu et al., 2018)
     """
+    ########## GSO ##########
+
+    parser.add_argument('--gso_mode', type=str, default='dynamic',
+                        choices=['static', 'dynamic'], 
+                        help='Adjacency matrix type')
+    
+    parser.add_argument('--gso_type', type=str, default='rw_norm_adj',
+        choices=[
+            'sym_norm_adj',  'sym_renorm_adj',  'sym_norm_lap',  'sym_renorm_lap',
+            'rw_norm_adj',   'rw_renorm_adj',   'rw_norm_lap',   'rw_renorm_lap',
+        ],
+        help=(
+            "Which Graph-Shift Operator to build:\n"
+            "  • sym_norm_adj   : D^{-½} A D^{-½}\n"
+            "  • sym_renorm_adj : D^{-½}(A+I)D^{-½}\n"
+            "  • sym_norm_lap   : I - D^{-½} A D^{-½}\n"
+            "  • sym_renorm_lap : I - D^{-½}(A+I)D^{-½}\n"
+            "  • rw_norm_adj    : D^{-1} A\n"
+            "  • rw_renorm_adj  : D^{-1}(A+I)\n"
+            "  • rw_norm_lap    : I - D^{-1} A\n"
+            "  • rw_renorm_lap  : I - D^{-1}(A+I)"))
+
     ########## STGCN parameters ##########
     parser.add_argument('--n_his', type=int, 
                         default=24,
@@ -327,9 +328,12 @@ def add_STGCN_args(parser):
                         help='Number of channels in the final output block.')
 
     # Early stopping
-    parser.add_argument('--patience', type=int, 
+    parser.add_argument('--es_patience', type=int, 
                         default=10, 
                         help='early stopping patience')
+    parser.add_argument('--es_delta', type=int, 
+                        default=1e-5, 
+                        help='early stopping delta')
 
     # Common training parameters
     parser.add_argument('--lr', type=float, 
@@ -353,10 +357,10 @@ def add_STGCN_args(parser):
                         default=0.001, 
                         help='weight decay (L2 penalty)')
     
-    parser.add_argument('--enable-bias', dest='enable_bias', 
+    parser.add_argument('--enable_bias', dest='enable_bias', 
                         action='store_true', 
                         help='Enable bias in layers.')
-    parser.add_argument('--disable-bias', dest='enable_bias', 
+    parser.add_argument('--disable_bias', dest='enable_bias', 
                         action='store_false', 
                         help='Disable bias in layers.')
     parser.set_defaults(enable_bias=True)
@@ -367,17 +371,85 @@ def add_LightGBM_args(parser):
     """
     Tabular‐specific arguments for LightGBM training/evaluation.
     """    
-    parser.add_argument('--early_stopping_rounds', type=int, 
-                        default=10, 
-                        help='The number of early stopping rounds')
-
+    # Core LightGBM parameters
+    parser.add_argument('--objective', type=str, 
+                        default='regression',
+                        help='Learning task objective (e.g., "regression", "binary")')
+    parser.add_argument('--metric', type=str, 
+                        default='mae',
+                        help='Metric to be evaluated on the validation set (e.g., "mae", "rmse", "auc")')
+    parser.add_argument('--boosting_type', type=str, 
+                        default='gbdt',
+                        help='Type of boosting algorithm to use')
     parser.add_argument('--n_estimators', type=int, 
-                        default=1500, 
-                        help='The number of early stopping rounds')
+                        default=1000,
+                        help='Number of boosting rounds')
+    parser.add_argument('--verbosity', type=int, 
+                        default=1,
+                        help='Controls the level of LightGBM verbosity')
+    
+    # Early stopping
+    parser.add_argument('--early_stopping_rounds', type=int, 
+                        default=10,
+                        help='Activates early stopping. The model will train until the validation score stops improving.')
 
-    parser.add_argument('--n_jobs', type=int, 
-                        default=5, 
-                        help='The number of early stopping rounds')
+    # Tree structure
+    parser.add_argument('--num_leaves', type=int, 
+                        default=31,
+                        help='Maximum number of leaves in one tree')
+    parser.add_argument('--max_depth', type=int, 
+                        default=-1,
+                        help='Maximum tree depth for base learners, -1 means no limit')
+    parser.add_argument('--min_child_samples', type=int, 
+                        default=20,
+                        help='Minimum number of data needed in a child (leaf)')
+    parser.add_argument('--min_child_weight', type=float, 
+                        default=1e-3,
+                        help='Minimum sum of instance weight needed in a child (leaf)')
+    parser.add_argument('--min_split_gain', type=float, 
+                        default=0.0,
+                        help='Minimum loss reduction required to make a further partition on a leaf node')
+
+    # Regularization
+    parser.add_argument('--lambda_l1', type=float, 
+                        default=0.0,
+                        help='L1 regularization term on weights')
+    parser.add_argument('--lambda_l2', type=float, 
+                        default=0.0,
+                        help='L2 regularization term on weights')
+
+    # Sampling & feature selection
+    parser.add_argument('--feature_fraction', type=float, 
+                        default=0.9,
+                        help='Fraction of features to be considered for each tree')
+    parser.add_argument('--bagging_fraction', type=float, 
+                        default=0.8,
+                        help='Fraction of data to be used for each iteration (tree)')
+    parser.add_argument('--bagging_freq', type=int, 
+                        default=5,
+                        help='Frequency for bagging')
+
+    # Learning control
+    parser.add_argument('--learning_rate', type=float, 
+                        default=0.05,
+                        help='Boosting learning rate')
+    parser.add_argument('--boost_from_average', dest='boost_from_average', 
+                        action='store_true',
+                        help='Starts training from the average of the target values')
+    parser.add_argument('--no_boost_from_average', dest='boost_from_average', 
+                        action='store_false',
+                        help='Starts training from the initial base score (usually 0)')
+    parser.set_defaults(boost_from_average=True)
+    
+    # Optional for Classification
+    parser.add_argument('--is_unbalance', dest='is_unbalance', 
+                        action='store_true',
+                        help='Set to true if training data is unbalanced (for binary classification)')
+    parser.add_argument('--is_not_unbalance', dest='is_unbalance', 
+                        action='store_false',
+                        help='Set to false if training data is balanced')
+    parser.set_defaults(is_unbalance=True)
+
 
 
 def parse_args():

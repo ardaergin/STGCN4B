@@ -106,12 +106,14 @@ echo "Output will be written to: $SCRATCH_TASK_OUTPUT_DIR"
 
 cd $PERSISTENT_PROJECT_DIR
 
-srun python -m src.models.STGCN4B.homogeneous.experiment \
+srun python -m src.experiment.stgcn \
     --data_dir $SCRATCH_DATA_DIR \
     --output_dir $SCRATCH_TASK_OUTPUT_DIR \
     --processed_data_dir $SCRATCH_PROCESSED_DATA_DIR \
+    --run_mode experiment \
     --n_experiments 5 \
     --experiment_id ${SLURM_ARRAY_TASK_ID} \
+    --n_jobs 1 \
     --model_family graph \
     --model STGCN \
     --enable_cuda \
