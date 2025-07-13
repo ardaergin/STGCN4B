@@ -287,7 +287,6 @@ class STGCNDataPreparer(BaseDataPreparer):
         if self.args.task_type == "workhour_classification":
             workhour_array = self.workhour_df.sort_values('bucket_idx')['target_workhour'].to_numpy()
             self.target_data["target_array"] = workhour_array
-            self.target_data["target_mask"] = np.ones_like(workhour_array)
         else:
             # Using the helper to create the target array, mask array, and source array (if delta prediction)
             if self.args.task_type == "consumption_forecast":
@@ -407,7 +406,15 @@ class STGCNDataPreparer(BaseDataPreparer):
         
         # Getting the requested adj, and already converting the obtained graph structures to tensors
         adj_matrix, masked_adj_dict, outside_adj = self._get_requested_adjacency_tensors(device=device)
-          
+
+        # For the downstream code, ensuring we always have an ndarray, never None:
+        target_source_array = self.target_data.get("target_source_array")
+        if target_source_array is None: 
+            target_source_array = np.zeros_like(self.target_data["target_array"])
+        target_mask = self.target_data.get("target_mask")
+        if target_mask is None: 
+            target_mask = np.ones_like(self.target_data["target_array"], dtype=float)
+        
         # Creatign the input dict
         self.input_dict = {
             "device": device,
@@ -432,8 +439,8 @@ class STGCNDataPreparer(BaseDataPreparer):
             
             # Target
             "target_array": self.target_data["target_array"],
-            "target_mask": self.target_data["target_mask"],
-            "target_source_array": self.target_data.get("target_source_array", None), # for delta prediction
+            "target_mask": target_mask,
+            "target_source_array": target_source_array, # for delta prediction
         }
     
     def _get_requested_adjacency_tensors(

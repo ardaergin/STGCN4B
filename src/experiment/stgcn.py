@@ -100,10 +100,8 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         numpy_payload = {
             "feature": feature_array,
             "target": target_array,
-            "target_mask": self.input_dict.get("target_mask", 
-                                               np.zeros_like(target_array)),
-            "target_source": self.input_dict.get("target_source_array", 
-                                                np.zeros_like(target_array))
+            "target_mask": self.input_dict["target_mask"],
+            "target_source": self.input_dict["target_source_array"]
         }
         tensors = self._load_data_to_tensors(**numpy_payload)
         
