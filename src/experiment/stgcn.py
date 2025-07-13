@@ -228,7 +228,7 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         
         # Get the final parameters
         final_params = deepcopy(self.args)
-        for key, value in params.items():
+        for key, value in vars(params).items():
             setattr(final_params, key, value)
 
         # Expose the epochs to args
