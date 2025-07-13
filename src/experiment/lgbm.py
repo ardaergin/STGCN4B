@@ -61,10 +61,15 @@ class LGBMExperimentRunner(BaseExperimentRunner):
         if self.args.prediction_type == "delta":
             source_col_name = self.input_dict["source_colname"]
             target_source_df = self.input_dict["target_source_df"]
-
-            # Merging with the split_df on bucket_idx to get the correctly aligned source values
-            # This is more robust, and ensures the values correspond to the correct rows in X and y.
-            merged_df = pd.merge(split_df[['bucket_idx']], target_source_df, on='bucket_idx', how='left')
+            
+            # Define the columns to merge on
+            merge_on_cols = ['bucket_idx']
+            if self.args.task_type == "measurement_forecast":
+                merge_on_cols.append('room_uri_str')
+            merge_keys_df = split_df[merge_on_cols].copy()
+            
+            # Merge
+            merged_df = pd.merge(merge_keys_df, target_source_df, on=merge_on_cols, how='left')
             reconstruction_t_df = merged_df[source_col_name]
         
         # Get features (X)
