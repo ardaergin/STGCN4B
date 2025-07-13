@@ -166,6 +166,11 @@ def add_OfficeGraph_args(parser):
 def add_base_modelling_args(parser):
     """Parse common data and training arguments."""
     
+    # Run mode for experimenter
+    parser.add_argument('--run_mode', type=str, default='test',
+                        choices=['test', 'experiment'],
+                        help='Run mode for the experiment runners.')
+    
     # Model arguments
     parser.add_argument('--model_family', type=str, default='graph',
                         choices=['graph', 'tabular'],
