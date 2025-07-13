@@ -66,8 +66,6 @@ class BlockAwareTargetEngineer:
             raise ValueError("All horizons must be positive integers.")
         
         # Delta limitation
-        if prediction_type == "delta" and horizons != [1]:
-            raise ValueError(f"Delta-prediction is typically used for a single horizon of [1]; got horizons={horizons}")
         if forecast_type == 'range' and prediction_type == 'delta':
             raise ValueError("Delta prediction ('delta') is not supported for 'range' forecasts.")
         
