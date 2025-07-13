@@ -421,7 +421,7 @@ def evaluate_model(
                 if args.prediction_type == "delta":
                     # The reconstruction batches has the same shape as y_batch and mask_batch
                     # We need to filter it with the same mask to keep them aligned
-                    y_source = y_source_batch[valid]
+                    y_source = y_source_batch.squeeze(1)[valid]
                     y_source_per_h[h].extend(y_source.reshape(-1).cpu().tolist())
     
     # Calculate per-horizon metrics on original scale
