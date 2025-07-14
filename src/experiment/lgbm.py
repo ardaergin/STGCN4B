@@ -130,9 +130,11 @@ class LGBMExperimentRunner(BaseExperimentRunner):
         # 1. Setting up the pruning callback
         metric_to_monitor = "auc" if self.args.task_type == "workhour_classification" else "l1" # mae
         pruning_callback = LightGBMPruningCallback(
-            trial,
-            metric_name=metric_to_monitor,
-            valid_name="valid")
+            trial           = trial,
+            metric          = metric_to_monitor,
+            valid_name      = "valid",
+            report_interval = 1
+        )
                 
         # 2. Get split payload
         X_train, y_train, _ = self._get_split_payload(block_ids=train_block_ids)
