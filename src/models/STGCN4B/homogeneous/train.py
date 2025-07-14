@@ -10,6 +10,7 @@ from ....utils.early_stopping import EarlyStopping
 from ....utils.tracking import TrainingHistory, TrainingResult
 from ....utils.metrics import (regression_results, binary_classification_results, find_optimal_f1_threshold)
 from .normalizer import STGCNNormalizer
+from .models import HomogeneousSTGCN
 
 import logging; logger = logging.getLogger(__name__)
 
@@ -101,17 +102,13 @@ def setup_model(
     blocks.append([n_pred])
     
     # Create model based on graph convolution type
-    if args.graph_conv_type == 'cheb_graph_conv':
-        from .models import STGCNChebGraphConv as Model
-    else:
-        from .models import STGCNGraphConv as Model
-    
-    model = Model(
-        args     = args,
-        blocks   = blocks,
-        n_vertex = n_nodes,
-        gso      = gso,
-        task_type= args.task_type,
+    model = HomogeneousSTGCN(
+        args        = args,
+        blocks      = blocks,
+        n_vertex    = n_nodes,
+        gso         = gso,
+        conv_type   = args.graph_conv_type,
+        task_type   = args.task_type,
     ).to(device)
     
     # Loss function based on task type
