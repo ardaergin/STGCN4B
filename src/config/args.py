@@ -245,7 +245,7 @@ def add_base_modelling_args(parser):
                         default=20,
                         help='Number of Optuna trials for HPO.')
     
-    parser.add_argument('--n_jobs', type=int, 
+    parser.add_argument('--n_jobs_in_hpo', type=int, 
                         default=1,
                         help='Number of parallel threads to use for training (-1 to use all available cores)')
     
