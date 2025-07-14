@@ -128,7 +128,7 @@ class LGBMExperimentRunner(BaseExperimentRunner):
         """Trains and evaluates a single fold in cross-validation for HPO."""
         
         # 1. Setting up the pruning callback
-        metric_to_monitor = "auc" if self.args.task_type == "workhour_classification" else "mae"
+        metric_to_monitor = "auc" if self.args.task_type == "workhour_classification" else "l1" # mae
         pruning_callback = LightGBMPruningCallback(
             trial,
             metric_name=metric_to_monitor,
