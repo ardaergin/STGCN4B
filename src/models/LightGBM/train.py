@@ -45,6 +45,13 @@ class LGBMTrainer:
                 metric    = "l1",
             )
         
+        # If HPO, single job per trial, as Optuna parallelizes trials
+        if mode == "hpo":
+            self.model_params.update(n_jobs = 1)
+        # Use all CPUs for final training:
+        elif mode == "final_model":
+            self.model_params.update(n_jobs = -1)
+    
     def train_model(
         self,
         X_train: pd.DataFrame,

@@ -110,9 +110,6 @@ class LGBMExperimentRunner(BaseExperimentRunner):
         trial_args.n_estimators = self.args.n_estimators
         trial_args.early_stopping_rounds = self.args.early_stopping_rounds
         
-        # Single job per trial, as Optuna parallelizes trials
-        trial_args.n_jobs = 1 
-
         return trial_args
     
     ##########################
@@ -182,10 +179,7 @@ class LGBMExperimentRunner(BaseExperimentRunner):
         if val_block_ids:
             X_val, y_val, _ = self._get_split_payload(block_ids=val_block_ids)
         X_test, y_test, y_source_df = self._get_split_payload(block_ids=test_block_ids)
-        
-        # Training
-        final_params.n_jobs = -1 # Use all CPUs for final training
-        
+                
         trainer = LGBMTrainer(args=final_params, mode="final_model")
         model, history, training_result = trainer.train_model(
             X_train             = X_train, 

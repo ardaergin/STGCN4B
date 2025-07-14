@@ -266,14 +266,14 @@ class BaseExperimentRunner(ABC):
             study.optimize(
                 objective_func,
                 n_trials=self.args.n_optuna_trials,
-                n_jobs=self.args.n_jobs,
+                n_jobs=self.args.n_jobs_in_hpo,
             )
         elif self.args.optuna_crash_mode == "safe":
             logger.info("Running in safe mode. Unhandled trial exceptions will be caught and logged.")
             study.optimize(
                 objective_func,
                 n_trials=self.args.n_optuna_trials,
-                n_jobs=self.args.n_jobs,
+                n_jobs=self.args.n_jobs_in_hpo,
                 catch=(Exception,)
             )
         
