@@ -313,10 +313,10 @@ def add_STGCN_args(parser):
                         help='Number of ST-Conv blocks')
     
     parser.add_argument('--graph_conv_type', type=str, 
-                        default='graph_conv', 
-                        choices=['cheb_graph_conv', 'graph_conv'], 
+                        default='gcn', 
+                        choices=['gcn', 'cheb'], 
                         help='Graph convolution type')
-
+    
     parser.add_argument('--act_func', type=str, 
                         default='glu', 
                         choices=['glu', 'gtu', 'relu', 'silu'], 

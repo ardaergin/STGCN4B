@@ -158,7 +158,7 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         trial_args.enable_bias = trial.suggest_categorical("enable_bias", [True, False])
         
         # --- STGCN Architecture Hyperparameters ---
-        trial_args.graph_conv_type = trial.suggest_categorical("graph_conv_type", ["cheb_graph_conv", "graph_conv"])
+        trial_args.graph_conv_type = trial.suggest_categorical("graph_conv_type", ["gcn", "cheb"])
         trial_args.act_func = trial.suggest_categorical("act_func", ["glu", "relu", "silu"])
         trial_args.Ks = trial.suggest_categorical("Ks", [2, 3])
         trial_args.st_main_channels = trial.suggest_categorical("st_main_channels", [32, 64, 96])

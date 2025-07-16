@@ -11,13 +11,13 @@ Main enhancements:
     • 'consumption_forecast': predicts a single aggregated target (e.g., building-wide consumption)
     • 'workhour_classification': classifies each time window (e.g., work hour vs. non-work hour)
 - Modular design with output pooling and optional classifiers for consumption/classification tasks
-- Dynamic support for per-block graph shift operators (GSOs), including Chebyshev and simple graph convolutions
+- Dynamic support for per-block graph shift operators (GSOs), including Chebyshev and GCN graph convolutions
 
 Model variants:
 - `STGCNChebGraphConv`: alias of `HomogeneousSTGCN` with `conv_type='cheb'`,
                         uses Chebyshev polynomial graph convolutions.
-- `STGCNGraphConv`: alias of `HomogeneousSTGCN` with `conv_type='simple'`,
-                    uses simple 1-hop graph convolutions
+- `STGCNGraphConv`: alias of `HomogeneousSTGCN` with `conv_type='gcn'`,
+                    uses gcn 1-hop graph convolutions
 
 Note:
 - Input shape: (batch_size, input_channels, time_steps, n_nodes)
@@ -35,7 +35,7 @@ from .layers import STConvBlock, OutputBlock
 class HomogeneousSTGCN(nn.Module):
     """
     Spatio-Temporal Graph Convolutional Network supporting
-    • Chebyshev or simple 1-hop graph convolutions
+    • Chebyshev or GCN 1-hop graph convolutions
     • Four task types: default, measurement_forecast,
       consumption_forecast, workhour_classification
 
@@ -46,7 +46,7 @@ class HomogeneousSTGCN(nn.Module):
     blocks        : List of channel configurations for each block
     n_vertex      : Number of graph nodes
     gso           : Graph shift operator, can be a list for dynamic progression in each block.
-    conv_type     : "cheb" or "simple"
+    conv_type     : "gcn" or "cheb"
     task_type     : "default", 'workhour_classification', 'consumption_forecast', or 'measurement_forecast'
     num_classes   : Number of classes (only used for classification task)
     """
@@ -57,14 +57,14 @@ class HomogeneousSTGCN(nn.Module):
         n_vertex:   int, 
         gso:        torch.Tensor | List[torch.Tensor], 
         *,
-        conv_type:      Literal["simple", "cheb"] = "simple",
+        conv_type:      Literal["gcn", "cheb"] = "gcn",
         task_type:      str = "measurement_forecast",
         num_classes:    int | None = None
     ):
         super().__init__()
         
-        if conv_type not in {"cheb", "simple"}:
-            raise ValueError("conv_type must be 'cheb' or 'simple'")
+        if conv_type not in {"gcn", "cheb"}:
+            raise ValueError("conv_type must be 'gcn' or 'cheb'")
         self.task_type = task_type
         self.blocks = blocks
         self.n_vertex = n_vertex
