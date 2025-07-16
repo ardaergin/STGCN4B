@@ -83,12 +83,13 @@ class HomogeneousSTGCN(nn.Module):
         for l, gso_l in enumerate(self.gso):
             st_layers.append(
                 STConvBlock(
-                    args.Kt, args.Ks, 
-                    n_vertex,
-                    in_channels=blocks[l][-1],
-                    out_channels=blocks[l + 1],
+                    Kt=args.Kt, 
+                    Ks=args.Ks, 
+                    n_vertex=n_vertex,
+                    last_block_channel=blocks[l][-1],
+                    channels=blocks[l+1],
                     act_func=args.act_func,
-                    conv_type=conv_op_name,
+                    graph_conv_type=conv_op_name,
                     gso=gso_l,
                     bias=args.enable_bias,
                     droprate=args.droprate,
@@ -102,10 +103,10 @@ class HomogeneousSTGCN(nn.Module):
 
         if self.Ko > 1:
             self.output = OutputBlock(
-                self.Ko,                    # remaining temporal size
-                in_channels=blocks[-3][-1],  # last ST block's out-channels
-                hidden_channels=blocks[-2],
-                out_channels=blocks[-1][0],
+                Ko=self.Ko,                    # remaining temporal size
+                last_block_channel=blocks[-3][-1],  # last ST block's out-channels
+                channels=blocks[-2],
+                end_channel=blocks[-1][0],
                 n_vertex=n_vertex,
                 act_func=args.act_func,
                 bias=args.enable_bias,
