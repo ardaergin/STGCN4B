@@ -7,7 +7,6 @@ from typing import Dict, Any, List, Tuple, Union
 from argparse import Namespace
 
 import optuna
-from optuna_integration.lightgbm import LightGBMPruningCallback
 
 from ..preparation.preparer import LGBMDataPreparer
 from ..models.LightGBM.train import LGBMTrainer
@@ -130,29 +129,51 @@ class LGBMExperimentRunner(BaseExperimentRunner):
         
         # 1. Setting up the pruning callback
         metric_to_monitor = "auc" if self.args.task_type == "workhour_classification" else "l1" # mae
-        pruning_callback = LightGBMPruningCallback(
-            trial           = trial,
-            metric          = metric_to_monitor,
-            valid_name      = "valid",
-            report_interval = 1
-        )
-                
+
+        def pruning_callback_with_offset(env: object) -> None:
+            """
+            A custom callback to report intermediate results to Optuna with an offset.
+            'env' is a special object passed by LightGBM at each boosting round.
+            """
+            # Find the validation metric in the evaluation results
+            current_score = None
+            for data_name, metric_name, metric_value, _ in env.evaluation_result_list:
+                if data_name == "valid" and metric_name == metric_to_monitor:
+                    current_score = metric_value
+                    break
+            if current_score is None:
+                return
+            # Calculate the global step across all CV folds
+            global_step = env.iteration + (fold_index * self.args.n_estimators)
+            # Report to Optuna and check for pruning
+            trial.report(current_score, global_step)
+            if trial.should_prune():
+                message = f"Trial was pruned at iteration {env.iteration} in fold {fold_index}."
+                raise optuna.exceptions.TrialPruned(message)
+        
         # 2. Get split payload
         X_train, y_train, _ = self._get_split_payload(block_ids=train_block_ids)
         X_val, y_val, _ = self._get_split_payload(block_ids=val_block_ids)
-
+        
         # 3. Training
         trainer = LGBMTrainer(
             args = trial_params, 
             mode = "hpo")
-        model, history, training_result = trainer.train_model(
-            X_train, y_train, 
-            X_val, y_val, 
-            track_train_metric=True,
-            use_early_stopping = True,
-            verbose = True,
-            callbacks=[pruning_callback]
-        )
+        
+        # Note: We need a try-except block because our callback raises TrialPruned,
+        # which we need to catch and let Optuna handle.
+        try:
+            model, history, training_result = trainer.train_model(
+                X_train, y_train, 
+                X_val, y_val, 
+                track_train_metric = True,
+                use_early_stopping = True,
+                verbose = True,
+                callbacks = [pruning_callback_with_offset]
+            )
+        except optuna.exceptions.TrialPruned as e:
+            # If the trial is pruned, we re-raise the exception so Optuna can catch it.
+            raise e
 
         return training_result
     
