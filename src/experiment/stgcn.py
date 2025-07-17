@@ -1,7 +1,8 @@
 #!/usr/bin/env python
 
 from copy import deepcopy
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Union
+from argparse import Namespace
 import numpy as np
 import torch
 import optuna
@@ -214,7 +215,7 @@ class STGCNExperimentRunner(BaseExperimentRunner):
 
     def _train_and_evaluate_final_model(
         self, 
-        params:             Dict[str, Any],
+        params:             Union[Namespace, Dict[str, Any]],
         epochs:             int = None,
         threshold:          float = None,
         *,
@@ -226,9 +227,14 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         
         # Get the final parameters
         final_params = deepcopy(self.args)
-        for key, value in vars(params).items():
+        if isinstance(params, dict):
+            items = params.items()
+        else:
+            items = vars(params).items()
+        
+        for key, value in items:
             setattr(final_params, key, value)
-
+        
         # Expose the epochs to args
         # NOTE. Using a heuristic: train for slightly longer on the full dataset.
         if epochs is not None:

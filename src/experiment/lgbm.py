@@ -3,7 +3,8 @@
 from copy import deepcopy
 import numpy as np
 import pandas as pd
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any, List, Tuple, Union
+from argparse import Namespace
 
 import optuna
 from optuna_integration.lightgbm import LightGBMPruningCallback
@@ -157,7 +158,7 @@ class LGBMExperimentRunner(BaseExperimentRunner):
     
     def _train_and_evaluate_final_model(
         self, 
-        params:             Dict[str, Any],
+        params:             Union[Namespace, Dict[str, Any]],
         epochs:             int = None,
         threshold:          float = None,
         *,
@@ -169,7 +170,12 @@ class LGBMExperimentRunner(BaseExperimentRunner):
         
         # Get the final parameters
         final_params = deepcopy(self.args)
-        for key, value in vars(params).items():
+        if isinstance(params, dict):
+            items = params.items()
+        else:
+            items = vars(params).items()
+
+        for key, value in items:
             setattr(final_params, key, value)
         
         # Expose the epochs to args
