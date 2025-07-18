@@ -183,8 +183,8 @@ def add_base_modelling_args(parser):
                         help='Model type')
     
     # Task-related arguments
-    parser.add_argument('--task_type', type=str, default='consumption_forecast',
-                        choices=['workhour_classification', 'consumption_forecast', 'measurement_forecast'], 
+    parser.add_argument('--task_type', type=str, default='measurement_forecast',
+                        choices=['consumption_forecast', 'measurement_forecast'], 
                         help='Task type')
     parser.add_argument('--measurement_variable', type=str, default='Temperature',
                         choices=['Temperature', 'Humidity', 'CO2Level'],
