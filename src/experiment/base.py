@@ -37,7 +37,6 @@ class BaseExperimentRunner(ABC):
                   
                   If runing a full experiment, it MUST include:
                     - `split_id`: A unique integer for this experiment run, used for seeding.
-                    - `n_experiments`: The total number of parallel experiments being run.
                     - `seed`: A base random seed.
                     - `n_optuna_trials`: The number of HPO trials to run.
         """
@@ -101,7 +100,7 @@ class BaseExperimentRunner(ABC):
             logger.info(f"===== Starting Single Test Run | Seed: {self.seed} =====")
             self._run_test()
         elif self.run_mode == 'experiment':
-            logger.info(f"===== Starting HPO Experiment [{self.experiment_id+1}/{self.args.n_experiments}] | Seed: {self.seed} =====")
+            logger.info(f"===== Starting HPO Experiment [{self.experiment_id+1}] | Seed: {self.seed} =====")
             self._run_experiment()
         else:
             raise ValueError(f"Invalid run_mode: {self.run_mode}. Choose from 'experiment' or 'test'.")

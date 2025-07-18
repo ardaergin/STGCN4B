@@ -231,9 +231,6 @@ def add_base_modelling_args(parser):
                         help='A space-separated list of feature columns to drop from the dataframe before training (e.g., --features-to-drop col_a col_b).')
     
     ########## Experimental Setup ##########
-    parser.add_argument('--n_experiments', type=int,
-                        default=5,
-                        help='Number of outer loop train-test splits for nested CV.')
     parser.add_argument('--experiment_id', type=int, 
                         default=0,
                         help='The ID of the outer loop train-test split to run (for parallel execution).')

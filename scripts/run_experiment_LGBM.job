@@ -101,7 +101,6 @@ cd $PERSISTENT_PROJECT_DIR
 
 srun python -m src.experiment.lgbm \
     --run_mode experiment \
-    --n_experiments 1 \
     --experiment_id ${SLURM_ARRAY_TASK_ID} \
     --n_jobs_in_hpo 5 \
     --n_optuna_trials 50 \
