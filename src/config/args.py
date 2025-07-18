@@ -70,7 +70,7 @@ def add_OfficeGraph_args(parser):
                         default='2023-01-29 00:00:00', 
                         help='End time for data')
     parser.add_argument('--interval', type=str, 
-                        default="1h",
+                        default="30min",
                         help='Frequency of time buckets as a pandas offset string e.g., ("15min", "30min", "1h", "2h")')
     parser.add_argument('--use_sundays', action='store_true',
                         help='Include Sundays in the time blocks (default: False)')
