@@ -3,10 +3,10 @@
 #SBATCH --job-name=lgbm-array
 #SBATCH --partition=rome
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=10
 #SBATCH --mem=64G
 #SBATCH --time=06:00:00
-#SBATCH --array=0-4
+#SBATCH --array=0
 #SBATCH --output=logs/experiments/lgbm/%A_%a.out # %A=job ID, %a=array task ID
 #SBATCH --error=logs/experiments/lgbm/%A_%a.err
 
@@ -101,10 +101,10 @@ cd $PERSISTENT_PROJECT_DIR
 
 srun python -m src.experiment.lgbm \
     --run_mode experiment \
-    --parellelize_experiments \
     --n_experiments 5 \
     --experiment_id ${SLURM_ARRAY_TASK_ID} \
-    --n_jobs_in_hpo 5 \
+    --n_jobs_in_hpo 10 \
+    --n_optuna_trials 50 \
     --data_dir $SCRATCH_DATA_DIR \
     --output_dir $SCRATCH_RUN_OUTPUT_DIR \
     --processed_data_dir $SCRATCH_PROCESSED_DATA_DIR \
