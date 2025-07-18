@@ -40,7 +40,7 @@ for (( i=0; i<${num_experiments}; i++ )); do
     echo "----------------------------------------------------"
 
     # Construct and execute the sbatch command
-    sbatch scripts/run_LGBM.job \
+    sbatch scripts/run_experiment_LGBM.job \
         --folder_suffix "${suffix}" \
         --forecast_horizons "${horizon}" \
         --prediction_type "${PREDICTION_TYPE}" \
