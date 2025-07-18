@@ -21,7 +21,7 @@ FORECAST_HORIZONS=(1 2 3 4 5 6 7 8)
 # Other parameters can be added here in the same way.
 # For this example, we'll keep the other arguments constant.
 PREDICTION_TYPE="delta"
-MEASUREMENT_VARIABLE="temperature"
+MEASUREMENT_VARIABLE="Temperature"
 
 # --- 2. LOOP THROUGH PARAMETERS AND SUBMIT JOBS ---
 # Get the total number of experiments to run.
