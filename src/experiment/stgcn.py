@@ -244,7 +244,7 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         # Expose the epochs to args
         # NOTE. Using a heuristic: train for slightly longer on the full dataset.
         if epochs is not None:
-            final_params.epochs = int(np.ceil(epochs * 1.1))
+            final_params.epochs = int(np.ceil(epochs * self.args.final_epoch_multiplier))
             logger.info(f"Inferred optimal epochs from CV: {epochs:.0f}. "
                         f"Training final model for {final_params.epochs} rounds (1.1x).")
         

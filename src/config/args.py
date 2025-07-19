@@ -203,8 +203,12 @@ def add_base_modelling_args(parser):
     # Common training arguments
     parser.add_argument('--batch_size', type=int, default=144, 
                         help='Batch size')
-    parser.add_argument('--epochs', type=int, default=300, 
+    parser.add_argument('--epochs', type=int, 
+                        default=50, 
                         help='Number of epochs')
+    parser.add_argument('--final_epoch_multiplier', type=int, 
+                        default=1.2, 
+                        help='Multiply the optimal epochs with this factor for the final training.')
     
     # Stratified data splitting
     parser.add_argument('--stratum_size', type=int, 
