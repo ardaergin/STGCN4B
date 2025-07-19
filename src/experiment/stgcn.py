@@ -202,8 +202,10 @@ class STGCNExperimentRunner(BaseExperimentRunner):
 
         # Compile model if requested
         if self.args.compile_model:
-            model = torch.compile(model)
-
+            logger.info("Compiling model...")
+            model = torch.compile(model=model, mode="reduce-overhead")
+            logger.info("Model compiled.")
+        
         model, history, training_result = train_model(
             trial_params, model, criterion, optimizer, scheduler, 
             train_loader    = loaders['train_loader'], 
@@ -259,8 +261,10 @@ class STGCNExperimentRunner(BaseExperimentRunner):
 
         # Compile model if requested
         if self.args.compile_model:
-            model = torch.compile(model)
-
+            logger.info("Compiling model...")
+            model = torch.compile(model=model, mode="reduce-overhead")
+            logger.info("Model compiled.")
+        
         model, history, training_result = train_model(
             final_params, model, criterion, optimizer, scheduler, 
             train_loader    = loaders['train_loader'], 
