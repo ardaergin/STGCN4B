@@ -230,9 +230,14 @@ class BaseExperimentRunner(ABC):
         """Sets up and runs an Optuna study."""
         # Storage
         db_path = os.path.join(self.output_dir, "optuna_study.db")
-        storage = f"sqlite:///{db_path}"
-        logger.info(f"Set Optuna study storage to: {storage}")
-                    
+        storage_url = f"sqlite:///{db_path}"
+        
+        storage = optuna.storages.RDBStorage(
+            url=storage_url,
+            engine_kwargs={"connect_args": {"timeout": 20}}  # Wait 20 seconds if DB is locked
+        )
+        logger.info(f"Set Optuna study storage to: {storage_url} with a 20s timeout.")
+                            
         # Make the cross-validation splits
         self.splitter.get_cv_splits()
         
