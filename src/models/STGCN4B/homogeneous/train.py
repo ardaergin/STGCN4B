@@ -1,3 +1,4 @@
+import time
 from typing import Tuple, Dict, Any
 import torch
 import torch.nn as nn
@@ -181,6 +182,8 @@ def train_model(
     
     # Training loop
     for epoch in range(args.epochs):
+        epoch_start_time = time.time()
+
         # Training phase
         model.train()
         running_train_loss = 0.0
@@ -280,14 +283,28 @@ def train_model(
             history.log_epoch("valid", **valid_metrics)
             ########## END OF LOGGING VALIDATION METRICS ##########
             
-            ########## PRUNING LOGIC ##########
+            epoch_end_time = time.time()
+            epoch_duration = epoch_end_time - epoch_start_time
+
+            ########## Pruning: extremely slow trials ##########
+            if trial and epoch_duration > args.max_epoch_duration:
+                logger.warning(
+                    f"Pruning trial {trial.number} for exceeding time limit. "
+                    f"Epoch duration ({epoch_duration:.2f}s) > "
+                    f"limit ({args.max_epoch_duration}s)."
+                )
+                # This stops the trial and tells Optuna it was pruned
+                raise optuna.exceptions.TrialPruned()
+            ########## End of Pruning: extremely slow trials ##########
+            
+            ########## Pruning: bad trials ##########
             if trial:
                 optuna_metric_value = valid_metrics.get(optuna_metric, 0.0)
                 trial.report(optuna_metric_value, epoch + epoch_offset)
                 if trial.should_prune():
                     logger.info(f"Pruning trial {trial.number} at epoch {epoch} due to poor performance.")
                     raise optuna.exceptions.TrialPruned()
-            ########## END OF PRUNING LOGIC ##########
+            ########## End of Pruning: bad trials ##########
             
             # Logging
             metrics_log_str = " | ".join([f"{k}: {v:.4f}" for k, v in valid_metrics.items()])

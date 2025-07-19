@@ -258,6 +258,11 @@ def add_base_modelling_args(parser):
     parser.add_argument('--interval_steps', type=int, default=3,
                         help='Interval (in steps/epochs) at which to check for pruning possibilities '
                              'after the warmup period is over.')
+    
+    # Pruning slow models
+    parser.add_argument("--max_epoch_duration", type=int,
+                        default=45,
+                        help="Maximum duration for a single epoch in seconds. Trials exceeding this will be pruned during HPO.")
 
 
 def add_STGCN_args(parser):
