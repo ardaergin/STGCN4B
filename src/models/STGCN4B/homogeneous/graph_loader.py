@@ -193,8 +193,14 @@ def get_data_loaders(
             n_his=args.n_his)
         
     # 3) Determine windows_per_block for batch_size
-    windows_per_block = block_size - (args.n_his + max_target_offset) + 1
-    logger.info(f"Calculated batch size: {windows_per_block}")
+    if args.batch_size is not None:
+        batch_size = args.batch_size
+        logger.info(f"Using user-provided batch size: {batch_size}")
+    else:
+        windows_per_block = block_size - (args.n_his + max_target_offset) + 1
+        batch_size = windows_per_block
+        logger.info(f"Batch size not provided. Calculated based on block size: {batch_size}")
+    logger.info(f"Using batch size: {batch_size}")
     
     # 4) Create DataLoaders (no shuffling; windows are pre‐segmented per block)
     train_loader = DataLoader(
@@ -202,6 +208,7 @@ def get_data_loaders(
         batch_size=windows_per_block,
         shuffle=False,
         collate_fn=homo_collate,
+        drop_last=False,
     )
     val_loader = None
     if val_ds:
@@ -210,12 +217,14 @@ def get_data_loaders(
             batch_size=windows_per_block,
             shuffle=False,
             collate_fn=homo_collate,
+            drop_last=False,
         )
     test_loader = DataLoader(
         test_ds,
         batch_size=windows_per_block,
         shuffle=False,
         collate_fn=homo_collate,
+        drop_last=False,
     )
     
     # 5) Return everything downstream might need

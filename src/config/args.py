@@ -201,8 +201,9 @@ def add_base_modelling_args(parser):
                         help='Enable CUDA')
     
     # Common training arguments
-    parser.add_argument('--batch_size', type=int, default=144, 
-                        help='Batch size')
+    parser.add_argument('--batch_size', type=int, 
+                        default=None, 
+                        help='Batch size (if not set, calculated based on block size)')
     parser.add_argument('--epochs', type=int, 
                         default=50, 
                         help='Number of epochs')
