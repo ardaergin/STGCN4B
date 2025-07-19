@@ -199,7 +199,11 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         model, criterion, optimizer, scheduler = setup_model(
             trial_params, 
             data_for_setup)
-        
+
+        # Compile model if requested
+        if self.args.compile_model:
+            model = torch.compile(model)
+
         model, history, training_result = train_model(
             trial_params, model, criterion, optimizer, scheduler, 
             train_loader    = loaders['train_loader'], 
@@ -252,7 +256,11 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         model, criterion, optimizer, scheduler = setup_model(
             final_params, 
             data_for_setup)
-        
+
+        # Compile model if requested
+        if self.args.compile_model:
+            model = torch.compile(model)
+
         model, history, training_result = train_model(
             final_params, model, criterion, optimizer, scheduler, 
             train_loader    = loaders['train_loader'], 
