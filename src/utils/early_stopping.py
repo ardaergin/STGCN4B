@@ -14,7 +14,7 @@ class EarlyStopping:
     """
     def __init__(self, direction: str = "minimize", 
                  patience: int = 10, 
-                 delta: float = 1e-5,
+                 delta: float = 0.01,
                  verbose: bool = False):
         assert direction in {"minimize", "maximize"}
         self.direction  = direction
