@@ -278,12 +278,12 @@ def add_STGCN_args(parser):
     (Yu et al., 2018)
     """
 
-    parser.add_argument('--no-compile',
-                        action='store_false',
+    parser.add_argument('--compile_model',
+                        action='store_true',
                         dest='compile_model',
-                        help='Disable model compilation. (Default: compilation is enabled).')
-    parser.set_defaults(compile_model=True)
-
+                        help='Enable model compilation. (Default: compilation is disabled).')
+    parser.set_defaults(compile_model=False)
+    
     ########## GSO ##########
 
     parser.add_argument('--gso_mode', type=str, default='dynamic',
