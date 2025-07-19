@@ -205,7 +205,7 @@ def get_data_loaders(
     # 4) Create DataLoaders (no shuffling; windows are pre‐segmented per block)
     train_loader = DataLoader(
         train_ds,
-        batch_size=windows_per_block,
+        batch_size=batch_size,
         shuffle=False,
         collate_fn=homo_collate,
         drop_last=False,
@@ -214,14 +214,14 @@ def get_data_loaders(
     if val_ds:
         val_loader = DataLoader(
             val_ds,
-            batch_size=windows_per_block,
+            batch_size=batch_size,
             shuffle=False,
             collate_fn=homo_collate,
             drop_last=False,
         )
     test_loader = DataLoader(
         test_ds,
-        batch_size=windows_per_block,
+        batch_size=batch_size,
         shuffle=False,
         collate_fn=homo_collate,
         drop_last=False,
