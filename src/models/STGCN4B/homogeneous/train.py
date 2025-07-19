@@ -532,4 +532,4 @@ class MaskedMSELoss(nn.Module):
         num_valid_points = torch.sum(mask)
         if num_valid_points > 0:
             return torch.sum(masked_squared_error) / num_valid_points
-        return torch.tensor(0.0, device=preds.device)
+        return torch.sum(preds * 0.0)
