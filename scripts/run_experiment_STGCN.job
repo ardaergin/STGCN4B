@@ -117,6 +117,9 @@ srun python -m src.experiment.stgcn \
     --model_family graph \
     --model STGCN \
     --enable_cuda \
+    --amp \
+    --amp_dtype bf16 \
+    --tf32 \
     "$@"
 
 

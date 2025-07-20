@@ -310,6 +310,11 @@ def main():
     from ..config.args import parse_args
     args = parse_args()
     
+    if args.tf32:
+        torch.set_float32_matmul_precision('high')
+        torch.backends.cuda.matmul.allow_tf32 = True
+        torch.backends.cudnn.allow_tf32 = True
+    
     runner = STGCNExperimentRunner(args)
     runner.run()
 

@@ -158,6 +158,19 @@ def train_model(
         epoch_offset: int = 0,
         ) -> Tuple[nn.Module, TrainingHistory, TrainingResult]:
     logger.info("Starting model training...")
+
+    use_amp   = getattr(args, 'amp', False)
+    amp_dtype = (torch.bfloat16 
+                if getattr(args, 'amp_dtype', 'bf16') == 'bf16' 
+                else torch.float16)
+    scaler = torch.cuda.amp.GradScaler(
+        enabled = use_amp and amp_dtype == torch.float16
+    )
+    logger.info(
+        f"AMP: {use_amp} (dtype={amp_dtype}), "
+        f"GradScaler enabled: {scaler.is_enabled()}, "
+        f"TF32: {torch.backends.cuda.matmul.allow_tf32}"
+    )
     
     # Instantiate training history
     train_metric        = "logloss" if args.task_type == "workhour_classification" else "mse"
@@ -194,30 +207,32 @@ def train_model(
             y_batch = y_batch.to(device, non_blocking=True)
             mask_batch = mask_batch.to(device, non_blocking=True)
             # NOTE: we are not using the reconstruction_batch here, so left it as "_"
+            
             # Zero the gradients
             optimizer.zero_grad()
 
             # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
             x = X_batch.permute(0, 3, 1, 2)
-
-            # Forward pass
-            outputs = model(x)
             
-            if args.task_type == "workhour_classification":
-                loss_train = criterion(outputs.squeeze(), y_batch.squeeze().float())
-                running_train_loss += loss_train.item()
-            else: # Forecasting tasks
-                preds = outputs
-                targets = y_batch.float()
-                mask = mask_batch
-                loss_train = criterion(preds, targets, mask)
+            # Forward pass (with Automatic Mixed Precision)
+            with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+                outputs = model(x)
+                if args.task_type == "workhour_classification":
+                    loss_train = criterion(outputs.squeeze(), y_batch.squeeze().float())
+                else: # Forecasting tasks
+                    loss_train = criterion(outputs, y_batch, mask_batch)
 
-                # Update running train loss: accumulating the per-batch MSE into running_train_loss
-                running_train_loss += loss_train.item()
-            
-            # Backward pass
-            loss_train.backward()
-            optimizer.step()
+            # Running loss (calculated outside the autocast context)
+            running_train_loss += loss_train.item()
+
+            # Backward pass (with GradScaler)
+            if scaler.is_enabled():
+                scaler.scale(loss_train).backward()
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss_train.backward()
+                optimizer.step()
         
         # Average training loss for the epoch
         epoch_train_loss = running_train_loss / len(train_loader) if len(train_loader) > 0 else 0.0
@@ -235,7 +250,7 @@ def train_model(
             # Classification:
             all_probs, all_targets_class = [], [] 
             
-            with torch.no_grad():
+            with torch.inference_mode():
                 for X_batch, y_batch, mask_batch, _ in val_loader:
                     X_batch = X_batch.to(device, non_blocking=True)
                     y_batch = y_batch.to(device, non_blocking=True)
@@ -245,18 +260,24 @@ def train_model(
                     x = X_batch.permute(0, 3, 1, 2)
 
                     # Forward pass
-                    outputs = model(x)
-
+                    with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+                        outputs = model(x)
+                        if args.task_type == "workhour_classification":
+                            if outputs.dim() == 1:
+                                outputs = outputs.unsqueeze(1)  # (B,1)
+                            y_flat = y_batch.float().view(outputs.size(0), -1)  # (B,1) if binary
+                            loss_val = criterion(outputs, y_flat)
+                        else:
+                            loss_val = criterion(outputs, y_batch, mask_batch)
+                    
                     if args.task_type == "workhour_classification":
-                        loss_val = criterion(outputs.squeeze(), y_batch.squeeze().float())
-                        probs = torch.sigmoid(outputs.squeeze())
+                        probs = torch.sigmoid(outputs).view(-1)
                         all_probs.extend(probs.cpu().tolist())
-                        all_targets_class.extend(y_batch.squeeze().cpu().tolist())
+                        all_targets_class.extend(y_flat.view(-1).cpu().tolist())
                     else: # Forecasting tasks
                         preds = outputs
                         targets = y_batch.float()
                         mask = mask_batch
-                        loss_val = criterion(preds, targets, mask)
                         
                         # Collect only valid predictions and targets for R² score
                         valid_preds = preds[mask == 1]
@@ -349,11 +370,12 @@ def train_model(
         if args.task_type == "workhour_classification":
             model.eval()
             probs, labels = [], []
-            with torch.no_grad():
+            with torch.inference_mode():
                 for X, y, *_ in val_loader:
                     X = X.to(device, non_blocking=True)
                     y = y.to(device, non_blocking=True)
-                    outputs = model(X.permute(0, 3, 1, 2)).squeeze()
+                    with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+                        outputs = model(X.permute(0, 3, 1, 2)).squeeze()
                     probs.extend(torch.sigmoid(outputs).cpu().numpy())
                     labels.extend(y.cpu().numpy())
             optimal_threshold = find_optimal_f1_threshold(labels, probs)
@@ -386,6 +408,15 @@ def evaluate_model(
     - optionally also as a DataFrame in `per_horizon_df`
     """
     logger.info("Evaluating model on test set...")
+    use_amp   = getattr(args, 'amp', False)
+    amp_dtype = (torch.bfloat16 
+                if getattr(args, 'amp_dtype', 'bf16') == 'bf16' 
+                else torch.float16)
+    logger.info(
+        f"AMP: {use_amp} (dtype={amp_dtype}), "
+        f"TF32: {torch.backends.cuda.matmul.allow_tf32}"
+    )
+
     model.eval()
     
     ####################
@@ -394,15 +425,18 @@ def evaluate_model(
     
     if args.task_type == "workhour_classification":
         all_probs, all_labels = [], []
-        with torch.no_grad():
+        with torch.inference_mode():
             for X_batch, y_batch, *_ in test_loader:
                 X_batch = X_batch.to(device, non_blocking=True)
                 y_batch = y_batch.to(device, non_blocking=True)
                 
                 # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
                 x = X_batch.permute(0, 3, 1, 2)
+
                 # Forward pass
-                outputs = model(x)
+                with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
+                    outputs = model(x)
+                
                 preds = torch.sigmoid(outputs.squeeze())
                 # Add probabilities and labels to lists
                 all_probs.extend(preds.cpu().tolist())
@@ -426,7 +460,7 @@ def evaluate_model(
     targets_norm_per_h = [[] for _ in range(H)]
     y_source_per_h = [[] for _ in range(H)] if args.prediction_type == "delta" else None
     
-    with torch.no_grad():
+    with torch.inference_mode():
         for X_batch, y_batch, mask_batch, y_source_batch in test_loader:
             X_batch = X_batch.to(device, non_blocking=True)
             y_batch = y_batch.to(device, non_blocking=True)
@@ -435,8 +469,13 @@ def evaluate_model(
 
             # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
             x = X_batch.permute(0, 3, 1, 2)
+
             # Forward pass
-            preds_norm = model(x)
+            with torch.autocast(device_type=device.type, dtype=(torch.bfloat16 
+                  if getattr(args,'amp_dtype','bf16')=='bf16' else torch.float16),
+                  enabled=getattr(args,'amp',False)):
+                preds_norm = model(x)
+            
             # Get targets & masks
             targets_norm = y_batch.float()
             mask = mask_batch

@@ -288,6 +288,15 @@ def add_STGCN_args(parser):
                         default=8,
                         help='Number of worker processes for data loading.')
     
+    # Autocast
+    parser.add_argument('--amp', action='store_true', 
+                        help='Enable autocast mixed precision')
+    parser.add_argument('--amp_dtype', choices=['bf16', 'fp16'], 
+                        default='bf16',
+                        help='Autocast dtype (bf16 recommended on H100)')
+    parser.add_argument('--tf32', action='store_true', 
+                        help='Enable TF32 matmul speedups for FP32 ops')
+    
     ########## GSO ##########
 
     parser.add_argument('--gso_mode', type=str, default='dynamic',
