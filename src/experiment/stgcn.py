@@ -131,25 +131,21 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         """The objective function for Optuna, performing k-fold cross-validation."""
         trial_args = deepcopy(self.args)
         
-        ########## Conditional sampling for n_his ##########
+        ########## Preflight pruning ##########
         # Handling the possible invalid architecture
         trial_args.stblock_num = trial.suggest_categorical("stblock_num", [2, 3, 4, 5])
         trial_args.Kt = trial.suggest_categorical("Kt", [2, 3])
-        
-        # Suggesting n_his with a pre-flight chcke
+        trial.suggest_int
+        # Suggesting n_his
         all_n_his_options = [12, 18, 24, 30, 36]
+        trial_args.n_his = trial.suggest_categorical("n_his", all_n_his_options)
+        
+        # Check if the combination is valid. If not, PRUNE.
         min_required_n_his = trial_args.stblock_num * 2 * (trial_args.Kt - 1) + 1
-        valid_n_his_options = [n for n in all_n_his_options if n >= min_required_n_his]
+        if trial_args.n_his < min_required_n_his:
+            raise optuna.exceptions.TrialPruned("Invalid architecture.")
         
-        # If no valid options exist for this combination, prune the trial.
-        # Although, with the current settings, there should always be valid options.
-        if not valid_n_his_options:
-            raise optuna.exceptions.TrialPruned(
-                f"No valid n_his for stblock_num={trial_args.stblock_num} and Kt={trial_args.Kt}"
-            )
-        trial_args.n_his = trial.suggest_categorical("n_his", valid_n_his_options)
-        
-        ########## End of Conditional sampling for n_his ##########
+        ########## End of Preflight pruning ##########
         
         # --- General Training Hyperparameters ---
         trial_args.lr = trial.suggest_float("lr", 5e-5, 1e-3, log=True)
