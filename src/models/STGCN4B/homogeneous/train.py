@@ -314,7 +314,8 @@ def train_model(
             epoch_duration = epoch_end_time - epoch_start_time
 
             ########## Pruning: extremely slow trials ##########
-            if trial and epoch_duration > args.max_epoch_duration:
+            if trial and epoch > 0 and epoch_duration > args.max_epoch_duration:
+                # NOTE: Skipping first epoch due to model.compile()
                 logger.warning(
                     f"Pruning trial {trial.number} for exceeding time limit. "
                     f"Epoch duration ({epoch_duration:.2f}s) > "
