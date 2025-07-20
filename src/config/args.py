@@ -204,6 +204,13 @@ def add_base_modelling_args(parser):
     parser.add_argument('--batch_size', type=int, 
                         default=64, 
                         help='Batch size')
+    
+    parser.add_argument('--do_not_drop_last_train_batch', action='store_false', 
+                        dest='drop_last_batch',
+                        help='If specified, the last batch of the training set will NOT be dropped. '
+                            'By default, the last batch IS dropped.')
+    parser.set_defaults(drop_last_train_batch=True)
+
     parser.add_argument('--epochs', type=int, 
                         default=50, 
                         help='Number of epochs')
