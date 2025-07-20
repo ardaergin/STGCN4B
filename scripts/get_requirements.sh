@@ -29,6 +29,9 @@ pip install --user wheel==0.45.1
 # PyTorch Geometric
 pip install --user torch_geometric -f https://data.pyg.org/whl/torch-2.1.2+cu121.html
 
+# Triton (compatible with PyTorch 2.1.2)
+pip install --user triton==2.1.0
+
 # RDF and graph processing
 pip install --user rdflib==7.1.4
 
