@@ -1,4 +1,6 @@
-from typing import Dict, List
+from typing import Dict, List, Any
+import random
+import numpy as np
 import torch
 from torch.utils.data import Dataset, DataLoader
 
@@ -21,7 +23,7 @@ class BlockAwareSTGCNDataset(Dataset):
         target_tensor: torch.Tensor of shape (T, ...) giving the label/target for each bucket
         target_mask_tensor: torch.Tensor of shape (T, ...), binary mask for the target
         target_source_tensor: torch.Tensor of shape (T, ...), original source values for the target (for delta prediction)
-        max_target_offset: The maximum future step required by any target. Used to ensure sample validity.
+        max_horizon: The maximum future step required by any target. Used to ensure sample validity.
         n_his: history length (number of past buckets)
     """
 
@@ -33,7 +35,7 @@ class BlockAwareSTGCNDataset(Dataset):
         target_tensor: torch.Tensor,
         target_mask_tensor: torch.Tensor,
         target_source_tensor: torch.Tensor,
-        max_target_offset: int,
+        max_horizon: int,
         n_his: int,
     ):
         self.args = args
@@ -43,13 +45,13 @@ class BlockAwareSTGCNDataset(Dataset):
         self.n_his = n_his
         self.target_mask_tensor = target_mask_tensor
         self.target_source_tensor = target_source_tensor
-        self.max_target_offset = max_target_offset
+        self.max_horizon = max_horizon
 
         # Precompute valid samples as (block_idx, start_pos)
         self.samples: List[tuple] = []
         for b_idx, block in enumerate(self.blocks):
             L = len(block)
-            required_length = n_his + max_target_offset
+            required_length = n_his + max_horizon
             if L < required_length:
                 continue
             # every start such that [start ... start+n_his-1] fits within block
@@ -123,15 +125,29 @@ def homo_collate(batch):
     
     return X_batch, y_batch, m_batch, s_batch
 
+def seed_worker(worker_id: int):
+    """
+    Helper function to set a unique seed for each DataLoader worker.
+
+    The `worker_id` parameter is unused but required by the `worker_init_fn` interface.
+    PyTorch's DataLoader automatically seeds each worker with `base_seed + worker_id`,
+    which is retrieved via `torch.initial_seed()`. This function uses that unique
+    seed to seed other libraries like NumPy and Python's random module.
+    """
+    worker_seed = torch.initial_seed() % 2**32
+    np.random.seed(worker_seed)
+    random.seed(worker_seed)
+
 def get_data_loaders(
-        args,
+        args: Any,
+        seed: int,
         blocks: Dict[int, Dict[str, List[int]]],
         block_size: int,
         feature_tensor: torch.Tensor,
         target_tensor: torch.Tensor,
         target_mask_tensor: torch.Tensor,
         target_source_tensor: torch.Tensor,
-        max_target_offset: int,
+        max_horizon: int,
         *, # for safety
         train_block_ids: List[int],
         val_block_ids:   List[int],
@@ -166,7 +182,7 @@ def get_data_loaders(
         target_tensor=target_tensor,
         target_mask_tensor=target_mask_tensor,
         target_source_tensor=target_source_tensor,
-        max_target_offset=max_target_offset,
+        max_horizon=max_horizon,
         n_his=args.n_his)
     
     # If no validation set is provided, set it to None
@@ -179,7 +195,7 @@ def get_data_loaders(
             target_tensor=target_tensor,
             target_mask_tensor=target_mask_tensor,
             target_source_tensor=target_source_tensor,
-            max_target_offset=max_target_offset,
+            max_horizon=max_horizon,
             n_his=args.n_his)
         
     test_ds = BlockAwareSTGCNDataset(
@@ -189,42 +205,49 @@ def get_data_loaders(
             target_tensor=target_tensor,
             target_mask_tensor=target_mask_tensor,
             target_source_tensor=target_source_tensor,
-            max_target_offset=max_target_offset,
+            max_horizon=max_horizon,
             n_his=args.n_his)
         
-    # 3) Determine windows_per_block for batch_size
-    if args.batch_size is not None:
-        batch_size = args.batch_size
-        logger.info(f"Using user-provided batch size: {batch_size}")
-    else:
-        windows_per_block = block_size - (args.n_his + max_target_offset) + 1
-        batch_size = windows_per_block
-        logger.info(f"Batch size not provided. Calculated based on block size: {batch_size}")
-    logger.info(f"Using batch size: {batch_size}")
+    # 3) Logging related batch size & windows per block
+    windows_per_block = block_size - (args.n_his + max_horizon) + 1
+    logger.info(f"Windows per block: {windows_per_block}")
+    logger.info(f"Batch size: {args.batch_size}")
     
-    # 4) Create DataLoaders (no shuffling; windows are pre‐segmented per block)
+    # Create a generator for reproducible shuffling
+    generator = torch.Generator()
+    generator.manual_seed(seed)
+
+    # 4) Create DataLoaders
     train_loader = DataLoader(
         train_ds,
-        batch_size=batch_size,
-        shuffle=False,
+        batch_size=args.batch_size,
+        shuffle=True,
         collate_fn=homo_collate,
-        drop_last=False,
+        drop_last=False, # Not using BatchNorm, so this is not an issue
+        generator=generator,
+        worker_init_fn=seed_worker,
+        num_workers=args.num_dataloader_workers,
+        pin_memory=True
     )
     val_loader = None
     if val_ds:
         val_loader = DataLoader(
             val_ds,
-            batch_size=batch_size,
+            batch_size=args.batch_size,
             shuffle=False,
             collate_fn=homo_collate,
             drop_last=False,
+            num_workers=args.num_dataloader_workers,
+            pin_memory=True
         )
     test_loader = DataLoader(
         test_ds,
-        batch_size=batch_size,
+        batch_size=args.batch_size,
         shuffle=False,
         collate_fn=homo_collate,
         drop_last=False,
+        num_workers=args.num_dataloader_workers,
+        pin_memory=True
     )
     
     # 5) Return everything downstream might need
@@ -234,6 +257,6 @@ def get_data_loaders(
         "test_loader": test_loader,
     }
     
-    logger.info("Block-aware homogeneous data loaders ready (using precomputed blocks).")
+    logger.info("Block-aware homogeneous data loaders ready.")
     
     return loaders

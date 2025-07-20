@@ -202,8 +202,8 @@ def add_base_modelling_args(parser):
     
     # Common training arguments
     parser.add_argument('--batch_size', type=int, 
-                        default=None, 
-                        help='Batch size (if not set, calculated based on block size)')
+                        default=64, 
+                        help='Batch size')
     parser.add_argument('--epochs', type=int, 
                         default=50, 
                         help='Number of epochs')
@@ -283,6 +283,10 @@ def add_STGCN_args(parser):
                         dest='compile_model',
                         help='Enable model compilation. (Default: compilation is disabled).')
     parser.set_defaults(compile_model=False)
+    
+    parser.add_argument('--num_dataloader_workers', type=int,
+                        default=8,
+                        help='Number of worker processes for data loading.')
     
     ########## GSO ##########
 

@@ -75,10 +75,10 @@ def setup_model(
     else:
         raise ValueError(f"Unknown gso_mode: {args.gso_mode!r}. Must be 'static' or 'dynamic'.")
     
-    batch_sample = next(iter(data['train_loader']))
-    X_batch_sample, y_batch = batch_sample[0], batch_sample[1]
-    logger.info(f"Sample batch input shape (X): {X_batch_sample.shape}  # shape=(batch_size, n_his, n_nodes, n_features)")
-    logger.info(f"Sample target shape: {y_batch.shape}")
+    # batch_sample = next(iter(data['train_loader']))
+    # X_batch_sample, y_batch = batch_sample[0], batch_sample[1]
+    # logger.info(f"Sample batch input shape (X): {X_batch_sample.shape}  # shape=(batch_size, n_his, n_nodes, n_features)")
+    # logger.info(f"Sample target shape: {y_batch.shape}")
     
     blocks = []
     blocks.append([n_features])  # Input features
@@ -146,7 +146,8 @@ def setup_model(
 
 
 def train_model(
-        args, 
+        args,
+        device: torch.device,
         model: nn.Module,
         criterion: nn.Module,
         optimizer: torch.optim.Optimizer, 
@@ -154,7 +155,7 @@ def train_model(
         train_loader: torch.utils.data.DataLoader,
         val_loader: torch.utils.data.DataLoader = None,
         trial: optuna.trial.Trial = None, 
-        epoch_offset: int = 0
+        epoch_offset: int = 0,
         ) -> Tuple[nn.Module, TrainingHistory, TrainingResult]:
     logger.info("Starting model training...")
     
@@ -187,9 +188,11 @@ def train_model(
         # Training phase
         model.train()
         running_train_loss = 0.0
-        total_valid_points_train = 0
-        
+                
         for X_batch, y_batch, mask_batch, _ in train_loader:
+            X_batch = X_batch.to(device, non_blocking=True)
+            y_batch = y_batch.to(device, non_blocking=True)
+            mask_batch = mask_batch.to(device, non_blocking=True)
             # NOTE: we are not using the reconstruction_batch here, so left it as "_"
             # Zero the gradients
             optimizer.zero_grad()
@@ -234,6 +237,9 @@ def train_model(
             
             with torch.no_grad():
                 for X_batch, y_batch, mask_batch, _ in val_loader:
+                    X_batch = X_batch.to(device, non_blocking=True)
+                    y_batch = y_batch.to(device, non_blocking=True)
+                    mask_batch = mask_batch.to(device, non_blocking=True)
 
                     # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
                     x = X_batch.permute(0, 3, 1, 2)
@@ -345,6 +351,8 @@ def train_model(
             probs, labels = [], []
             with torch.no_grad():
                 for X, y, *_ in val_loader:
+                    X = X.to(device, non_blocking=True)
+                    y = y.to(device, non_blocking=True)
                     outputs = model(X.permute(0, 3, 1, 2)).squeeze()
                     probs.extend(torch.sigmoid(outputs).cpu().numpy())
                     labels.extend(y.cpu().numpy())
@@ -362,6 +370,7 @@ def train_model(
 
 def evaluate_model(
         args,
+        device: torch.device,
         model: torch.nn.Module,
         test_loader: torch.utils.data.DataLoader,
         normalizer: "STGCNNormalizer",
@@ -387,6 +396,9 @@ def evaluate_model(
         all_probs, all_labels = [], []
         with torch.no_grad():
             for X_batch, y_batch, *_ in test_loader:
+                X_batch = X_batch.to(device, non_blocking=True)
+                y_batch = y_batch.to(device, non_blocking=True)
+                
                 # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
                 x = X_batch.permute(0, 3, 1, 2)
                 # Forward pass
@@ -416,6 +428,11 @@ def evaluate_model(
     
     with torch.no_grad():
         for X_batch, y_batch, mask_batch, y_source_batch in test_loader:
+            X_batch = X_batch.to(device, non_blocking=True)
+            y_batch = y_batch.to(device, non_blocking=True)
+            mask_batch = mask_batch.to(device, non_blocking=True)
+            y_source_batch = y_source_batch.to(device, non_blocking=True)
+
             # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
             x = X_batch.permute(0, 3, 1, 2)
             # Forward pass

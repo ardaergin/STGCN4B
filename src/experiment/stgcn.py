@@ -82,9 +82,8 @@ class STGCNExperimentRunner(BaseExperimentRunner):
     
     def _load_data_to_tensors(self, **arrays_to_convert) -> Dict[str, torch.Tensor]:
         """Converts a dictionary of numpy arrays to a dictionary of tensors."""
-        device = self.input_dict['device']
         return {
-            name: torch.from_numpy(arr).float().to(device)
+            name: torch.from_numpy(arr).float()
             for name, arr in arrays_to_convert.items()
         }
     
@@ -107,16 +106,17 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         tensors = self._load_data_to_tensors(**numpy_payload)
         
         # Get DataLoaders
-        max_target_offset = 1 if self.args.task_type == "workhour_classification" else max(args.forecast_horizons)
+        max_horizon = 0 if self.args.task_type == "workhour_classification" else max(args.forecast_horizons)
         loaders = get_data_loaders(
-            args,
+            args=args,
+            seed=self.seed,
             blocks=self.input_dict["blocks"],
             block_size=self.input_dict["block_size"],
             feature_tensor=tensors["feature"],
             target_tensor=tensors["target"],
             target_mask_tensor=tensors["target_mask"],
             target_source_tensor=tensors["target_source"],
-            max_target_offset=max_target_offset,
+            max_horizon=max_horizon,
             train_block_ids=train_block_ids,
             val_block_ids=val_block_ids,
             test_block_ids=test_block_ids
@@ -207,7 +207,12 @@ class STGCNExperimentRunner(BaseExperimentRunner):
             logger.info("Model compiled.")
         
         model, history, training_result = train_model(
-            trial_params, model, criterion, optimizer, scheduler, 
+            args            = trial_params, 
+            device          = self.input_dict['device'],
+            model           = model, 
+            criterion       = criterion, 
+            optimizer       = optimizer, 
+            scheduler       = scheduler, 
             train_loader    = loaders['train_loader'], 
             val_loader      = loaders['val_loader'],
             trial           = trial,
@@ -266,7 +271,12 @@ class STGCNExperimentRunner(BaseExperimentRunner):
             logger.info("Model compiled.")
         
         model, history, training_result = train_model(
-            final_params, model, criterion, optimizer, scheduler, 
+            args            = final_params, 
+            device          = self.input_dict['device'],
+            model           = model, 
+            criterion       = criterion, 
+            optimizer       = optimizer, 
+            scheduler       = scheduler, 
             train_loader    = loaders['train_loader'], 
             val_loader      = loaders['val_loader'] if val_block_ids else None,
             trial           = None,
@@ -281,7 +291,8 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         
         # Evaluation
         metrics, model_outputs = evaluate_model(
-            args        = self.args, 
+            args        = final_params, 
+            device      = self.input_dict['device'],
             model       = model, 
             test_loader = loaders['test_loader'], 
             normalizer  = normalizer, 
