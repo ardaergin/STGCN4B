@@ -1,60 +1,104 @@
-from typing import Dict, Tuple, List
+from typing import Dict, Any
 import numpy as np
 import pandas as pd
 
-import logging
-logger = logging.getLogger(__name__)
+import logging; logger = logging.getLogger(__name__)
 
 
 class HomogGraphBuilderMixin:
     
-    def incorporate_weather_as_an_outside_room(
+    def add_weather_as_node_to_df(
         self, 
-        room_level_df: pd.DataFrame
-        ) -> Tuple[np.ndarray, List[str], pd.DataFrame, Dict[int, np.ndarray]]:
+        room_level_df: pd.DataFrame,
+        outside_URI_str: str = "outside"
+    ) -> pd.DataFrame:
         """
-        Computes a new graph structure and feature DataFrame by incorporating weather data as an "outside" room.
-        This method is immutable: it does not modify the instance's state (self).
+        Return a new DataFrame that appends one “outside” pseudo‑room whose
+        features are the per‑bucket weather variables.
+
+        Parameters
+        ----------
+        room_level_df : pd.DataFrame
+            Must contain at least ['room_uri_str', 'bucket_idx'].
+        outside_URI_str : str
+            The identifier inserted in room_uri_str for the outside node.
+
+        Returns
+        -------
+        pd.DataFrame
+            Original rows + one row per bucket for the outside node.
+        """
+        # Validation: Weather DataFrame
+        if not hasattr(self, 'weather_df'):
+            raise ValueError("weather_df not found. Run get_weather_data() first.")
+        if self.weather_df.empty:
+            raise ValueError("weather_df is empty. Cannot integrate the outside node.")
+        outside_df = self.weather_df.copy()
+
+        # Validation: Room-level DataFrame
+        if not {"room_uri_str", "bucket_idx"}.issubset(room_level_df.columns):
+            raise ValueError("room_level_df must contain 'room_uri_str' and 'bucket_idx'.")
+        room_df = room_level_df.copy()
+        
+        # Prepare the 'outside' node for concat
+        outside_df['room_uri_str'] = outside_URI_str
+        
+        # Ensure the order of columns matches room_df
+        outside_df = outside_df.reindex(columns=room_df.columns.union(outside_df.columns))
+        
+        # Categorical check
+        if pd.api.types.is_categorical_dtype(room_df['room_uri_str'].dtype):
+            room_df['room_uri_str'] = room_df['room_uri_str'].cat.add_categories([outside_URI_str])
+            outside_df['room_uri_str'] = outside_df['room_uri_str'].astype(room_df['room_uri_str'].dtype)
+        
+        # Concatenate the DataFrames
+        room_level_df_with_weather_node = pd.concat([room_df, outside_df], ignore_index=True, sort=False)
+        logger.info(f"DataFrame with 'outside' node created. New shape: {room_level_df_with_weather_node.shape}")
+        return room_level_df_with_weather_node
+    
+    def update_adjacencies_for_weather_as_node(
+        self, 
+        adjacency_dict: Dict[str, Any],
+        outside_URI_str: str = "outside"
+    ) -> Dict[str, Any]:
+        """
+        Updates adjacency matrices and URI list by incorporating weather data as an "outside" room.
+        This method modifies the adjacency_dict and returns the updated dictionary.
+
+        Args:
+            adjacency_dict: Dictionary containing adjacency information with keys:
+                - "room_URIs_str": List of room URI strings
+                - "adjacency_matrix": The NxN adjacency matrix
+                - "outside_adjacency_vector": Vector of length N for outside connections
+            outside_URI_str: URI string for the outside node (default: "outside")
 
         Returns:
-            A tuple containing four new objects:
-            1. new_adj_matrix (np.ndarray): The (N+1)x(N+1) adjacency matrix.
-            2. new_uri_list (List[str]): The list of N+1 room URI strings, including the new 'outside' URI.
-            3. new_masked_adjs (Dict[int, np.ndarray]): The dictionary of patched, masked adjacency matrices.
-            4. new_room_level_df (pd.DataFrame): The DataFrame with weather columns and new rows for the outside node.
+            The updated adjacency_dict with modified:
+            - "room_URIs_str": Updated to include the outside URI
+            - "adjacency_matrix": Updated to (N+1)x(N+1) matrix
+            - "masked_adjacency_matrices": Updated masked adjacency matrices
         """
-        # Getting the weather data
-        if not hasattr(self, 'weather_data_dict'):
-            raise ValueError("weather_data_dict not found. Run get_weather_data() first.")
-        if not self.weather_data_dict:
-            raise ValueError("weather_data is empty. Cannot integrate outside node without any weather features.")
-        weather_df = pd.DataFrame.from_dict(self.weather_data_dict, orient="index")
-        try:
-            weather_df.index = weather_df.index.astype(int)
-        except Exception:
-            raise ValueError("weather_data keys (bucket_idx) must be integers.")
-        weather_df = weather_df.sort_index()
+        adj_dict = adjacency_dict.copy()
+
+        # Extract required keys from adjacency dictionary
+        old_uris = adj_dict["room_URIs_str"]
+        old_adj = adj_dict["adjacency_matrix"]
+        outside_adj_vector = adj_dict["outside_adjacency_vector"]
         
-        # Outside URI
-        outside_URI_str = "outside"
-        
-        # --- 1) Create New Adjacency Matrix and URI List ---
-        old_adj = self.room_to_room_adj_matrix
-        old_uris = self.adj_matrix_room_URIs_str
         N = old_adj.shape[0]
         
         # Validations
         if len(old_uris) != N:
-            raise ValueError(f"Mismatch: len(self.adj_matrix_room_URIs_str)={len(old_uris)} vs adjacency shape={old_adj.shape}")
-        if self.combined_outside_adj.shape[0] != N:
-            raise ValueError(f"self.combined_outside_adj length {self.combined_outside_adj.shape[0]} ≠ adjacency size {N}")
+            raise ValueError(f"Mismatch: len(room_URIs_str)={len(old_uris)} vs adjacency shape={old_adj.shape}")
+        if outside_adj_vector.shape[0] != N:
+            raise ValueError(f"outside_adjacency_vector length {outside_adj_vector.shape[0]} ≠ adjacency size {N}")
         if outside_URI_str in old_uris:
-            raise ValueError(f"outside_uri {outside_URI_str!r} already exists in adj_matrix_room_URIs_str.")
+            raise ValueError(f"outside_uri {outside_URI_str!r} already exists in room_URIs_str.")
         
         # Build new (N+1)×(N+1) adjacency
         new_adj_matrix = np.zeros((N + 1, N + 1), dtype=old_adj.dtype)
         new_adj_matrix[:N, :N] = old_adj
-        new_adj_matrix[N, :N] = self.combined_outside_adj  # outside → old rooms
+        new_adj_matrix[N, :N] = outside_adj_vector.copy()  # outside → old rooms
         
         # Create new URI list by concatenating
         new_uri_list = old_uris + [outside_URI_str]
@@ -62,58 +106,15 @@ class HomogGraphBuilderMixin:
         logger.info(f"Created new adjacency matrix with shape {new_adj_matrix.shape}.")
         logger.info(f"Created new URI list with length {len(new_uri_list)}.")
         
-        # --- 2) Create New Information Propagation Masks ---
-        # Call the mask calculation function with the *new* adjacency matrix.
+        # Create new information propagation masks
         new_masked_adjs = self.create_masked_adjacency_matrices(new_adj_matrix, new_uri_list)
         
         logger.info(f"Computed and patched {len(new_masked_adjs)} new information propagation masks.")
         
-        # --- 3) Create New DataFrame ---
-        df = room_level_df.copy()
+        # Update the adjacency_dict in place
+        adj_dict["room_URIs_str"] = new_uri_list
+        adj_dict["n_nodes"] += 1
+        adj_dict["adjacency_matrix"] = new_adj_matrix
+        adj_dict["masked_adjacency_matrices"] = new_masked_adjs
         
-        # Validations
-        if 'room_uri_str' not in df.columns or 'bucket_idx' not in df.columns:
-            raise ValueError("room_level_df must have columns 'room_uri_str' and 'bucket_idx'.")
-        orig_cols = [c for c in df.columns if c not in ('room_uri_str', 'bucket_idx')]
-        if not orig_cols:
-            raise ValueError("No original feature-columns found in room_level_df.")
-        
-        # Ensure room_uri_str is string type and categorical
-        df['room_uri_str'] = df['room_uri_str'].astype(str)
-        df['room_uri_str'] = df['room_uri_str'].astype('category')
-        
-        # Create new DataFrame with weather features
-        buckets = sorted(df['bucket_idx'].unique())
-        weather_cols = list(weather_df.columns)
-        
-        # Add weather columns (initially NaN) to a temporary DataFrame for existing rooms
-        temp_df = df.reindex(columns=df.columns.tolist() + weather_cols)
-        
-        # Build new rows for the 'outside' node
-        new_rows = []
-        for b in buckets:
-            row_dict = {'room_uri_str': outside_URI_str, 'bucket_idx': b}
-            # Original room features are NaN for the 'outside' node
-            for fc in orig_cols:
-                row_dict[fc] = np.nan
-            # Weather features are sourced from weather_df
-            for wcol in weather_cols:
-                row_dict[wcol] = float(weather_df.at[b, wcol])
-            new_rows.append(row_dict)
-        
-        outside_df = pd.DataFrame(new_rows)
-        outside_df['room_uri_str'] = outside_df['room_uri_str'].astype(temp_df['room_uri_str'].dtype)
-
-        # Ensure that any column that was categorical in the original DataFrame
-        # maintains that same categorical type in the new 'outside_df'. This
-        # prevents pandas from upcasting the column to 'object' during concatenation.
-        for col in temp_df.columns:
-            if pd.api.types.is_categorical_dtype(temp_df[col].dtype):
-                outside_df[col] = outside_df[col].astype(temp_df[col].dtype)
-
-        # Concatenate old data (with new columns) and the new 'outside' data
-        new_room_level_df = pd.concat([temp_df, outside_df], ignore_index=True)
-                
-        logger.info(f"Created new room_level_df: shape {new_room_level_df.shape}, {len(weather_cols)} weather columns added.")
-        
-        return new_adj_matrix, new_uri_list, new_masked_adjs, new_room_level_df
+        return adj_dict

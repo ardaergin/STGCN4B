@@ -1,9 +1,8 @@
 import holidays
-from datetime import datetime, date
-from typing import List, Tuple, Set, Dict
-import logging
+from datetime import datetime
+from typing import List, Tuple
 
-logger = logging.getLogger(__name__)
+import logging; logger = logging.getLogger(__name__)
 
 class WorkHourClassifier:
     """
@@ -11,7 +10,14 @@ class WorkHourClassifier:
     accounting for holidays, weekends, and standard office hours.
     """
     
-    def __init__(self, country_code="NL", start_year=None, end_year=None):
+    def __init__(
+        self, 
+        country_code="NL", 
+        start_year=None, 
+        end_year=None,
+        workhour_start=8,
+        workhour_end=18
+    ):
         """
         Initialize the classifier with holiday data for the specified country.
         
@@ -20,6 +26,10 @@ class WorkHourClassifier:
             start_year: Starting year for holiday data (default: current year)
             end_year: Ending year for holiday data (default: current year)
         """
+        # Workhour parameters
+        self.workhour_start = workhour_start
+        self.workhour_end = workhour_end
+        
         # Initialize years for holiday data
         if start_year is None or end_year is None:
             current_year = datetime.now().year
@@ -77,7 +87,7 @@ class WorkHourClassifier:
         
         # Check if it's between standard office hours (9:00-17:00)
         hour_of_day = timestamp.hour
-        return 9 <= hour_of_day < 17
+        return self.workhour_start <= hour_of_day < self.workhour_end
     
     def classify_time_buckets(self, time_buckets: List[Tuple[datetime, datetime]]) -> List[int]:
         """

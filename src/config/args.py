@@ -40,8 +40,8 @@ def add_OfficeGraph_args(parser):
     #  Extraction arguments
     ##############################
     parser.add_argument("--floors", type=int, nargs="+",
-                        default=[7],
-                        help="List of floor numbers to load (default: 7)")
+                        default=[1,2,3,4,5,6,7],
+                        help="List of floor numbers to load (default: all)")
     parser.add_argument("--no-extract",
                         action="store_true",
                         help="Skip automatic entity extraction")
@@ -75,11 +75,19 @@ def add_OfficeGraph_args(parser):
     parser.add_argument('--use_sundays', action='store_true',
                         help='Include Sundays in the time blocks (default: False)')
     
-    # Classification arguments
+    # Workhour arguments
     parser.add_argument('--country_code', type=str,
                         default='NL',
                         help='Country code for work hour classification')
-
+    parser.add_argument("--workhour_start", type=int,
+                        default=8,
+                        choices=range(0, 24),
+                        help="Start of working hours (0-23). Default: 8.")
+    parser.add_argument("--workhour_end", type=int,
+                        default=18,
+                        choices=range(0, 24),
+                        help="End of working hours (0-23). Default: 18.")
+    
     # Consumption data arguments
     parser.add_argument('--consumption_dir', type=str, 
                         default='data/consumption',
@@ -93,6 +101,10 @@ def add_OfficeGraph_args(parser):
     parser.add_argument('--incorporate_weather', 
                         action='store_true',
                         help='Add the weather info to the homogeneous graph (default: False)')
+    parser.add_argument("--weather-mode", type=str,
+                        default="feature",
+                        choices=["feature", "node"],
+                        help="How to incorporate weather data: 'feature' (add to all rooms) or 'node' (add as separate room node)")
 
     ##############################
     #  Spatial Builder

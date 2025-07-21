@@ -1,14 +1,13 @@
 import pandas as pd
 from shapely.geometry import Polygon
 import numpy as np
-from typing import Dict, List
+from typing import Dict, List, Any
 from collections import defaultdict
 from rdflib.term import URIRef
 
 from ...data.FloorPlan import polygon_utils
 
-import logging
-logger = logging.getLogger(__name__)
+import logging; logger = logging.getLogger(__name__)
 
 
 class SpatialBuilderMixin:
@@ -51,7 +50,7 @@ class SpatialBuilderMixin:
         polygon_type='doc', 
         simplify_polygons=False, 
         simplify_epsilon=0.0
-        ) -> None:
+    ) -> None:
         """
         Initialize shapely Polygon objects for each room based on the Room's polygon data.
         Also extracts and stores room areas for later use.
@@ -80,17 +79,12 @@ class SpatialBuilderMixin:
             room = self.office_graph.rooms[room_uri_obj]
             
             # Get the appropriate polygon data based on type
-            if polygon_type == 'geo':
-                points_2d = room.polygons_geo.get('points_2d', [])
-                area = room.polygons_geo.get('area')
-            elif polygon_type == 'doc':
+            if polygon_type == 'doc':
                 points_2d = room.polygons_doc.get('points_2d', [])
                 area = room.polygons_doc.get('area')
             else:
-                logger.warning(f"Invalid polygon_type: {polygon_type}. Using 'doc' as default.")
-                points_2d = room.polygons_doc.get('points_2d', [])
-                area = room.polygons_doc.get('area')
-            
+                raise ValueError("Just use polygon_type=='doc' for now, 'geo' is not good.")
+                        
             # Get the floor number using the helper in OfficeGraph
             floor_URIRef = self.office_graph._map_RoomURIRef_to_FloorURIRef(room_uri_obj)
             floor_number = self.office_graph._map_FloorURIRef_to_FloorNumber(floor_URIRef)
@@ -202,16 +196,55 @@ class SpatialBuilderMixin:
 
         return None
     
+
+    ##############################
+    # Helper to get room features
+    ##############################
+
+    def _collect_room_static_feature_dict(self, room_uri_str: str) -> Dict[str, Any]:
+        """
+        Return a dict containing *all* static features for one room.
+
+        - Handles normalised-area attributes that are stored on the builder.  
+        - Uses office_graph._get_nested_attr for anything that lives on the Room instance.  
+        - Adds a 'floor' feature even though it is not listed in
+        self.static_room_attributes.
+        """
+        if not hasattr(self, "norm_areas_minmax") or not hasattr(self, "norm_areas_prop"):
+            raise KeyError("norm_areas_minmax or norm_areas_prop not found. Run normalize_room_areas() first.")
+        
+        room_obj = self.office_graph.rooms[URIRef(room_uri_str)]
+        features: Dict[str, Any] = {"room_uri_str": room_uri_str}
+        
+        for attr_string in self.static_room_attributes:
+            if attr_string in ("norm_areas_minmax", "norm_areas_prop"):
+                # These dicts are on the builder, keyed by floor → room
+                src = getattr(self, attr_string, None)
+                if src:
+                    floor_num = self.room_to_floor.get(room_uri_str)
+                    features[attr_string] = src.get(floor_num, {}).get(room_uri_str, np.nan)
+                else:
+                    logger.warning(f"{attr_string} not found. did you call normalise_room_areas() ?")
+                    features[attr_string] = np.nan
+            else:
+                # Anything that lives on the Room object (possibly nested)
+                features[attr_string] = self.office_graph._get_nested_attr(room_obj, attr_string, default=np.nan)
+        
+        # Always add floor number
+        floor_uri_str = self.office_graph._map_room_uri_str_to_floor_uri_str(room_uri_str)
+        features["floor"] = self.office_graph._map_floor_uri_str_to_floor_number(floor_uri_str)
+
+        return features
     
     #############################
     # Horizontal Adjacency
     #############################
     
-    def calculate_binary_adjacency(
+    def _calculate_binary_adjacency(
         self,
         floor_number,
         distance_threshold: float = 5.0
-        ) -> pd.DataFrame:
+    ) -> pd.DataFrame:
         """
         Calculate binary adjacency between rooms on a floor based on their polygons.
         Two rooms are considered adjacent if their polygons are within distance_threshold.
@@ -251,13 +284,13 @@ class SpatialBuilderMixin:
 
         return adj_df
 
-    def calculate_proportional_boundary_adjacency(
+    def _calculate_proportional_boundary_adjacency(
         self,
         floor_number,
         distance_threshold: float = 5.0,
         min_shared_length: float = 0.01,
         min_weight: float = 0.0
-        ) -> pd.DataFrame:
+    ) -> pd.DataFrame:
         """
         Calculate a non-symmetric adjacency matrix where
         A[i,j] = (shared boundary length between room i and j) / perimeter(room i),
@@ -283,7 +316,7 @@ class SpatialBuilderMixin:
             raise ValueError(f"No room polygons found for floor {floor_number}")
         
         # Get binary adjacency for this floor
-        binary_adj_df = self.calculate_binary_adjacency(floor_number=floor_number, distance_threshold=distance_threshold)
+        binary_adj_df = self._calculate_binary_adjacency(floor_number=floor_number, distance_threshold=distance_threshold)
             
         # Reuse the room_ids from binary adjacency for consistency
         room_URIs_str = binary_adj_df.index.tolist()
@@ -335,30 +368,34 @@ class SpatialBuilderMixin:
 
         return adj_df
     
-    def build_horizontal_adjacency(self, 
-                                   mode="weighted", 
-                                   distance_threshold=5.0) -> None:
+    def build_horizontal_adjacency_dict(
+        self, 
+        mode="weighted", 
+        distance_threshold=5.0
+    ) -> Dict[int, Dict]:
         """
-        Build horizontal room-to-room adjacency matrices for all floors and store them in class attributes.
+        Build horizontal room-to-room adjacency matrices for all floors.
         
         Args:
             mode: Kind of adjacency. Options:
                 - 'binary': Basic binary adjacency based on proximity
                 - 'weighted': Weighted adjacency where each room's influence is proportional to target's perimeter
             distance_threshold: Maximum distance for considering rooms adjacent (in meters)
+        
+        Returns:
+            - horizontal_adj_dict: Dict with per-floor adjacency data
         """
         if not hasattr(self, 'polygons') or not self.polygons:
             raise ValueError("No room polygons found. Make sure to call initialize_room_polygons().")
         
         # Initialize the horizontal adjacency storage
-        self.horizontal_adj = {}
-        self.horizontal_adj_type = mode
-
+        horizontal_adj_dict = {}
+        
         # Select the appropriate adjacency function
         if mode == "binary":
-            adj_func = self.calculate_binary_adjacency
+            adj_func = self._calculate_binary_adjacency
         elif mode == "weighted":
-            adj_func = self.calculate_proportional_boundary_adjacency
+            adj_func = self._calculate_proportional_boundary_adjacency
         else:
             raise ValueError(f"Unknown adjacency kind: {mode}. Use 'binary' or 'weighted'.")
         
@@ -367,57 +404,62 @@ class SpatialBuilderMixin:
         for floor_number in sorted(self.polygons.keys()):
             adj_df = adj_func(floor_number=floor_number, distance_threshold=distance_threshold)
             
-            # CHANGE: Simplified. adj_df.index is already a list of strings. No obj mapping.
-            self.horizontal_adj[floor_number] = {
+            horizontal_adj_dict[floor_number] = {
                 "df": adj_df,
                 "matrix": adj_df.values,
                 "room_URIs_str": adj_df.index.tolist(),
             }
             logger.info(f"  Floor {floor_number}: {adj_df.shape} matrix with {(adj_df > 0).sum().sum()} connections")
-        
-        self._combine_horizontal_adjacencies()
-        return None
+                
+        return horizontal_adj_dict
     
-    def _combine_horizontal_adjacencies(self) -> None:
+    def combine_horizontal_adjacencies(
+        self, 
+        horizontal_adj_dict: Dict[int, Dict]
+    ) -> np.ndarray:
         """
         Combine per-floor horizontal adjacency matrices into one large matrix.
         Uses canonical room ordering established during initialization.
+        
+        Args:
+            horizontal_adj_dict: Dictionary of per-floor adjacency data
+        
+        Returns:
+            - horizontal_adj_matrix: Combined matrix as numpy array
         """
-        if not hasattr(self, 'horizontal_adj') or not self.horizontal_adj:
-            raise ValueError("No horizontal adjacency matrices found. Call build_horizontal_adjacency() first.")
-        
-        # Get all room URIs in canonical order that appear in adjacency matrices
+        # Sanity check: Get all room URIs in canonical order that appear in adjacency matrices
         rooms_in_adj_matrices = set()
-        for floor_data in self.horizontal_adj.values():
+        for floor_data in horizontal_adj_dict.values():
             rooms_in_adj_matrices.update(floor_data["df"].index)
+        for uri in self.room_URIs_str: 
+            if uri not in rooms_in_adj_matrices:
+                raise ValueError("Check room URIs, something is off.")
                 
-        # Keep canonical order but only for rooms that have adjacency data
-        all_room_URIs_str = [uri for uri in self.room_URIs_str if uri in rooms_in_adj_matrices]
-        
-        logger.info(f"Creating combined matrix with {len(all_room_URIs_str)} rooms in canonical order")
+        logger.info(f"Creating combined matrix with {len(self.room_URIs_str)} rooms in canonical order")
         
         # Create combined matrix
-        self.combined_horizontal_adj_df = pd.DataFrame(0.0, index=all_room_URIs_str, columns=all_room_URIs_str)
+        combined_horizontal_adj_df = pd.DataFrame(0.0, index=self.room_URIs_str, columns=self.room_URIs_str)
         
         # Fill in the floor-specific adjacencies
-        for floor_data in self.horizontal_adj.values():
+        for floor_data in horizontal_adj_dict.values():
             floor_df = floor_data["df"]
-            self.combined_horizontal_adj_df.loc[floor_df.index, floor_df.columns] = floor_df
+            combined_horizontal_adj_df.loc[floor_df.index, floor_df.columns] = floor_df
         
-        self.horizontal_adj_matrix = self.combined_horizontal_adj_df.values
-        self.adj_matrix_room_URIs_str = self.combined_horizontal_adj_df.index.tolist()
-        logger.info(f"Combined horizontal adjacencies into {self.combined_horizontal_adj_df.shape} matrix.")
-        return None
+        horizontal_adj_matrix = combined_horizontal_adj_df.values
+                
+        logger.info(f"Combined horizontal adjacencies into {combined_horizontal_adj_df.shape} matrix.")
+        
+        return horizontal_adj_matrix
     
-
+    
     #############################
     # Vertical Adjacency
     #############################
 
-    def calculate_binary_vertical_adjacency(
+    def _calculate_binary_vertical_adjacency(
         self,
         min_overlap_area: float = 0.1
-        ) -> pd.DataFrame:
+    ) -> pd.DataFrame:
         """
         Build a full-building binary vertical adjacency matrix.
         A[i,j] = 1 if room i (on floor f) and room j (on floor f+1 or f-1)
@@ -439,28 +481,31 @@ class SpatialBuilderMixin:
             f1 = self.room_to_floor.get(uri1_str)
             poly1 = self.polygons.get(f1, {}).get(uri1_str)
             # Skip if the room has no valid polygon
-            if poly1 is None: continue
+            if poly1 is None: 
+                continue
 
             # Check for adjacency on the floor above and below
             for delta in [-1, 1]:
                 f2 = f1 + delta
                 # Continue if the adjacent floor doesn't exist
-                if f2 not in self.polygons: continue
+                if f2 not in self.polygons: 
+                    continue
                 # Iterate through all rooms on the adjacent floor
                 for uri2_str in self.floor_to_rooms.get(f2, []):
                     poly2 = self.polygons[f2].get(uri2_str)
                     # Skip if the second room has no valid polygon
-                    if not poly2: continue
+                    if not poly2: 
+                        continue
                     # Add binary adjacency if above the min_overlap_area threshold
                     if poly1.intersection(poly2).area > min_overlap_area:
                         adj_df.at[uri1_str, uri2_str] = 1
         return adj_df
         
-    def calculate_proportional_vertical_adjacency(
+    def _calculate_proportional_vertical_adjacency(
         self,
         min_overlap_area: float = 0.1,
         min_weight: float = 0.0
-        ) -> pd.DataFrame:
+    ) -> pd.DataFrame:
         """
         Build a full-building vertical adjacency matrix:
         A[i,j] = overlap_area(poly_i, poly_j) / area(poly_i)
@@ -475,106 +520,114 @@ class SpatialBuilderMixin:
             f1 = self.room_to_floor.get(uri1_str)
             poly1 = self.polygons.get(f1, {}).get(uri1_str)
             # Skip if the room has no valid polygon
-            if poly1 is None: continue
+            if poly1 is None: 
+                continue
             
             # Check for adjacency on the floor above and below
             for delta in [-1, 1]:
                 f2 = f1 + delta
                 # Continue if the adjacent floor doesn't exist
-                if f2 not in self.polygons: continue
+                if f2 not in self.polygons: 
+                    continue
                 # Iterate through all rooms on the adjacent floor
                 for uri2_str in self.floor_to_rooms.get(f2, []):
                     poly2 = self.polygons[f2].get(uri2_str)
                     # Skip if the second room has no valid polygon
-                    if not poly2: continue
-                        # Add binary adjacency if above the min_overlap_area threshold
+                    if not poly2: 
+                        continue
 
+                    # Add binary adjacency if above the min_overlap_area threshold
                     overlap = poly1.intersection(poly2).area
                     adj_df.at[uri1_str, uri2_str] = (overlap / poly1.area) if overlap > min_overlap_area else min_weight
         return adj_df
-
+    
     def build_vertical_adjacency(
         self,
         mode: str = "weighted",
         min_overlap_area: float = 0.1,
         min_weight: float = 0.0
-        ) -> None:
-        """Builds the combined vertical adjacency matrix."""
+    ) -> np.ndarray:
+        """
+        Builds the combined vertical adjacency matrix.
+        
+        Args:
+            mode: "weighted" or "binary"
+            min_overlap_area: Minimum overlap area to consider adjacency
+            min_weight: Minimum weight for weighted mode
+        
+        Returns:
+            - vertical_adj_matrix: Vertical adjacency matrix as numpy array
+        """
         logger.info(f"Building '{mode}' vertical adjacency for entire building...")
         
         # Select the appropriate calculation function based on the mode
         if mode == "weighted":
-            v_df = self.calculate_proportional_vertical_adjacency(
+            v_df = self._calculate_proportional_vertical_adjacency(
                 min_overlap_area=min_overlap_area,
                 min_weight=min_weight
             )
         elif mode == "binary":
-            v_df = self.calculate_binary_vertical_adjacency(
+            v_df = self._calculate_binary_vertical_adjacency(
                 min_overlap_area=min_overlap_area
             )
         else:
             raise ValueError(f"Unknown mode '{mode}'. Use 'weighted' or 'binary'.")
-        
-        # Store the results
-        self.vertical_adj_type = mode
-        self.combined_vertical_adj_df = v_df
-        self.vertical_adj_matrix = v_df.values
-        self.adj_matrix_room_URIs_str = list(self.room_URIs_str)
-
+                
         total_connections = (v_df > 0).sum().sum()
         logger.info(
             f"Built '{mode}' vertical adjacency matrix {v_df.shape} with "
             f"{int(total_connections)} non-zero connections."
         )
-        return None
-
+        
+        vertical_adj_matrix = v_df.values
+        return vertical_adj_matrix
+    
     #############################
     # Combined Adjacency
     #############################
 
-
-    def build_combined_room_to_room_adjacency(self) -> None:
+    def build_combined_room_to_room_adjacency(
+        self,
+        horizontal_adj_matrix: np.ndarray,
+        vertical_adj_matrix: np.ndarray
+    ) -> np.ndarray:
         """
         Combines the horizontal and vertical adjacency matrices.
-        The result is stored in self.room_to_room_adj_matrix.
+        
+        Args:
+            horizontal_adj_matrix: Horizontal adjacency matrix
+            vertical_adj_matrix: Vertical adjacency matrix
+        
+        Returns:
+            np.ndarray: Combined adjacency matrix
         
         Raises:
-            ValueError: If horizontal or vertical adjacency matrices are not yet computed.
+            ValueError: If matrices have different shapes.
         """
-        if not hasattr(self, 'horizontal_adj_matrix') or self.horizontal_adj_matrix is None:
+        if horizontal_adj_matrix.shape != vertical_adj_matrix.shape:
             raise ValueError(
-                "Horizontal adjacency matrix not found. "
-                "Run build_horizontal_adjacency() and combine_horizontal_adjacencies() first."
+                f"Matrix shapes don't match: horizontal {horizontal_adj_matrix.shape} "
+                f"vs vertical {vertical_adj_matrix.shape}"
             )
-        if not hasattr(self, 'vertical_adj_matrix') or self.vertical_adj_matrix is None:
-            raise ValueError(
-                "Vertical adjacency matrix not found. "
-                "Run build_vertical_adjacency() first."
-            )
-
-        horizontal = self.horizontal_adj_matrix
-        vertical = self.vertical_adj_matrix
         
-        self.room_to_room_adj_matrix = horizontal + vertical
+        room_to_room_adj_matrix = horizontal_adj_matrix + vertical_adj_matrix
         
         logger.info(
             f"Successfully combined horizontal and vertical adjacency matrices. "
-            f"Shape: {self.room_to_room_adj_matrix.shape}"
+            f"Shape: {room_to_room_adj_matrix.shape}"
         )
-        return None
-
-
+        
+        return room_to_room_adj_matrix
 
     #############################
     # Information propagation
     #############################
 
-
     def create_masked_adjacency_matrices(
         self, 
         adjacency_matrix: np.ndarray, 
         uri_str_list: List[str]
-        ) -> Dict[int, np.ndarray]:
+    ) -> Dict[int, np.ndarray]:
         """
         Calculate a series of masking matrices representing information propagation
         from rooms with devices to other rooms in the building, using BOTH
@@ -626,31 +679,29 @@ class SpatialBuilderMixin:
 
         return masked_adjs
     
-    
     #############################
     # Outside Adjacency
     #############################
 
-    def calculate_outside_adjacency(self, floor_number: int, mode: str = "weighted") -> np.ndarray:
+    def _calculate_outside_adjacency(
+        self, 
+        horizontal_adj_df: pd.DataFrame,
+        mode: str = "weighted"
+    ) -> np.ndarray:
         """
         Compute the outside‐to‐room adjacency vector for one floor.
-
+        
         Args:
-            floor_number: which floor to process
+            horizontal_adj_df: The horizontal adjacency DataFrame for this floor
             mode: "binary" or "weighted"
               - "binary": 1 for rooms with hasWindows, else 0
               - "weighted": for windowed rooms, weight = max(0, 1 – sum(horizontal adj));
                             non-windowed rooms get 0
-
-        Returns:
-            np.ndarray of length = rooms on that floor (in the same order as self.horizontal_adj[floor_number]['room_URIs_str'])
-        """
-        if not hasattr(self, 'horizontal_adj') or floor_number not in self.horizontal_adj:
-            raise ValueError(f"No horizontal adjacency for floor {floor_number}. Run build_horizontal_adjacency() first.")
         
-        floor_data = self.horizontal_adj[floor_number]
-        df = floor_data['df']
-        room_uris_str = floor_data['room_URIs_str']
+        Returns:
+            np.ndarray of length = rooms on that floor (in the same order as horizontal_adj_df.index)
+        """
+        room_uris_str = horizontal_adj_df.index.tolist()
         vec = np.zeros(len(room_uris_str), dtype=float)
 
         for i, uri_str in enumerate(room_uris_str):
@@ -660,53 +711,65 @@ class SpatialBuilderMixin:
             if mode == "binary":
                 vec[i] = 1.0
             elif mode == "weighted":
-                vec[i] = max(0.0, 1.0 - df.loc[uri_str].sum())
+                vec[i] = max(0.0, 1.0 - horizontal_adj_df.loc[uri_str].sum())
         return vec
     
-    def build_outside_adjacency(self, mode: str = "weighted") -> None:
+    def build_outside_adjacency(
+        self, 
+        horizontal_adj_dict: Dict[int, Dict],
+        mode: str = "weighted"
+    ) -> Dict[int, Dict]:
         """
-        Build per‐floor outside adjacency vectors and store in self.outside_adj.
+        Build per‐floor outside adjacency vectors.
 
-        After calling this, we have:
-          self.outside_adj[floor_number] = {
-             "vector": np.ndarray,
-             "room_URIs_str": str,
-          }
+        Args:
+            horizontal_adj: Dictionary of per-floor horizontal adjacency data
+            mode: "binary" or "weighted"
+
+        Returns:
+            - outside_adj_dict: Dict with per-floor outside adjacency data
         """
-        self.outside_adj = {}
-        self.outside_adj_mode = mode
+        outside_adj_dict = {}
 
         for floor_number in sorted(self.polygons.keys()):
-            self.outside_adj[floor_number] = {
-                "vector": self.calculate_outside_adjacency(floor_number, mode=mode),
-                "room_URIs_str": self.horizontal_adj[floor_number]['room_URIs_str']
+            if floor_number not in horizontal_adj_dict:
+                continue
+                
+            floor_data = horizontal_adj_dict[floor_number]
+            outside_adj_dict[floor_number] = {
+                "vector": self._calculate_outside_adjacency(
+                    horizontal_adj_df=floor_data["df"], 
+                    mode=mode
+                ),
+                "room_URIs_str": floor_data['room_URIs_str']
             }
-        logger.info(f"Built outside adjacency on {len(self.outside_adj)} floors (mode={mode})")
+        
+        logger.info(f"Built outside adjacency on {len(outside_adj_dict)} floors (mode={mode})")
+                
+        return outside_adj_dict
 
-        # Combine all per‐floor outside adjacency vectors into one building‐wide vector
-        self._combine_outside_adjacencies()
-        return None
-
-    def _combine_outside_adjacencies(self) -> None:
+    def combine_outside_adjacencies(
+        self, 
+        outside_adj_dict: Dict[int, Dict]
+    ) -> np.ndarray:
         """
         Combine all per‐floor outside adjacency vectors into one building‐wide vector
         in the canonical self.room_uris order.
 
-        Stores:
-          - self.combined_outside_adj: numpy array, length = total rooms
-          - self.combined_outside_adj_series: pandas.Series indexed by str(uri)
-          - self.room_to_outside_adjacency: same numpy array (back‐compat)
+        Args:
+            outside_adj: Dictionary of per-floor outside adjacency data
+
+        Returns:
+            - combined_outside_adj: Combined outside adjacency vector
         """
-        if not hasattr(self, 'outside_adj') or not self.outside_adj:
-            raise ValueError("No outside adjacency found. Run build_outside_adjacency() first.")
+        if not outside_adj_dict:
+            raise ValueError("No outside adjacency found.")
 
         combined = pd.Series(0.0, index=self.room_URIs_str)
-        for floor_num, floor_data in self.outside_adj.items():
+        for floor_num, floor_data in outside_adj_dict.items():
             floor_series = pd.Series(floor_data["vector"], index=floor_data["room_URIs_str"])
             combined.update(floor_series)
-
-        self.combined_outside_adj = combined.values
-        self.combined_outside_adj_series = combined
-        self.room_to_outside_adjacency = combined.values # backward compatibility
         logger.info(f"Combined outside adjacency into vector of length {len(combined)}.")
-        return None
+
+        combined_outside_adj = combined.values
+        return combined_outside_adj

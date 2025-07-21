@@ -2,10 +2,8 @@ import os
 import numpy as np
 from datetime import datetime
 import pandas as pd
-import logging
 
-import logging
-logger = logging.getLogger(__name__)
+import logging; logger = logging.getLogger(__name__)
 
 
 class TemporalBuilderMixin:
@@ -115,26 +113,22 @@ class TemporalBuilderMixin:
             Dict[bucket_idx → {feature_name: value}].
         """        
         logger.info("Loading and processing weather data...")
-
-        from ...data.Weather.weather import (
-            load_weather_csv,
-            get_weather_data_for_time_buckets
-        )
-
+        
         # 1) Load & aggregate per‐bucket
+        from ...data.Weather.weather import load_weather_csv, get_weather_data_for_time_buckets
         df = load_weather_csv(weather_csv_path, self.start_time, self.end_time)
-        bucket_weather = get_weather_data_for_time_buckets(
-            df, self.time_buckets, self.interval
+        weather_dict = get_weather_data_for_time_buckets(
+            weather_df=df, time_buckets=self.time_buckets, interval=self.interval
         )
-        if not bucket_weather:
-            logger.warning("No weather data for any bucket.")
-            return {}
-
+        if not weather_dict:
+            raise ValueError("Weather CSV produced no data. Check path or date range.")
+        
         # 2) Build DataFrame (rows=buckets, cols=raw features)
-        weather_df = pd.DataFrame.from_dict(bucket_weather, orient="index")
-
+        weather_df = pd.DataFrame.from_dict(weather_dict, orient="index")
+        weather_df = weather_df.reset_index().rename(columns={'index': 'bucket_idx'})
+        
         # 3) Feature engineering
-        # — wind directions → sin & cos
+        # Wind directions → sin & cos
         for col in ("wind_direction_10m", "wind_direction_80m"):
             if col in weather_df:
                 θ = np.deg2rad(weather_df[col].astype(float))
@@ -142,7 +136,7 @@ class TemporalBuilderMixin:
                 weather_df[f"{col}_cos"] = np.cos(θ)
                 weather_df.drop(columns=[col], inplace=True)
 
-        # — one-hot encode weather_code
+        # One-hot encode weather_code
         if add_weather_code_onehot_features:
             if "weather_code" in weather_df:
                 weather_df = pd.get_dummies(weather_df,
@@ -156,65 +150,65 @@ class TemporalBuilderMixin:
             if "weather_code" in weather_df:
                 weather_df.drop(columns=["weather_code"], inplace=True)
         
-        self.weather_features_ = weather_df
-        self.weather_data_dict = weather_df.to_dict(orient="index")
+        self.weather_feature_names = [
+            c for c in weather_df.columns
+            if c != 'bucket_idx'
+        ]
+        self.weather_df = weather_df
         return None
     
-    #############################
-    # Task-Specific (Target) Data
-    #############################
-    
-    def get_workhour_labels(self, country_code: str = 'NL', save: bool = True) -> None:
+    def get_workhour_labels(
+            self, 
+            country_code: str = 'NL', 
+            workhour_start: int = 8,
+            workhour_end: int = 18
+        ) -> None:
         """
-        Generate work hour classification labels for each time bucket.
+        Generate work hour labels for each time bucket.
         
         Args:
-            country_code: Country code for holidays
+            country_code: Country code for holidays.
+            workhour_start: start hour for workhours.
+            workhour_end: end hour for workhours.
             save: whether to save the np.array to disk.
 
         Returns:
             Binary labels for each time bucket (1 for work hour, 0 for non-work hour), as np.ndarray.
         """
-        logger.info("Generating work hour classification labels...")
-
         if not self.time_buckets:
             raise ValueError("Time buckets not initialized. Call initialize_time_parameters first.")
+        logger.info("Generating work hour labels...")
         
-        # Initialize work hour classifier
+        # Initialize work hour classifier & classify time buckets
         from ...data.TimeSeries.workhours import WorkHourClassifier
         work_hour_classifier = WorkHourClassifier(
             country_code=country_code,
             start_year=self.start_time.year,
-            end_year=self.end_time.year
+            end_year=self.end_time.year,
+            workhour_start=workhour_start,
+            workhour_end=workhour_end
         )
-        
-        # Classify time buckets
         labels_list = work_hour_classifier.classify_time_buckets(self.time_buckets)
-        
-        # Convert to numpy array (legacy)
-        labels = np.array(labels_list, dtype=int)
-        self.workhour_labels = labels
-        
-        logger.info(f"Generated {len(labels)} classification labels")
-        logger.info(f"Work hours: {labels.sum()} ({labels.sum()/len(labels):.1%} of time buckets)")
-        logger.info("Workhour labels are saved as an array to 'self.workhour_labels'.")
         
         # Create a DataFrame with bucket indices and labels
         self.workhour_labels_df = pd.DataFrame({
             'bucket_idx': range(len(labels_list)),
-            'target_workhour': labels_list
+            'workhour': labels_list
         })
         
-        if save:
-            file_name = f'target_workhour_{self.interval}.parquet'
-            file_full_path = os.path.join(self.processed_data_dir, file_name)
-            
-            logger.info(f"Saving workhour labels DataFrame to: {file_full_path}")
-            self.workhour_labels_df.to_parquet(file_full_path, index=False)
-        
+        logger.info(f"Generated {len(labels_list)} classification labels")
+        logger.info(f"Work hours: {labels_list.sum()} ({labels_list.sum()/len(labels_list):.1%} of time buckets)")
         return None
     
-    def get_consumption_values(self, consumption_dir: str = "data/consumption", save: bool = True) -> None:
+    #############################
+    # Task-Specific (Target) Data
+    #############################
+        
+    def get_consumption_values(
+            self, 
+            consumption_dir: str = "data/consumption", 
+            save: bool = True
+        ) -> None:
         """
         Load and aggregate consumption data for forecasting.
 
@@ -242,7 +236,7 @@ class TemporalBuilderMixin:
             self.interval
         )
         # now bucket_consumption: { idx: raw_value }
-
+        
         # 2) Convert to array format and store (legacy)
         T = len(self.time_buckets)
         consumption_array = np.array([bucket_consumption[i] for i in range(T)], dtype=float).reshape(-1, 1)
@@ -267,7 +261,6 @@ class TemporalBuilderMixin:
         
         return None
     
-
     
     ##############################
     # Device-level DataFrame
@@ -394,6 +387,9 @@ class TemporalBuilderMixin:
 
         # Store the final, clean DataFrame
         self.device_level_df = full_df
+        self.device_level_df_temporal_feature_names = [
+            c for c in full_df.columns if c not in ('bucket_idx', 'device_uri_str', 'property_type')
+        ]
         return None
 
     
@@ -424,9 +420,7 @@ class TemporalBuilderMixin:
         - `has_measurement`:
             - `sum` -> `n_active_devices`: The number of devices reporting data.
             - `max` -> `has_measurement`: A binary flag indicating if the room had any data for that property.
-
-        After the aggregation, static room attributes (e.g., area, hasWindows) are added to the DataFrame.
-
+        
         The final DataFrame is stored in `self.room_level_df`.
         """
         logger.info(f"Starting to build room_level_df...")
@@ -587,6 +581,39 @@ class TemporalBuilderMixin:
         
         return None
 
+    def build_static_room_features_df(self) -> None:
+        """
+        Builds a DataFrame of static room features and stores it in the instance.
+        
+        This method iterates through all rooms in the graph, collects their static 
+        attributes using the `_collect_room_static_feature_dict` helper, and
+        stores the result in `self.static_room_features_df`.
+        """
+        logger.info(f"Building DataFrame with {len(self.static_room_attributes)} static features for all rooms...")
+        
+        # Create the DataFrame
+        static_df = pd.DataFrame(
+            [self._collect_room_static_feature_dict(str(uri))
+            for uri in self.office_graph.rooms]
+        ).set_index("room_uri_str")
+        
+        # Keep only selected attributes, preserve order
+        static_df = static_df[self.static_room_attributes]
+        
+        # Ensure canonical room ordering (same as self.room_URIs_str)
+        static_df = static_df.reindex([str(uri) for uri in self.room_URIs_str])
+        
+        # Make everything numeric
+        # NOTE: Currently, there are no categorical features in the static room features,
+        #       so we can safely convert all to numeric. But, if in the future they are
+        #      added, this will need to be adjusted.
+        static_df = static_df.apply(pd.to_numeric, errors="coerce")
+        
+        self.static_room_features_df = static_df
+        logger.info(f"Successfully built and stored `static_room_features_df`. Shape: {self.static_room_features_df.shape}")
+        
+        return None
+
     def add_static_room_features_to_df(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Enriches the df with static attributes for each room.
@@ -597,62 +624,21 @@ class TemporalBuilderMixin:
         Args:
             df: either the original or the expanded room_level_df DataFrame.
         """
-        if not hasattr(self, "norm_areas_minmax") or not hasattr(self, "norm_areas_prop"):
-            raise KeyError("norm_areas_minmax or norm_areas_prop not found. Run normalize_room_areas() first.")
+        if not hasattr(self, 'static_room_features_df'):
+            raise ValueError("Static room features DataFrame not found. Run build_static_room_features_df() first.")
+        static_df = self.static_room_features_df.copy()
 
-        logger.info(f"Adding {len(self.static_room_attributes)} static room features...")
+        merged_df = pd.merge(
+            df.copy(), 
+            static_df.reset_index(), 
+            on="room_uri_str", 
+            how="left"
+        )
         
-        # 1. Create a list of dictionaries, one for each room in your graph.
-        room_data = []
-        for room_uri_str, room_obj in [(str(uri), obj) for uri, obj in self.office_graph.rooms.items()]:
-            features = {'room_uri_str': room_uri_str}
-            for attr_string in self.static_room_attributes:
-
-                # Case 2: Special handling for normalized area attributes
-                if attr_string in ['norm_areas_minmax', 'norm_areas_prop']:
-                    # These attributes are stored on the builder instance, not the Room object.
-                    source_dict = getattr(self, attr_string, None)
-                    
-                    if source_dict:
-                        floor_num = self.room_to_floor.get(room_uri_str)
-                        val = source_dict.get(floor_num, {}).get(room_uri_str, np.nan)
-                        features[attr_string] = val
-                    else:
-                        logger.warning(f"Normalized area dictionary '{attr_string}' not found. Did you run normalize_room_areas()?")
-                        features[attr_string] = np.nan
-                
-                # Case 3: Default handling for attributes on the Room object
-                else:
-                    val = self.office_graph._get_nested_attr(room_obj, attr_string, default=np.nan)
-                    features[attr_string] = val
-
-            # Special handling for 'floor number', which is not in static_room_attributes,
-            # but still it is a feature for the room we want to include.
-            floor_uri_str = self.office_graph._map_room_uri_str_to_floor_uri_str(room_uri_str)
-            floor_num = self.office_graph._map_floor_uri_str_to_floor_number(floor_uri_str)
-            features["floor"] = floor_num
-            
-            # Adding features for a single room back to the list
-            room_data.append(features)
-
-        if not room_data:
-            logger.warning("Could not gather any static room data.")
-            return None
-        
-        # 2. Convert the list of dicts into a clean DataFrame.
-        static_features_df = pd.DataFrame(room_data)
-        static_features_df['room_uri_str'] = static_features_df['room_uri_str'].astype('category')
-
-        # 3. Merge this static data into the main DataFrame
-        merged_df = pd.merge(df.copy(), static_features_df,
-                             on='room_uri_str', how='left')
-                        
-        logger.info("Successfully merged static room features. Returning the DataFrame.")
-        
+        logger.info("Successfully merged static room features.")
         return merged_df
-
-
-
+    
+    
     ##############################
     # Floor-level DataFrame
     ##############################
@@ -752,7 +738,7 @@ class TemporalBuilderMixin:
 
             # Special case: std
             elif stat_suffix == 'std': 
-                final_stat_name = f"{prop}_average_intra_room_variation"
+                final_stat_name = f"average_intra_room_variation"
 
             # The standard case
             else:
@@ -861,46 +847,103 @@ class TemporalBuilderMixin:
         return None
 
     ##############################
-    # Building-level DataFrame
+    # Additional features
     ##############################
     
     def add_time_features_to_df(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Enriches a DataFrame with cyclical time-based features.
-
-        This method requires the DataFrame to have a 'bucket_idx' column and
-        for `self.time_buckets` to be initialized. It adds columns for sine and
-        cosine transformations of the hour of the day and the day of the week.
-
-        Args:
-            df: The input DataFrame to add time features to.
-
-        Returns:
-            The DataFrame with added time features.
-        """
-        if 'bucket_idx' not in df.columns:
-            raise ValueError("Input DataFrame must contain a 'bucket_idx' column.")
+        """Add cyclical time-based features onto a DataFrame on bucket_idx."""
         if not hasattr(self, 'time_buckets'):
             raise ValueError("Time buckets not found. Call initialize_time_parameters() first.")
-
+        if 'bucket_idx' not in df.columns:
+            raise ValueError("Input DataFrame must contain a 'bucket_idx' column.")
+        
         logger.info("Adding cyclical time features (hour, day of week)...")
-
+        
         # Create a mapping from bucket index to its start timestamp
         ts_map = {i: tb[0] for i, tb in enumerate(self.time_buckets)}
         timestamps = df['bucket_idx'].map(ts_map)
-
+        
         # Ensure timestamps are in datetime format for feature extraction
         dt = pd.to_datetime(timestamps)
-
-        # --- Hour of Day ---
+        
+        # Hour of Day
         hours = dt.dt.hour
         df['hour_sin'] = np.sin(2 * np.pi * hours / 24)
         df['hour_cos'] = np.cos(2 * np.pi * hours / 24)
-
-        # --- Day of Week ---
+        
+        # Day of Week
         dows = dt.dt.dayofweek  # Monday=0, Sunday=6
         df['dow_sin'] = np.sin(2 * np.pi * dows / 7)
         df['dow_cos'] = np.cos(2 * np.pi * dows / 7)
-
+        
         logger.info("Successfully added time features.")
         return df
+    
+    def add_workhour_labels_to_df(
+            self,
+            df: pd.DataFrame,
+            workhour_colname: str = "workhour",
+        ) -> pd.DataFrame:
+        """Add binary work-hour labels onto a DataFrame on bucket_idx."""
+        if not hasattr(self, "workhour_labels_df"):
+            raise AttributeError("workhour_labels_df not found. Run get_workhour_labels() first.")
+        if 'bucket_idx' not in df.columns:
+            raise ValueError("Input DataFrame must contain a 'bucket_idx' column.")
+
+        logger.info("Adding work‑hour labels...")
+
+        workhour_map = (
+            self.workhour_labels_df
+            .set_index('bucket_idx')[workhour_colname]
+        )
+        # Vectorised assignment
+        df[workhour_colname] = df['bucket_idx'].map(workhour_map)
+
+        logger.info("Successfully added work‑hour labels.")
+        return df
+    
+    def add_weather_features_to_df(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Add weather features into a DataFrame on bucket_idx."""
+        if 'bucket_idx' not in df.columns:
+            raise ValueError("Input DataFrame must contain a 'bucket_idx' column.")
+        if not hasattr(self, 'weather_df'):
+            raise ValueError("weather_df not found; call get_weather_data() first.")
+        weather_df = self.weather_df.copy()
+        
+        # Merge on bucket_idx
+        df_ = df.copy()
+        merged = pd.merge(
+            df_,
+            weather_df,
+            on='bucket_idx',
+            how='left'
+        )
+        return merged
+    
+    def build_time_features_df(self) -> None:
+        """
+        Create a per-bucket table with cyclical hour/weekday encodings
+        and the binary work-hour flag, then store it for reuse.
+
+        Produces:
+            self.time_features_df       # DataFrame indexed by bucket_idx
+            self.time_feature_names # ['hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'workhour']
+        """
+        if not hasattr(self, "time_buckets"):
+            raise AttributeError("time_buckets not initialised; call initialize_time_parameters() first.")
+        if not hasattr(self, "workhour_labels_df"):
+            raise AttributeError("workhour_labels_df not found; run get_workhour_labels() first.")
+
+        # 1) make a scaffold with all bucket indices
+        df = pd.DataFrame({"bucket_idx": range(len(self.time_buckets))})
+        df = self.add_time_features_to_df(df)
+        df = self.add_workhour_labels_to_df(df)
+        self.time_feature_names = ["hour_sin", "hour_cos", "dow_sin", "dow_cos", "workhour"]
+        self.time_features_df = df.set_index("bucket_idx")[self.time_feature_names]
+
+        logger.info(
+            "Built time_features_df with %d buckets and features %s",
+            len(self.time_features_df),
+            self.time_feature_names,
+        )
+        return None
