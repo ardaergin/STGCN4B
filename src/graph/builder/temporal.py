@@ -1,3 +1,4 @@
+from typing import Dict
 import os 
 import numpy as np
 from datetime import datetime
@@ -8,13 +9,13 @@ import logging; logger = logging.getLogger(__name__)
 
 class TemporalBuilderMixin:
 
-    def initialize_time_parameters(self, 
-                                  start_time: str = "2022-03-07 00:00:00", # Monday
-                                  # The data starts at 03-01 (Tuesday), but we start at 03-07 (Monday 00:00)
-                                  end_time: str = "2023-01-29 00:00:00", # 01-29, Sunday
-                                  # The data ends at 01-31 (Tuesday), but we end at 01-29 (Monday 00:00)
-                                  interval: str   = "1h",
-                                  use_sundays: bool = False) -> None:
+    def initialize_time_parameters(
+            self, 
+            start_time: str = "2022-03-07 00:00:00",
+            end_time: str = "2023-01-29 00:00:00",
+            interval: str   = "1h",
+            use_sundays: bool = False
+    ) -> None:
         """
         Initialize time-related parameters and create time buckets.
         
@@ -23,6 +24,10 @@ class TemporalBuilderMixin:
             end_time: End time for analysis in format "YYYY-MM-DD HH:MM:SS"
             interval: Frequency (15min, 30min, 1h, 2h…)
             use_sundays: Whether to include Sundays in time buckets
+
+        Notes:
+            The data starts at 03-01 (Tuesday), but we start at 03-07 (Sunday/Monday 00:00)
+            The data ends at 01-31 (Tuesday), but we end at 01-29 (Sunday/Monday 00:00)
         """
         self.start_time = datetime.strptime(start_time, "%Y-%m-%d %H:%M:%S")
         self.end_time = datetime.strptime(end_time, "%Y-%m-%d %H:%M:%S")
@@ -99,10 +104,11 @@ class TemporalBuilderMixin:
     # Weather Data (Predictor)
     #############################
 
-    def get_weather_data(self,
-                        weather_csv_path: str = "data/weather/hourly_weather_2022_2023.csv",
-                        add_weather_code_onehot_features: bool = False
-                        ) -> None:
+    def get_weather_data(
+            self,
+            weather_csv_path: str = "data/weather/hourly_weather_2022_2023.csv",
+            add_weather_code_onehot_features: bool = False
+    ) -> None:
         """
         Load, aggregate, and feature-engineer weather data for forecasting.
 
@@ -110,7 +116,7 @@ class TemporalBuilderMixin:
             weather_csv_path: CSV with hourly weather (must have a 'date' column).
 
         Returns:
-            Dict[bucket_idx → {feature_name: value}].
+            None, but stores the weather data in `self.weather_df` and `self.weather_feature_names`.
         """        
         logger.info("Loading and processing weather data...")
         
@@ -162,7 +168,7 @@ class TemporalBuilderMixin:
             country_code: str = 'NL', 
             workhour_start: int = 8,
             workhour_end: int = 18
-        ) -> None:
+    ) -> None:
         """
         Generate work hour labels for each time bucket.
         
@@ -170,10 +176,9 @@ class TemporalBuilderMixin:
             country_code: Country code for holidays.
             workhour_start: start hour for workhours.
             workhour_end: end hour for workhours.
-            save: whether to save the np.array to disk.
-
+        
         Returns:
-            Binary labels for each time bucket (1 for work hour, 0 for non-work hour), as np.ndarray.
+            None, but stores the labels in `self.workhour_labels_df`.
         """
         if not self.time_buckets:
             raise ValueError("Time buckets not initialized. Call initialize_time_parameters first.")
@@ -181,24 +186,33 @@ class TemporalBuilderMixin:
         
         # Initialize work hour classifier & classify time buckets
         from ...data.TimeSeries.workhours import WorkHourClassifier
-        work_hour_classifier = WorkHourClassifier(
+        classifier = WorkHourClassifier(
             country_code=country_code,
             start_year=self.start_time.year,
             end_year=self.end_time.year,
             workhour_start=workhour_start,
             workhour_end=workhour_end
         )
-        labels_list = work_hour_classifier.classify_time_buckets(self.time_buckets)
+        labels_dict: Dict[int, int] = classifier.classify_time_buckets(
+            self.time_buckets
+        )
         
-        # Create a DataFrame with bucket indices and labels
-        self.workhour_labels_df = pd.DataFrame({
-            'bucket_idx': range(len(labels_list)),
-            'workhour': labels_list
-        })
+        # Build the DataFrame
+        # NOTE: We know every bucket_idx is present.
+        workhour_df = (
+            pd.DataFrame.from_dict(labels_dict, orient="index", columns=["workhour"])
+            .reset_index()
+            .rename(columns={"index": "bucket_idx"})
+            .astype({"workhour": "int8"})
+        )
+        self.workhour_labels_df = workhour_df
         
-        logger.info(f"Generated {len(labels_list)} classification labels")
-        logger.info(f"Work hours: {labels_list.sum()} ({labels_list.sum()/len(labels_list):.1%} of time buckets)")
-        return None
+        # Logging
+        n_labels = len(workhour_df)
+        work_hours   = workhour_df["workhour"].sum()
+        work_percent = work_hours / n_labels
+        logger.info(f"Generated {n_labels} work‑hour labels "
+                    f"({work_hours} work, {work_percent:.1%} of buckets).")
     
     #############################
     # Task-Specific (Target) Data
@@ -208,7 +222,7 @@ class TemporalBuilderMixin:
             self, 
             consumption_dir: str = "data/consumption", 
             save: bool = True
-        ) -> None:
+    ) -> None:
         """
         Load and aggregate consumption data for forecasting.
 
@@ -217,42 +231,46 @@ class TemporalBuilderMixin:
             save: whether to save the np.array to disk.
 
         Returns:
-            NumPy array of consumption values, one per time bucket.
+            None, but stores the consumption values in `self.consumption_df`.
         """        
         logger.info("Loading and processing consumption data...")
         from ...data.TimeSeries.consumption import (
             load_consumption_files,
             aggregate_consumption_to_time_buckets
         )
-        # 1) load and aggregate
+        # Load and aggregate
         consumption_data = load_consumption_files(
             consumption_dir,
             self.start_time,
             self.end_time
         )
-        bucket_consumption = aggregate_consumption_to_time_buckets(
+        consumption_dict: Dict[int, float] = aggregate_consumption_to_time_buckets(
             consumption_data,
             self.time_buckets,
             self.interval
         )
-        # now bucket_consumption: { idx: raw_value }
         
-        # 2) Convert to array format and store (legacy)
+        # Build the DataFrame
         T = len(self.time_buckets)
-        consumption_array = np.array([bucket_consumption[i] for i in range(T)], dtype=float).reshape(-1, 1)
-        final_consumption_array = consumption_array.flatten() # Ensure 1D
-        self.consumption_values = final_consumption_array
-        logger.info("Consumption values are saved as an array to 'self.consumption_values'.")
-
-        # 3) Convert dictionary to a DataFrame
-        # This creates a DataFrame from the dictionary's items with named columns.
-        consumption_df = pd.DataFrame(
-            bucket_consumption.items(), 
-            columns=['bucket_idx', 'consumption']
+        consumption_df = (
+            pd.DataFrame.from_dict(consumption_dict, orient="index", columns=["consumption"])
+            .reindex(range(T)) # Guarantees every bucket_idx row
+            .reset_index()
+            .astype({"consumption": "float32"})
+            .rename(columns={"index": "bucket_idx"})
         )
-        self.consumption_df = consumption_df
-        logger.info("Consumption values are saved as a DataFrame to 'self.consumption_df'.")
+        self.consumption_df   = consumption_df
+        
+        # Logging
+        n_vals     = len(consumption_df)
+        n_missing  = consumption_df["consumption"].isna().sum()
+        mean_cons  = consumption_df["consumption"].mean()
+        logger.info(
+            f"Loaded {n_vals} consumption values "
+            f"({n_missing} missing, mean = {mean_cons:.2f})."
+        )
 
+        # (Optional) Export
         if save:
             file_name = f'target_consumption_{self.interval}.parquet'
             file_full_path = os.path.join(self.processed_data_dir, file_name)

@@ -1,8 +1,9 @@
 import holidays
 from datetime import datetime
-from typing import List, Tuple
+from typing import List, Tuple, Dict
 
 import logging; logger = logging.getLogger(__name__)
+
 
 class WorkHourClassifier:
     """
@@ -63,7 +64,7 @@ class WorkHourClassifier:
         
         return calendar
     
-    def is_work_hour(self, timestamp: datetime) -> bool:
+    def _is_work_hour(self, timestamp: datetime) -> bool:
         """
         Determine if a specific timestamp is during work hours.
         
@@ -89,42 +90,37 @@ class WorkHourClassifier:
         hour_of_day = timestamp.hour
         return self.workhour_start <= hour_of_day < self.workhour_end
     
-    def classify_time_buckets(self, time_buckets: List[Tuple[datetime, datetime]]) -> List[int]:
+    def classify_time_buckets(
+            self, 
+            time_buckets: List[Tuple[datetime, datetime]]
+    ) -> Dict[int, int]:
         """
-        Classify a list of time buckets as work hours or non-work hours.
+        Classify a list of time buckets as work hour (1) or non-work hour (0).
         
         Args:
             time_buckets: List of (start_time, end_time) tuples
-            
+        
         Returns:
-            List[int]: Binary labels (1 for work hour, 0 for non-work hour)
+            {bucket_idx: label}: Binary labels (1 for work hour, 0 for non-work hour)
         """
-        labels = []
+        labels = {}
+        holiday_hours = work_hours = non_work_hours = 0
         
-        # Count for logging
-        holiday_hours = 0
-        work_hours = 0
-        non_work_hours = 0
-        
-        for start_time, _ in time_buckets:
-            # Check if this is a work hour
-            if self.is_work_hour(start_time):
-                labels.append(1)
+        for idx, (start, _) in enumerate(time_buckets):
+            if self._is_work_hour(start):
+                labels[idx] = 1
                 work_hours += 1
             else:
-                labels.append(0)
+                labels[idx] = 0
                 non_work_hours += 1
-                
-                # Check if it's a holiday for logging
-                if start_time.date() in self.holidays_calendar:
+                if start.date() in self.holidays_calendar:
                     holiday_hours += 1
         
-        # Log summary information
-        logger.info(f"Classified {len(labels)} time buckets: {work_hours} work hours, {non_work_hours} non-work hours")
-        logger.info(f"Filtered out {holiday_hours} hours that fell on holidays")
-        
-        if labels:
-            baseline = max(work_hours, non_work_hours) / len(labels) * 100
-            logger.info(f"Baseline accuracy: {baseline:.2f}%")
-        
+        logger.info(
+            f"Classified {len(labels)} buckets: "
+            f"{work_hours} work, {non_work_hours} non‑work "
+            f"({holiday_hours} on holidays)"
+        )
+        baseline = max(work_hours, non_work_hours) / len(labels) * 100
+        logger.info(f"Baseline accuracy: {baseline:.2f}%")
         return labels
