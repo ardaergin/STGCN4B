@@ -625,7 +625,7 @@ class SpatialBuilderMixin:
 
     def create_masked_adjacency_matrices(
         self, 
-        adjacency_matrix: np.ndarray, 
+        adj_matrix: np.ndarray, 
         uri_str_list: List[str]
     ) -> Dict[int, np.ndarray]:
         """
@@ -647,7 +647,7 @@ class SpatialBuilderMixin:
         Returns:
             Dict[int, np.ndarray]: A dictionary of {step: masked_adjacency_matrix}.
         """
-        n_rooms = adjacency_matrix.shape[0]
+        n_rooms = adj_matrix.shape[0]
         room_has_device = np.zeros(n_rooms, dtype=bool)
 
         # Find which rooms have devices
@@ -664,7 +664,7 @@ class SpatialBuilderMixin:
         masks, can_pass, step = {}, room_has_device.copy(), 0        
         while True:
             masks[step] = np.tile(can_pass, (n_rooms, 1)).T
-            newly_reachable = (adjacency_matrix.T @ can_pass > 0) & ~can_pass
+            newly_reachable = (adj_matrix.T @ can_pass > 0) & ~can_pass
             if not newly_reachable.any() or step > n_rooms: break
             can_pass |= newly_reachable
             step += 1
@@ -672,7 +672,7 @@ class SpatialBuilderMixin:
 
         # Building the masked adjacency matrices
         masked_adjs = {
-            step: adjacency_matrix * mask
+            step: adj_matrix * mask
             for step, mask in masks.items()
         }
         logger.info(f"Created {len(masked_adjs)} masked adjacency matrices.")

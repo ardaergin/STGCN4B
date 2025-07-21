@@ -80,7 +80,7 @@ class OfficeGraphBuilder(
     # Pipelines
     #########################
     
-    def run_common_spatial_pipeline(self, args) -> None:
+    def run_spatial_pipeline(self, args) -> None:
         logger.info("========== Running the spatial pipeline... ==========")
         
         # Setting static attributes
@@ -113,52 +113,57 @@ class OfficeGraphBuilder(
         logger.info("========== Finished the spatial pipeline. ==========")
         return None
     
-    def run_adjacency_pipeline(self, args, adjacency_type: str) -> np.ndarray:
+    def run_adjacency_pipeline(self, args, adjacency_type: str) -> Dict[str, Any]:
         
         # Horizontal Adjacency
-        horizontal_adjacency_dict = self.build_horizontal_adjacency_dict(
-            mode=adjacency_type, 
-            distance_threshold=args.distance_threshold)
+        horizontal_adj_dict = self.build_horizontal_adjacency_dict(
+            mode                    = adjacency_type, 
+            distance_threshold      = args.distance_threshold
+        )
         horizontal_adj_matrix = self.combine_horizontal_adjacencies(
-            horizontal_adjacency_dict=horizontal_adjacency_dict)
+            horizontal_adj_dict     = horizontal_adj_dict
+        )
 
         # Vertical Adjacency
         vertical_adj_matrix = self.build_vertical_adjacency(
-            mode=adjacency_type,
-            min_overlap_area=0.05, min_weight=0)
+            mode                    = adjacency_type,
+            min_overlap_area        = 0.05, 
+            min_weight              = 0
+        )
         
         # Combined horizontal & vertical adjacency matrices
-        room_to_room_adj_matrix = self.build_combined_room_to_room_adjacency(
-            horizontal_adj_matrix=horizontal_adj_matrix,
-            vertical_adj_matrix=vertical_adj_matrix)
+        full_adj_matrix = self.build_combined_room_to_room_adjacency(
+            horizontal_adj_matrix   = horizontal_adj_matrix,
+            vertical_adj_matrix     = vertical_adj_matrix
+        )
         
         # Masked adjacency matrices
-        masked_adjacency_matrices = self.create_masked_adjacency_matrices(
-            adjacency_matrix=room_to_room_adj_matrix,
-            uri_str_list=self.room_URIs_str)
+        masked_adj_matrices = self.create_masked_adjacency_matrices(
+            adj_matrix              = full_adj_matrix,
+            uri_str_list            = self.room_URIs_str
+        )
         
         # Outside adjacency
         outside_adj_dict = self.build_outside_adjacency(
-            mode=adjacency_type)
+            mode                    = adjacency_type
+        )
         outside_adj_vector = self.combine_outside_adjacencies(
-            outside_adj_dict=outside_adj_dict)
+            outside_adj_dict        = outside_adj_dict
+        )
         
-        adjacency = {
-            "room_URIs_str": self.room_URIs_str,
-            "n_nodes": len(self.room_URIs_str),
-
-            "horizontal_adjacency_dict": horizontal_adjacency_dict,
-            "horizontal_adj_matrix": horizontal_adj_matrix,
-            "vertical_adj_matrix": vertical_adj_matrix,
+        adjacency_dict = {
+            "room_URIs_str":            self.room_URIs_str,
+            "n_nodes":                  len(self.room_URIs_str),
             
-            "adjacency_matrix": room_to_room_adj_matrix,
+            "horizontal_adj_matrix":    horizontal_adj_matrix,
+            "vertical_adj_matrix":      vertical_adj_matrix,
+            "full_adj_matrix":          full_adj_matrix,
             
-            "masked_adjacency_matrices": masked_adjacency_matrices,
+            "masked_adj_matrices":      masked_adj_matrices,
             
-            "outside_adj_dict": outside_adj_dict,
-            "outside_adjacency_vector": outside_adj_vector,
+            "outside_adj_vector":       outside_adj_vector,
         }
-        return adjacency
+        return adjacency_dict
     
     
     def run_temporal_pipeline(self, args):
@@ -361,7 +366,7 @@ def main():
         plots_dir=args.builder_plots_dir)     
     
     # Running the pipelines
-    builder.run_common_spatial_pipeline(args=args)
+    builder.run_spatial_pipeline(args=args)
     builder.run_temporal_pipeline(args=args)
     builder.run_tabular_pipeline(args=args)
     builder.run_homograph_pipeline(args=args)

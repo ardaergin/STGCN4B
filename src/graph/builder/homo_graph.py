@@ -68,22 +68,22 @@ class HomogGraphBuilderMixin:
         Args:
             adjacency_dict: Dictionary containing adjacency information with keys:
                 - "room_URIs_str": List of room URI strings
-                - "adjacency_matrix": The NxN adjacency matrix
-                - "outside_adjacency_vector": Vector of length N for outside connections
+                - "full_adj_matrix": The NxN adjacency matrix
+                - "outside_adj_vector": Vector of length N for outside connections
             outside_URI_str: URI string for the outside node (default: "outside")
 
         Returns:
             The updated adjacency_dict with modified:
             - "room_URIs_str": Updated to include the outside URI
-            - "adjacency_matrix": Updated to (N+1)x(N+1) matrix
-            - "masked_adjacency_matrices": Updated masked adjacency matrices
+            - "full_adj_matrix": Updated to (N+1)x(N+1) matrix
+            - "masked_adj_matrices": Updated masked adjacency matrices
         """
         adj_dict = adjacency_dict.copy()
 
         # Extract required keys from adjacency dictionary
         old_uris = adj_dict["room_URIs_str"]
-        old_adj = adj_dict["adjacency_matrix"]
-        outside_adj_vector = adj_dict["outside_adjacency_vector"]
+        old_adj = adj_dict["full_adj_matrix"]
+        outside_adj_vector = adj_dict["outside_adj_vector"]
         
         N = old_adj.shape[0]
         
@@ -91,7 +91,7 @@ class HomogGraphBuilderMixin:
         if len(old_uris) != N:
             raise ValueError(f"Mismatch: len(room_URIs_str)={len(old_uris)} vs adjacency shape={old_adj.shape}")
         if outside_adj_vector.shape[0] != N:
-            raise ValueError(f"outside_adjacency_vector length {outside_adj_vector.shape[0]} ≠ adjacency size {N}")
+            raise ValueError(f"outside_adj_vector length {outside_adj_vector.shape[0]} ≠ adjacency size {N}")
         if outside_URI_str in old_uris:
             raise ValueError(f"outside_uri {outside_URI_str!r} already exists in room_URIs_str.")
         
@@ -107,14 +107,16 @@ class HomogGraphBuilderMixin:
         logger.info(f"Created new URI list with length {len(new_uri_list)}.")
         
         # Create new information propagation masks
-        new_masked_adjs = self.create_masked_adjacency_matrices(new_adj_matrix, new_uri_list)
-        
+        new_masked_adjs = self.create_masked_adjacency_matrices(
+            adj_matrix      = new_adj_matrix, 
+            uri_str_list    = new_uri_list
+        )
         logger.info(f"Computed and patched {len(new_masked_adjs)} new information propagation masks.")
         
         # Update the adjacency_dict in place
         adj_dict["room_URIs_str"] = new_uri_list
         adj_dict["n_nodes"] += 1
-        adj_dict["adjacency_matrix"] = new_adj_matrix
-        adj_dict["masked_adjacency_matrices"] = new_masked_adjs
+        adj_dict["full_adj_matrix"] = new_adj_matrix
+        adj_dict["masked_adj_matrices"] = new_masked_adjs
         
         return adj_dict
