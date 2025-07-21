@@ -10,7 +10,8 @@ import optuna
 
 from ..preparation.preparer import LGBMDataPreparer
 from ..models.LightGBM.train import LGBMTrainer
-from .base import BaseExperimentRunner, TrainingResult
+from ..utils.tracking import TrainingResult, TrainingHistory
+from .base import BaseExperimentRunner
 
 # Set up the main logging
 import logging; logger = logging.getLogger(__name__)
@@ -113,11 +114,23 @@ class LGBMExperimentRunner(BaseExperimentRunner):
         return trial_args
     
     ##########################
+    # Setup model
+    ##########################
+    def _setup_model(
+            self, 
+            args: Any,
+        ) -> LGBMTrainer:
+        """Sets up the LightGBM model trainer."""
+        model = LGBMTrainer(args=args)
+        return model
+    
+    ##########################
     # Experiment execution
     ##########################
 
     def _train_one_fold(
         self,
+        model:              Any,
         trial:              optuna.trial.Trial,
         trial_params:       Dict[str, Any],
         fold_index:         int = None,
@@ -155,71 +168,80 @@ class LGBMExperimentRunner(BaseExperimentRunner):
         X_train, y_train, _ = self._get_split_payload(block_ids=train_block_ids)
         X_val, y_val, _ = self._get_split_payload(block_ids=val_block_ids)
         
-        # 3. Training
-        trainer = LGBMTrainer(
-            args = trial_params, 
-            mode = "hpo")
-        
-        # Note: We need a try-except block because our callback raises TrialPruned,
+        # Set the seed
+        trial_seed = self.seed + fold_index
+        model.model_params.update(
+            seed                    = trial_seed,
+            bagging_seed            = trial_seed,
+            feature_fraction_seed   = trial_seed,
+            data_random_seed        = trial_seed,
+        )
+
+        # NOTE: We need a try-except block because our callback raises TrialPruned,
         # which we need to catch and let Optuna handle.
         try:
-            model, history, training_result = trainer.train_model(
-                X_train, y_train, 
-                X_val, y_val, 
-                track_train_metric = True,
-                use_early_stopping = True,
-                verbose = True,
-                callbacks = [pruning_callback_with_offset]
+            trained_model, history, training_result = model.train_model(
+                training_mode       = "hpo",
+                X_train             = X_train, 
+                y_train             = y_train, 
+                X_val               = X_val,
+                y_val               = y_val,
+                use_early_stopping  = True,
+                track_train_metric  = True,
+                verbose             = True,
+                callbacks           = [pruning_callback_with_offset]
             )
         except optuna.exceptions.TrialPruned as e:
-            # If the trial is pruned, we re-raise the exception so Optuna can catch it.
+            logger.warning(f"Trial {trial.number} was pruned at fold {fold_index}.")
             raise e
 
         return training_result
     
     def _train_and_evaluate_final_model(
         self, 
-        params:             Union[Namespace, Dict[str, Any]],
+        model:              Any,
+        final_params:       Namespace,
         epochs:             int = None,
         threshold:          float = None,
         *,
         train_block_ids:    List[int],
         val_block_ids:      List[int], # For run_mode="test", we do have a validation set
         test_block_ids:     List[int],
-        ) -> Dict[str, Any]:
-        """Trains and evalutes the final model."""
-        
-        # Get the final parameters
-        final_params = deepcopy(self.args)
-        if isinstance(params, dict):
-            items = params.items()
-        else:
-            items = vars(params).items()
-
-        for key, value in items:
-            setattr(final_params, key, value)
-        
+        ) -> Tuple[Any, TrainingHistory, Dict[str, Any], Dict[str, Any]]:
+        """Trains and evalutes the final model."""        
         # Expose the epochs to args
         # NOTE. Using a heuristic: train for slightly longer on the full dataset.
         if epochs is not None:
-            final_params.n_estimators = int(np.ceil(epochs * 1.1))
+            multiplier = self.args.final_epoch_multiplier 
+            final_params.n_estimators = int(np.ceil(epochs * multiplier))
             logger.info(f"Inferred optimal n_estimators from CV: {epochs:.0f}. "
-                        f"Training final model for {final_params.n_estimators} rounds (1.1x).")
-                
+                        f"Training final model for {final_params.n_estimators} rounds ({multiplier}x).")
+        
         # Get split payload
         X_train, y_train, _ = self._get_split_payload(block_ids=train_block_ids)
         if val_block_ids:
             X_val, y_val, _ = self._get_split_payload(block_ids=val_block_ids)
         X_test, y_test, y_source_df = self._get_split_payload(block_ids=test_block_ids)
-                
-        trainer = LGBMTrainer(args=final_params, mode="final_model")
-        model, history, training_result = trainer.train_model(
+
+        # Final seed
+        # NOTE: For final training, using a different seed,
+        #       *2 seems high enough to not clash with the seeds of any previous folds.
+        final_seed = self.seed * 2  
+        model.model_params.update(
+            seed                    = final_seed,
+            bagging_seed            = final_seed,
+            feature_fraction_seed   = final_seed,
+            data_random_seed        = final_seed,
+        )
+
+        trained_model, history, training_result = model.train_model(
+            training_mode       = "final_model",
             X_train             = X_train, 
             y_train             = y_train, 
             X_val               = X_val if val_block_ids else None, 
             y_val               = y_val if val_block_ids else None, 
-            track_train_metric  = True,
             use_early_stopping  = True if val_block_ids else False,
+            track_train_metric  = True,
             verbose             = True,
             callbacks           = None # No pruning callback here
         )
@@ -231,15 +253,15 @@ class LGBMExperimentRunner(BaseExperimentRunner):
             logger.info(f"Using optimal classification threshold for evaluation: {threshold:.4f}")
                 
         # Evaluation
-        metrics, model_outputs = trainer.evaluate_model(
-            model               = model, 
+        metrics, model_outputs = model.evaluate_model(
+            model               = trained_model, 
             X_test              = X_test, 
             y_test              = y_test,
             y_source_df         = y_source_df, 
             threshold           = threshold
         )
         
-        return model, history, metrics, model_outputs
+        return trained_model, history, metrics, model_outputs
 
 def main():
     from ..config.args import parse_args

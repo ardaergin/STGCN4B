@@ -6,7 +6,8 @@ import pandas as pd
 import numpy as np
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Tuple
-
+from argparse import Namespace
+from copy import deepcopy
 import optuna
 from optuna.pruners import MedianPruner
 
@@ -112,8 +113,14 @@ class BaseExperimentRunner(ABC):
         train_block_ids, val_block_ids = self.splitter.get_single_split()
         test_block_ids = self.splitter.test_block_ids
         
-        model, history, metrics, model_outputs = self._train_and_evaluate_final_model(
-            params              = self.args, 
+        # Setup final model
+        logger.info("Setting up the final model with the best hyperparameters...")
+        model = self._setup_model(args=self.args)
+        
+        # Train and evaluate the final model
+        trained_model, history, metrics, model_outputs = self._train_and_evaluate_final_model(
+            model               = model,
+            final_params        = self.args, 
             epochs              = None,
             threshold           = None,
             train_block_ids     = train_block_ids, 
@@ -121,8 +128,8 @@ class BaseExperimentRunner(ABC):
             test_block_ids      = test_block_ids
         )
         
-        self._save_results(model, history, metrics, model_outputs)
-
+        # Save the results
+        self._save_results(trained_model, history, metrics, model_outputs)
     
     def _run_experiment(self) -> None:
         """Executes the full pipeline for a single experiment instance."""
@@ -131,19 +138,30 @@ class BaseExperimentRunner(ABC):
 
         # Get the best trial parameters and attributes
         best_trial  = study.best_trial
-        best_params = best_trial.params
+        best_params_dict = best_trial.params
         the_best_epoch = int(best_trial.user_attrs.get("best_n_epochs", 0))
         optimal_thr = best_trial.user_attrs.get("optimal_threshold", 0.5)
         
         # Save the best hyperparameters.
-        self._save_dict(best_params, "best_hyperparameters.json")
+        self._save_dict(best_params_dict, "best_hyperparameters.json")
+        
+        # Create a full configuration object for the final model
+        final_params = deepcopy(self.args)
+        for key, value in best_params_dict.items():
+            setattr(final_params, key, value)
         
         # Train and evaluate the final model using the best hyperparameters
         all_train_block_ids = self.splitter.train_block_ids
         test_block_ids = self.splitter.test_block_ids
 
-        model, history, metrics, model_outputs = self._train_and_evaluate_final_model(
-            params              = best_params, 
+        # Setup final model
+        logger.info("Setting up the final model with the best hyperparameters...")
+        model = self._setup_model(args=final_params)
+
+        # Train and evaluate the final model
+        trained_model, history, metrics, model_outputs = self._train_and_evaluate_final_model(
+            model               = model,
+            final_params        = final_params, 
             epochs              = the_best_epoch,
             threshold           = optimal_thr,
             train_block_ids     = all_train_block_ids, 
@@ -151,7 +169,8 @@ class BaseExperimentRunner(ABC):
             test_block_ids      = test_block_ids
         )
 
-        self._save_results(model, history, metrics, model_outputs, study)
+        # Save the results
+        self._save_results(trained_model, history, metrics, model_outputs, study)
     
     #########################
     # Abstract Methods
@@ -187,8 +206,14 @@ class BaseExperimentRunner(ABC):
         pass
     
     @abstractmethod
+    def _setup_model(self, args: Any) -> Any:
+        """Sets up the model for training and evaluation."""
+        pass
+    
+    @abstractmethod
     def _train_one_fold(
         self,
+        model:              Any,
         trial:              optuna.trial.Trial,
         trial_params:       Dict[str, Any],
         fold_index:         int = None,
@@ -211,14 +236,15 @@ class BaseExperimentRunner(ABC):
     @abstractmethod
     def _train_and_evaluate_final_model(
         self, 
-        params:             Dict[str, Any],
+        model:              Any,
+        final_params:       Namespace,
         epochs:             int = None,
         threshold:          float = None,
         *,
         train_block_ids:    List[int],
         val_block_ids:      List[int], # For run_mode="test", we do have a validation set
         test_block_ids:     List[int],
-        ) -> Tuple[Any, Dict[str, Any], Dict[str, Any]]:
+        ) -> Tuple[Any, TrainingHistory, Dict[str, Any], Dict[str, Any]]:
         """Trains the final model."""
         pass
         
@@ -294,17 +320,19 @@ class BaseExperimentRunner(ABC):
         logger.info(f">>> Starting trial {trial.number} <<<")
 
         trial_args = self._suggest_hyperparams(trial)
+        model = self._setup_model(args=trial_args)
         
         fold_results: List[TrainingResult] = []
         for fold_num, (train_idx, val_idx) in enumerate(self.splitter.split()):
             logger.info(f">>> Starting CV Fold {fold_num + 1}/{self.splitter.n_splits} <<<")
             
             result = self._train_one_fold(
-                trial=trial,
-                trial_params=trial_args,
-                fold_index=fold_num,
-                train_block_ids=train_idx,
-                val_block_ids=val_idx
+                model           = model,
+                trial           = trial,
+                trial_params    = trial_args,
+                fold_index      = fold_num,
+                train_block_ids = train_idx,
+                val_block_ids   = val_idx
             )
             fold_results.append(result)
             

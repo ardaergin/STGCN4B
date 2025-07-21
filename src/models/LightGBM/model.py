@@ -26,7 +26,7 @@ class LGBMWrapper(BaseEstimator, RegressorMixin, ClassifierMixin):
         metric: str = "mae",            # e.g. "mae", "rmse", "binary_logloss", "auc"
         boosting_type: str = "gbdt",
         n_estimators: int = 1000,
-        random_state: int = 2658918,
+        seed: int = 2658918, # or 'random_state'
         verbosity: int = 1,
         n_jobs: int = -1,
 
@@ -64,7 +64,7 @@ class LGBMWrapper(BaseEstimator, RegressorMixin, ClassifierMixin):
         self.metric = metric
         self.boosting_type = boosting_type
         self.n_estimators = n_estimators
-        self.random_state = random_state
+        self.seed = seed
         self.verbosity = verbosity
         self.n_jobs = n_jobs
 
@@ -147,7 +147,7 @@ class LGBMWrapper(BaseEstimator, RegressorMixin, ClassifierMixin):
             "metric": self.metric,
             "boosting_type": self.boosting_type,
             "n_estimators": self.n_estimators,
-            "random_state": self.random_state,
+            "seed": self.seed,
             "verbosity": self.verbosity,
             "n_jobs": self.n_jobs,
 

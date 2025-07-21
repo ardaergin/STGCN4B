@@ -25,7 +25,7 @@ Note:
 """
 
 import argparse
-from typing import List, Literal
+from typing import List, Literal, Any
 import torch
 import torch.nn as nn
 
@@ -53,8 +53,8 @@ class HomogeneousSTGCN(nn.Module):
     def __init__(
         self, 
         args:       argparse.Namespace, 
-        blocks:     List[List[int]], 
         n_vertex:   int, 
+        n_features: int,
         gso:        torch.Tensor | List[torch.Tensor], 
         *,
         conv_type:      Literal["gcn", "cheb"] = "gcn",
@@ -66,9 +66,14 @@ class HomogeneousSTGCN(nn.Module):
         if conv_type not in {"gcn", "cheb"}:
             raise ValueError("conv_type must be 'gcn' or 'cheb'")
         self.task_type = task_type
-        self.blocks = blocks
         self.n_vertex = n_vertex
+        self.n_features = n_features
         
+        # Define the STGCN architecture
+        blocks, Ko = self.define_stgcn_architecture(args, n_features)
+        self.blocks = blocks
+        self.Ko = Ko
+
         # Handle per-block GSOs (allow single tensor or iterable)
         if not isinstance(gso, (list, tuple)):
             gso = [gso] * (len(blocks) - 3)
@@ -98,9 +103,6 @@ class HomogeneousSTGCN(nn.Module):
         self.st_blocks = nn.Sequential(*st_layers)
         
         ########## Output block ##########
-        # Calculate size of remaining temporal kernel for output
-        self.Ko = args.n_his - (len(blocks) - 3) * 2 * (args.Kt - 1)
-
         if self.Ko > 1:
             self.output = OutputBlock(
                 Ko=self.Ko,                    # remaining temporal size
@@ -193,3 +195,47 @@ class HomogeneousSTGCN(nn.Module):
             return x
         else:
             raise ValueError(f"Unknown task_type: {self.task_type}")
+    
+    def reset_all_parameters(self, seed: int) -> None:
+        """
+        Re-initialise all learnable parameters and running buffers.
+
+        Parameters
+        ----------
+        seed : Sets torch's RNG so that each call is deterministic.
+        """
+        # Set seed for reproducibility
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        
+        # Reset all parameters recursively
+        for m in self.modules():
+            if hasattr(m, "reset_parameters"):
+                m.reset_parameters()
+
+    @staticmethod
+    def define_stgcn_architecture(args: Any, n_features: int) -> List[List[int]]:
+        """Defines the STGCN model's layer structure based on hyperparameters."""
+        blocks = []
+        
+        # Input features
+        blocks.append([n_features])
+        
+        # Intermediate ST-Conv blocks
+        for st_block in range(args.stblock_num):
+            blocks.append([args.st_main_channels, args.st_bottleneck_channels, args.st_main_channels])
+        
+        # Output blocks
+        # > Calculating the size of remaining temporal kernel for output
+        Ko = args.n_his - (args.Kt - 1) * 2 * args.stblock_num
+        if Ko > 0:
+            blocks.append([args.output_channels, args.output_channels])
+        elif Ko == 0:
+            blocks.append([args.output_channels])
+        else:
+            raise ValueError(f"Invalid architecture: Ko={Ko}. Adjust n_his, stblock_num, or Kt.")
+        
+        # Final output layer
+        blocks.append([len(args.forecast_horizons)])
+        
+        return blocks, Ko

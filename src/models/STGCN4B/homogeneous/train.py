@@ -3,153 +3,20 @@ from typing import Tuple, Dict, Any
 import torch
 import torch.nn as nn
 import numpy as np
-from torch_geometric.utils import dense_to_sparse
 import optuna
 
-from ....utils.graph_utils import calc_gso_edge
 from ....utils.early_stopping import EarlyStopping
 from ....utils.tracking import TrainingHistory, TrainingResult
 from ....utils.metrics import (regression_results, binary_classification_results, find_optimal_f1_threshold)
 from .normalizer import STGCNNormalizer
-from .models import HomogeneousSTGCN
 
 import logging; logger = logging.getLogger(__name__)
-
-
-def setup_model(
-        args, data
-    ) -> Tuple[nn.Module, nn.Module, torch.optim.Optimizer, torch.optim.lr_scheduler._LRScheduler]:
-    """Set up the STGCN model and training components."""
-    logger.info(f"Setting up model for the task type '{args.task_type}'...")
-    device   = data['device']
-    logger.info(f"Device: {device}")
-    n_nodes = data['n_nodes']
-    logger.info(f"Number of nodes: {n_nodes}")
-    n_features = data["n_features"]
-    logger.info(f"Number of features: {n_features}")
-
-    
-    if args.adjacency_type == "weighted" and args.gso_type not in ("rw_norm_adj", "rw_renorm_adj"):
-        raise ValueError(
-            f"When adjacency_type='weighted' you must pick gso_type "
-            f"in {{'rw_norm_adj','rw_renorm_adj'}}, got '{args.gso_type}'."
-        )
-
-    # Build a single static GSO
-    static_A = data["adjacency_matrix"]
-    edge_index, edge_weight = dense_to_sparse(static_A)
-    logger.info(f"edge_index shape: {edge_index.shape}")
-    logger.info(f"edge_weight shape: {edge_weight.shape}")
-
-    static_gso = calc_gso_edge(
-        edge_index, edge_weight, 
-        num_nodes           = n_nodes,
-        gso_type            = args.gso_type,
-        device              = device,
-    )
-    if args.gso_mode == "static":
-        gso = static_gso
-
-    # Build masked GSOs for information propagation
-    elif args.gso_mode == "dynamic":
-        masked_adjacency_matrices_dict = data.get("masked_adjacency_matrices", {})
-        masked_adjacency_matrices = list(masked_adjacency_matrices_dict.values())
-        masked_adjacency_matrices = masked_adjacency_matrices[: args.stblock_num]
-        masked_gsos = []
-        for adjacency_matrix in masked_adjacency_matrices:
-            edge_index, edge_weight = dense_to_sparse(adjacency_matrix)
-            G = calc_gso_edge(
-                edge_index, edge_weight, 
-                num_nodes           = n_nodes,
-                gso_type            = args.gso_type,
-                device              = device,
-            )
-            masked_gsos.append(G)
-
-        # In case we've got fewer than stblock_num, pad with the static GSO
-        while len(masked_gsos) < args.stblock_num:
-            masked_gsos.append(static_gso)
-        
-        gso = masked_gsos
-    
-    else:
-        raise ValueError(f"Unknown gso_mode: {args.gso_mode!r}. Must be 'static' or 'dynamic'.")
-    
-    # batch_sample = next(iter(data['train_loader']))
-    # X_batch_sample, y_batch = batch_sample[0], batch_sample[1]
-    # logger.info(f"Sample batch input shape (X): {X_batch_sample.shape}  # shape=(batch_size, n_his, n_nodes, n_features)")
-    # logger.info(f"Sample target shape: {y_batch.shape}")
-    
-    blocks = []
-    blocks.append([n_features])  # Input features
-    logger.info(f"Model first block input dimension: {blocks[0][0]}")
-
-    # Add intermediate blocks
-    for _ in range(args.stblock_num):
-        intermediate_channels = [args.st_main_channels, args.st_bottleneck_channels, args.st_main_channels]
-        blocks.append(intermediate_channels)
-        
-    # Add output blocks
-    Ko = args.n_his - (args.Kt - 1) * 2 * args.stblock_num
-    if Ko == 0:
-        blocks.append([args.output_channels])
-    elif Ko > 0:
-        blocks.append([args.output_channels, args.output_channels])
-    else:
-        raise ValueError(f"Problematic Ko={Ko}. Try a different combination of n_his, stblock_num, and Kt.")
-    
-    # Output dimension determined by n_pred
-    n_pred = len(args.forecast_horizons)
-    blocks.append([n_pred])
-    
-    # Create model based on graph convolution type
-    model = HomogeneousSTGCN(
-        args        = args,
-        blocks      = blocks,
-        n_vertex    = n_nodes,
-        gso         = gso,
-        conv_type   = args.graph_conv_type,
-        task_type   = args.task_type,
-    ).to(device)
-    
-    # Loss function based on task type
-    criterion = None
-    if args.task_type == "workhour_classification":
-        all_labels = []
-        for _, labels, _, _ in data['train_loader']:
-            all_labels.extend(labels.cpu().numpy().flatten().tolist())
-        n_samples = len(all_labels)
-        n_work_hours = sum(all_labels)
-        n_non_work_hours = n_samples - n_work_hours
-        pos_weight = n_non_work_hours / n_work_hours if n_work_hours > 0 else 1.0
-        logger.info(f"Class distribution: Work hours={n_work_hours}, Non-work hours={n_non_work_hours}")
-        logger.info(f"Using positive class weight: {pos_weight:.4f}")
-        criterion = torch.nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight, device=device))
-    else:
-        criterion = MaskedMSELoss()
-    
-    # Set optimizer
-    if args.optimizer == 'adam':
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay_rate)
-    elif args.optimizer == 'adamw':
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay_rate)
-    else:
-        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay_rate)
-    
-    # Learning rate scheduler
-    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=args.step_size, gamma=args.gamma)
-        
-    logger.info(f"Model setup complete with {sum(p.numel() for p in model.parameters())} parameters")
-    
-    return model, criterion, optimizer, scheduler
-
 
 
 def train_model(
         args,
         device: torch.device,
         model: nn.Module,
-        criterion: nn.Module,
         optimizer: torch.optim.Optimizer, 
         scheduler: torch.optim.lr_scheduler._LRScheduler,
         train_loader: torch.utils.data.DataLoader,
@@ -171,6 +38,9 @@ def train_model(
         f"GradScaler enabled: {scaler.is_enabled()}, "
         f"TF32: {torch.backends.cuda.matmul.allow_tf32}"
     )
+    
+    # Instantiate criterion
+    criterion = get_criterion(args, train_loader, device)
     
     # Instantiate training history
     train_metric        = "logloss" if args.task_type == "workhour_classification" else "mse"
@@ -581,7 +451,25 @@ def evaluate_model(
     return metrics, model_output
 
 
-# Helpers
+# Criterion helpers
+def get_criterion(args: Any, train_loader: torch.utils.data.DataLoader, device: torch.device) -> nn.Module:
+    """Creates the loss function based on the task type.
+    
+    For binary classification tasks, calculate positive class weight for imbalanced data.
+    """
+    if args.task_type == "workhour_classification":
+        # Calculate positive class weight for imbalanced data
+        all_labels = []
+        for _, labels, _, _ in train_loader:
+            all_labels.extend(labels.cpu().numpy().flatten().tolist())
+        n_pos = np.sum(all_labels)
+        n_neg = len(all_labels) - n_pos
+        pos_weight = torch.tensor(n_neg / n_pos if n_pos > 0 else 1.0, device=device)
+        logger.info(f"Using BCEWithLogitsLoss with pos_weight: {pos_weight.item():.2f}")
+        return nn.BCEWithLogitsLoss(pos_weight=pos_weight)
+    else:
+        return MaskedMSELoss()
+
 class MaskedMSELoss(nn.Module):
     def forward(self, preds, targets, mask):
         error = preds - targets

@@ -5,15 +5,18 @@ from typing import Dict, Any, List, Tuple, Union
 from argparse import Namespace
 import numpy as np
 import torch
+import torch.nn as nn
 import optuna
 
 from ..preparation.preparer import STGCNDataPreparer
 from ..models.STGCN4B.homogeneous.normalizer import STGCNNormalizer
 from ..models.STGCN4B.homogeneous.graph_loader import get_data_loaders
-from ..models.STGCN4B.homogeneous.train import setup_model, train_model, evaluate_model
-from .base import BaseExperimentRunner, TrainingResult
+from ..models.STGCN4B.homogeneous.train import train_model, evaluate_model
+from ..models.STGCN4B.homogeneous.setup import create_gso, create_optimizer, create_scheduler
+from ..models.STGCN4B.homogeneous.models import HomogeneousSTGCN
+from ..utils.tracking import TrainingResult, TrainingHistory
+from .base import BaseExperimentRunner
 
-# Set up the main logging
 import logging; logger = logging.getLogger(__name__)
 
 
@@ -88,8 +91,12 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         }
     
     def _get_split_payload(
-            self, args,
-            train_block_ids: List[int], val_block_ids: List[int], test_block_ids: List[int]
+            self, 
+            args: Any,
+            seed: int,
+            train_block_ids: List[int], 
+            val_block_ids: List[int], 
+            test_block_ids: List[int]
             )-> Tuple[Dict, STGCNNormalizer]:
         
         # Normalization & Imputation
@@ -109,7 +116,7 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         max_horizon = 0 if self.args.task_type == "workhour_classification" else max(args.forecast_horizons)
         loaders = get_data_loaders(
             args=args,
-            seed=self.seed,
+            seed=seed,
             blocks=self.input_dict["blocks"],
             block_size=self.input_dict["block_size"],
             feature_tensor=tensors["feature"],
@@ -135,7 +142,7 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         # Handling the possible invalid architecture
         trial_args.stblock_num = trial.suggest_categorical("stblock_num", [2, 3, 4, 5])
         trial_args.Kt = trial.suggest_categorical("Kt", [2, 3])
-        trial.suggest_int
+        
         # Suggesting n_his
         all_n_his_options = [12, 18, 24, 30, 36]
         trial_args.n_his = trial.suggest_categorical("n_his", all_n_his_options)
@@ -169,11 +176,51 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         return trial_args
     
     ##########################
+    # Setup model
+    ##########################
+    def _setup_model(
+            self, 
+            args: Any
+        ) -> nn.Module:
+        """Set up the STGCN model and training components."""
+        logger.info(f"Setting up model for the task type '{args.task_type}'...")
+        device   = self.input_dict['device']
+        logger.info(f"Device: {device}")
+        n_nodes = self.input_dict['n_nodes']
+        logger.info(f"Number of nodes: {n_nodes}")
+        n_features = self.input_dict["n_features"]
+        logger.info(f"Number of features: {n_features}")
+        
+        # Create GSO(s)
+        gso = create_gso(
+            args        = args, 
+            input_dict  = self.input_dict)
+        
+        # Initialize model
+        model = HomogeneousSTGCN(
+            args        = args,
+            n_vertex    = n_nodes,
+            n_features  = n_features,
+            gso         = gso,
+            conv_type   = args.graph_conv_type,
+            task_type   = args.task_type,
+        ).to(device)
+
+        # Compile model if requested
+        if self.args.compile_model:
+            logger.info("Compiling model...")
+            model = torch.compile(model=model, mode="reduce-overhead")
+            logger.info("Model compiled.")
+                
+        return model
+
+    ##########################
     # Experiment execution
     ##########################
     
     def _train_one_fold(
         self,
+        model:              Any,
         trial:              optuna.trial.Trial,
         trial_params:       Dict[str, Any],
         fold_index:         int = None,
@@ -183,30 +230,25 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         ) -> TrainingResult:
         """Trains and evaluates a single fold in cross-validation for HPO."""
         
-        # NOTE: Pruning callback is handled inside train_model()
+        # 1. Reset model weights, re-initialize optimizer and scheduler for the new fold
+        logger.info("Resetting model parameters before training.")
+        model.reset_all_parameters(seed=self.seed + fold_index)
+        optimizer = create_optimizer(args=trial_params, model=model)
+        scheduler = create_scheduler(args=trial_params, optimizer=optimizer)
         
         # 2. Get split payload
         loaders, normalizer = self._get_split_payload(
-            trial_params, 
-            train_block_ids, val_block_ids, test_block_ids=[])
+            args                = trial_params, 
+            seed                = self.seed + fold_index,
+            train_block_ids     = train_block_ids, 
+            val_block_ids       = val_block_ids, 
+            test_block_ids      = [])
         
         # 3. Training
-        data_for_setup = {**self.input_dict, **loaders}
-        model, criterion, optimizer, scheduler = setup_model(
-            trial_params, 
-            data_for_setup)
-
-        # Compile model if requested
-        if self.args.compile_model:
-            logger.info("Compiling model...")
-            model = torch.compile(model=model, mode="reduce-overhead")
-            logger.info("Model compiled.")
-        
-        model, history, training_result = train_model(
+        trained_model, history, training_result = train_model(
             args            = trial_params, 
             device          = self.input_dict['device'],
             model           = model, 
-            criterion       = criterion, 
             optimizer       = optimizer, 
             scheduler       = scheduler, 
             train_loader    = loaders['train_loader'], 
@@ -222,25 +264,16 @@ class STGCNExperimentRunner(BaseExperimentRunner):
 
     def _train_and_evaluate_final_model(
         self, 
-        params:             Union[Namespace, Dict[str, Any]],
+        model:              Any,
+        final_params:       Namespace,
         epochs:             int = None,
         threshold:          float = None,
         *,
         train_block_ids:    List[int],
         val_block_ids:      List[int], # For run_mode="test", we do have a validation set
         test_block_ids:     List[int],
-        ) -> Tuple[Any, Dict[str, Any], Dict[str, Any]]:
+        ) -> Tuple[Any, TrainingHistory, Dict[str, Any], Dict[str, Any]]:
         """Trains and evalutes the final model."""
-        
-        # Get the final parameters
-        final_params = deepcopy(self.args)
-        if isinstance(params, dict):
-            items = params.items()
-        else:
-            items = vars(params).items()
-        
-        for key, value in items:
-            setattr(final_params, key, value)
         
         # Expose the epochs to args
         # NOTE. Using a heuristic: train for slightly longer on the full dataset.
@@ -249,28 +282,30 @@ class STGCNExperimentRunner(BaseExperimentRunner):
             logger.info(f"Inferred optimal epochs from CV: {epochs:.0f}. "
                         f"Training final model for {final_params.epochs} rounds (1.1x).")
         
+        # Final seed
+        # NOTE: For final training, using a different seed,
+        #       *2 seems high enough to not clash with the seeds of any previous folds.
+        final_seed = self.seed * 2  
+
         # Get split payload
         loaders, normalizer = self._get_split_payload(
-            final_params, 
-            train_block_ids, val_block_ids=val_block_ids, test_block_ids=test_block_ids)
+            args                = final_params, 
+            seed                = final_seed,
+            train_block_ids     = train_block_ids, 
+            val_block_ids       = val_block_ids, 
+            test_block_ids      = test_block_ids)
+                
+        # Reset model weights, re-initialize optimizer and scheduler for the new fold
+        logger.info("Resetting model parameters before training.")
+        model.reset_all_parameters(seed=final_seed)
+        optimizer = create_optimizer(args=final_params, model=model)
+        scheduler = create_scheduler(args=final_params, optimizer=optimizer)
         
         # Training
-        data_for_setup = {**self.input_dict, **loaders}
-        model, criterion, optimizer, scheduler = setup_model(
-            final_params, 
-            data_for_setup)
-
-        # Compile model if requested
-        if self.args.compile_model:
-            logger.info("Compiling model...")
-            model = torch.compile(model=model, mode="reduce-overhead")
-            logger.info("Model compiled.")
-        
-        model, history, training_result = train_model(
+        trained_model, history, training_result = train_model(
             args            = final_params, 
             device          = self.input_dict['device'],
             model           = model, 
-            criterion       = criterion, 
             optimizer       = optimizer, 
             scheduler       = scheduler, 
             train_loader    = loaders['train_loader'], 
@@ -289,13 +324,13 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         metrics, model_outputs = evaluate_model(
             args        = final_params, 
             device      = self.input_dict['device'],
-            model       = model, 
+            model       = trained_model, 
             test_loader = loaders['test_loader'], 
             normalizer  = normalizer, 
             threshold   = threshold
         )
         
-        return model, history, metrics, model_outputs
+        return trained_model, history, metrics, model_outputs
     
 def main():
     """

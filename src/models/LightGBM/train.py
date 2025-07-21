@@ -13,11 +13,10 @@ class LGBMTrainer:
     """
     A trainer class to handle the training and evaluation of the LGBMWrapper.
     """
-    def __init__(self, args: Any, mode: str):
+    def __init__(self, args: Any):
         """
         Args:
             args: The experiment configuration object, also includes the model parameters for LGBM.
-            mode: "hpo" or "final_model".
         """
         self.args = args
 
@@ -26,11 +25,6 @@ class LGBMTrainer:
         self.model_params = {
             k: v for k, v in vars(self.args).items() if k in valid_params
         }
-        
-        # Set mode
-        if mode not in ["hpo", "final_model"]:
-            raise ValueError("Mode must be either 'hpo' or 'final_model'.")
-        self.mode = mode
         
         # Set metric & objective
         if self.args.task_type == "workhour_classification":
@@ -44,16 +38,10 @@ class LGBMTrainer:
                 objective = "regression_l1", # mae
                 metric    = "l1",
             )
-        
-        # If HPO, single job per trial, as Optuna parallelizes trials
-        if mode == "hpo":
-            self.model_params.update(n_jobs = 1)
-        # Use all CPUs for final training:
-        elif mode == "final_model":
-            self.model_params.update(n_jobs = -1)
-    
+
     def train_model(
         self,
+        training_mode: str,
         X_train: pd.DataFrame,
         y_train: pd.Series,
         X_val: pd.DataFrame = None,
@@ -63,8 +51,23 @@ class LGBMTrainer:
         verbose: bool = False,
         callbacks: list = None
         ) -> Tuple[LGBMWrapper, Dict[str, Any]]:
-        """Trains the LGBM model."""
+        """
+        Trains the LGBM model.
+
+        Args:
+            training_mode: The mode of training, either "hpo" or "final_model".
+        """
+        # Set mode
+        if training_mode not in ["hpo", "final_model"]:
+            raise ValueError("Mode must be either 'hpo' or 'final_model'.")
         
+        # If HPO, single job per trial, as Optuna parallelizes trials
+        if training_mode == "hpo":
+            self.model_params.update(n_jobs = 1)
+        # Use all CPUs for final training:
+        elif training_mode == "final_model":
+            self.model_params.update(n_jobs = -1)
+
         # Initialize the model
         model = LGBMWrapper(**self.model_params)
 
@@ -97,8 +100,8 @@ class LGBMTrainer:
             model.evals_result_,
             train_metric    = "logloss" if self.args.task_type == "workhour_classification" else "mae",
             train_objective = "minimize",
-            optuna_metric   = ("auc" if self.args.task_type == "workhour_classification" else "mae") if self.mode=="hpo" else None,
-            optuna_objective= ("maximize" if self.args.task_type == "workhour_classification" else "minimize") if self.mode=="hpo" else None,
+            optuna_metric   = ("auc" if self.args.task_type == "workhour_classification" else "mae") if training_mode=="hpo" else None,
+            optuna_objective= ("maximize" if self.args.task_type == "workhour_classification" else "minimize") if training_mode=="hpo" else None,
         )
 
         training_result = None
