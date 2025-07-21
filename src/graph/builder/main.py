@@ -186,6 +186,7 @@ class OfficeGraphBuilder(
         self.build_room_level_df()
         self.save_df_as_parquet(self.room_level_df, file_name=f"room_level_df_{args.interval}.parquet")
         self.build_expanded_room_level_df()
+        self.build_static_room_features_df()
         self.build_floor_level_df()
         self.build_building_level_df()
         self.save_df_as_parquet(self.building_level_df, file_name=f"building_level_df_{args.interval}.parquet")
