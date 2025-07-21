@@ -145,6 +145,7 @@ class OfficeGraphBuilder(
         
         # Outside adjacency
         outside_adj_dict = self.build_outside_adjacency(
+            horizontal_adj_dict     = horizontal_adj_dict,
             mode                    = adjacency_type
         )
         outside_adj_vector = self.combine_outside_adjacencies(
