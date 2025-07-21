@@ -1,11 +1,11 @@
 #!/bin/bash
 
-#SBATCH --partition=rome
+#SBATCH --partition=genoa
 #SBATCH --job-name=officegraph_builder
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
-#SBATCH --time=00:10:00
+#SBATCH --mem=32G
+#SBATCH --time=01:00:00
 #SBATCH --output=logs/builder/%A.out
 #SBATCH --error=logs/builder/%A.err
 
