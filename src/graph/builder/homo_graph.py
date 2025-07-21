@@ -9,8 +9,7 @@ class HomogGraphBuilderMixin:
     
     def add_weather_as_node_to_df(
         self, 
-        room_level_df: pd.DataFrame,
-        outside_URI_str: str = "outside"
+        df: pd.DataFrame,
     ) -> pd.DataFrame:
         """
         Return a new DataFrame that appends one “outside” pseudo‑room whose
@@ -18,8 +17,8 @@ class HomogGraphBuilderMixin:
 
         Parameters
         ----------
-        room_level_df : pd.DataFrame
-            Must contain at least ['room_uri_str', 'bucket_idx'].
+        df : pd.DataFrame
+            Room-level DataFrame, must contain at least ['room_uri_str', 'bucket_idx'].
         outside_URI_str : str
             The identifier inserted in room_uri_str for the outside node.
 
@@ -36,11 +35,12 @@ class HomogGraphBuilderMixin:
         outside_df = self.weather_df.copy()
 
         # Validation: Room-level DataFrame
-        if not {"room_uri_str", "bucket_idx"}.issubset(room_level_df.columns):
+        if not {"room_uri_str", "bucket_idx"}.issubset(df.columns):
             raise ValueError("room_level_df must contain 'room_uri_str' and 'bucket_idx'.")
-        room_df = room_level_df.copy()
+        room_df = df.copy()
         
         # Prepare the 'outside' node for concat
+        outside_URI_str = "outside"
         outside_df['room_uri_str'] = outside_URI_str
         
         # Ensure the order of columns matches room_df

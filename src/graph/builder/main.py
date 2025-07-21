@@ -236,50 +236,49 @@ class OfficeGraphBuilder(
     def run_homograph_pipeline(self, args) -> None:
         logger.info("========== Running the homogenous graph pipeline... ==========")
         
-        # Adding static attributes
-        interim_df = self.add_static_room_features_to_df(df=self.room_level_df_expanded)
+        # Adding static attributes and time features
+        interim_df = (
+            self.room_level_df_expanded
+            .pipe(self.add_static_room_features_to_df)
+            .pipe(self.add_time_features_to_df)
+            .pipe(self.add_workhour_labels_to_df)
+        )
         if args.make_and_save_plots:
             plot_missing_values(interim_df, df_name=f"Room-level DF, Expanded {self.plot_suffix}",
                                 save=True, output_dir=self.missing_plots_dir)
-        
-        # Add time features
-        interim_df = self.add_time_features_to_df(df=interim_df)
-        interim_df = self.add_workhour_labels_to_df(df=interim_df)
-        
-        # Weather as feature for all rooms
-        df = self.add_weather_features_to_df(df=interim_df)
-        fname_base = get_data_filename(file_type="dataframe", 
-                                       interval=args.interval, weather_mode="node",
-                                       model_family="feature")
-        self.save_df_as_parquet(df, file_name=f"{fname_base}.parquet")
-        
-        graph_data = {}
-        for adjacency_type in ("binary", "weighted"):
-            adj = self.run_adjacency_pipeline(args, adjacency_type=adjacency_type)
-            graph_data[adjacency_type] = adj
-        fname_base = get_data_filename(file_type="metadata", 
-                                       interval=args.interval, weather_mode="node",
-                                       model_family="feature")
-        self.save_metadata(graph_data=graph_data, file_name=f"{fname_base}.joblib")
-        
-        
-        # Weather as a seperate node's features
-        df = self.add_weather_as_node_to_df(room_level_df=interim_df)
-        fname_base = get_data_filename(file_type="dataframe", 
-                                       interval=args.interval, weather_mode="node",
-                                       model_family="graph")
-        self.save_df_as_parquet(df, file_name=f"{fname_base}.parquet")
 
-        graph_data = {}
-        for adjacency_type in ("binary", "weighted"):
-            adj = self.run_adjacency_pipeline(args, adjacency_type=adjacency_type)
-            adj = self.update_adjacencies_for_weather_as_node(adjacency_dict=adj,outside_URI_str="outside")
-            graph_data[adjacency_type] = adj
-        fname_base = get_data_filename(file_type="metadata", 
-                                       interval=args.interval, weather_mode="node",
-                                       model_family="graph")
-        self.save_metadata(graph_data=graph_data, file_name=f"{fname_base}.joblib")
-        
+        for mode in ("feature", "node"):
+            if mode == "feature":
+                df_fn           = self.add_weather_features_to_df
+                adj_update_fn   = lambda a: a
+            else: # mode == "node"
+                df_fn           = self.add_weather_as_node_to_df
+                adj_update_fn   = lambda a: self.update_adjacencies_for_weather_as_node(
+                                            adjacency_dict=a, outside_URI_str="outside")
+
+            # Filenames
+            fnames = {
+                file_type: get_data_filename(
+                    file_type       = file_type,
+                    interval        = args.interval,
+                    weather_mode    = mode,
+                    model_family    = "graph")
+                for file_type in ("dataframe", "metadata")
+            }
+            
+            # Dataframe
+            df_out = df_fn(interim_df)
+            self.save_df_as_parquet(df_out, f"{fnames['dataframe']}.parquet")
+
+            # MetaData
+            graph_data = {
+                adj_type: adj_update_fn(self.run_adjacency_pipeline(
+                    args            = args, 
+                    adjacency_type  = adj_type))
+                for adj_type in ("binary", "weighted")
+            }
+            self.save_metadata(graph_data, f"{fnames['metadata']}.joblib")
+
         logger.info("========== Finished the homogenous graph pipeline. ==========")
         return None
 
