@@ -156,9 +156,11 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         
         # --- General Training Hyperparameters ---
         trial_args.lr = trial.suggest_float("lr", 5e-5, 1e-3, log=True)
-        trial_args.weight_decay_rate = trial.suggest_float("weight_decay_rate", 1e-5, 1e-2, log=True)
+        trial_args.weight_decay_rate = trial.suggest_float("weight_decay_rate", 1e-5, 3e-3, log=True)
         trial_args.optimizer = trial.suggest_categorical("optimizer", ["adam", "adamw"])
-        trial_args.droprate = trial.suggest_float("droprate", 0.1, 0.6)
+        trial_args.step_size = trial.suggest_int("step_size", 2, 20, step=2)
+        trial_args.gamma = trial.suggest_float("gamma", 0.5, 0.95, log=True)
+        trial_args.droprate = trial.suggest_float("droprate", 0.1, 0.5)
         trial_args.enable_bias = trial.suggest_categorical("enable_bias", [True, False])
         
         # --- STGCN Architecture Hyperparameters ---
