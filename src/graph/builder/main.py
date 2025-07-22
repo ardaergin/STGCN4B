@@ -294,8 +294,8 @@ class OfficeGraphBuilder(
         #       data files of temporal graphs. In the preparation phase,
         #       we can just switch them. Since we have the metadata from 
         #       homograph output.
-        # So, binary here for simplicity, can be changed later.
-        adj = self.run_adjacency_pipeline(args, "binary") 
+        #       So, weighted here, all weights can be replaced with 1 later.
+        adj = self.run_adjacency_pipeline(args, "weighted") 
         self.build_base_hetero_graph(
             adj["horizontal_adj_matrix"],
             adj["vertical_adj_matrix"],
