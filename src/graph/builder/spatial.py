@@ -641,11 +641,11 @@ class SpatialBuilderMixin:
         masked adjacency matrices showing the network at each step.
 
         Args:
-            adjacency_matrix (np.ndarray): The adjacency matrix to use for calculations.
+            adj_matrix (np.ndarray): The adjacency matrix to use for calculations.
             uri_str_list (List[str]): The list of URI strings corresponding to the matrix rows/columns.
         
         Returns:
-            Dict[int, np.ndarray]: A dictionary of {step: masked_adjacency_matrix}.
+            Dict[int, np.ndarray]: A dictionary of {step: masked_adj_matrix}.
         """
         n_rooms = adj_matrix.shape[0]
         room_has_device = np.zeros(n_rooms, dtype=bool)
