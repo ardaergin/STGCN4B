@@ -467,33 +467,27 @@ class HeteroGraphBuilderMixin:
         """Update property nodes with measurements from the DataFrame for this time bucket."""
         if not hasattr(self, 'device_level_df'):
             raise ValueError("Device-level DataFrame not found. Run build_device_level_df first.")
+        df = self.device_level_df        
+        bucket_df = df[df['bucket_idx'] == bucket_idx]
 
-        n_properties = len(self.node_mappings['property'])
+        # Define the desired columns and the ordered list of node keys
+        cols = self.device_level_df_temporal_feature_names
+        keys = list(self.node_mappings['property'].keys())
         
-        # Get the existing static features
-        static_property_features = hetero_graph['property'].x.clone()
+        # Vectorized feature alignment
+        block = (bucket_df
+                .set_index(['device_uri_str', 'property_type'])[cols]
+                .astype(np.float32))
+        aligned = block.reindex(keys)
         
-        # Get the DataFrame and features
-        df = self.device_level_df
-        temporal_feature_colnames = self.device_level_df_temporal_feature_names
-        n_temporal_features = len(temporal_feature_colnames)
-        temporal_features = torch.full(
-            (n_properties, n_temporal_features), 
-            float('nan'), dtype=torch.float32)
-
-        # Get data for this bucket
-        measurement_data = df[df['bucket_idx'] == bucket_idx]
+        # Build the tensor
+        prop_feat_mat_temporal = torch.from_numpy(
+            aligned.to_numpy(dtype=np.float32, copy=False)
+        )
         
-        lookup = {
-            (r.device_uri_str, r.property_type): r[temporal_feature_colnames].to_numpy(np.float32)
-            for r in measurement_data.itertuples()
-        }
-
-        for (dev, prop), idx in self.node_mappings["property"].items():
-            if (dev, prop) in lookup:
-                temporal_features[idx] = torch.from_numpy(lookup[(dev, prop)])
-        
-        hetero_graph['property'].x = torch.cat([static_property_features, temporal_features], dim=1)
+        # Concatenate static and temporal property features
+        prop_feat_mat_static = hetero_graph['property'].x
+        hetero_graph['property'].x = torch.cat([prop_feat_mat_static, prop_feat_mat_temporal], dim=1)
 
         return None
     
