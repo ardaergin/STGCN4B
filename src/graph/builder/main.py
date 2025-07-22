@@ -169,12 +169,12 @@ class OfficeGraphBuilder(
     
     def run_temporal_pipeline(self, args):
         logger.info("========== Running the temporal pipeline... ==========")
-
+        
         # Time buckets & Weekly blocks setup
         self.initialize_time_parameters(start_time=args.start_time, end_time=args.end_time,
                                         interval=args.interval, use_sundays=args.use_sundays)
         self.build_weekly_blocks()
-
+        
         # Get weather data
         self.get_weather_data(weather_csv_path=args.weather_csv_path)
         
@@ -186,18 +186,16 @@ class OfficeGraphBuilder(
         
         # Get (possible) target data
         self.get_consumption_values(consumption_dir=args.consumption_dir, save=True)
-    
+        
         # Building different level feature DataFrames
         self.build_device_level_df()
         self.build_room_level_df()
-        self.save_df_as_parquet(self.room_level_df, file_name=f"room_level_df_{args.interval}.parquet")
-        self.build_expanded_room_level_df()
-        self.build_static_room_features_df()
         self.build_floor_level_df()
         self.build_building_level_df()
-        self.save_df_as_parquet(self.building_level_df, file_name=f"building_level_df_{args.interval}.parquet")
         
         # Building supporting DataFrames
+        self.build_expanded_room_level_df()
+        self.build_static_room_features_df()
         self.build_time_features_df()
         
         # Missingness plots for all 4 of these DFs
