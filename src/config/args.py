@@ -101,7 +101,7 @@ def add_OfficeGraph_args(parser):
     parser.add_argument('--incorporate_weather', 
                         action='store_true',
                         help='Add the weather info to the homogeneous graph (default: False)')
-    parser.add_argument("--weather-mode", type=str,
+    parser.add_argument("--weather_mode", type=str,
                         default="feature",
                         choices=["feature", "node"],
                         help="How to incorporate weather data: 'feature' (add to all rooms) or 'node' (add as separate room node)")
