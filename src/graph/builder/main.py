@@ -301,7 +301,7 @@ class OfficeGraphBuilder(
         self.build_base_hetero_graph(
             adj["horizontal_adj_matrix"],
             adj["vertical_adj_matrix"],
-            adj["outside_adjacency_vector"]
+            adj["outside_adj_vector"]
         )
         
         self.build_hetero_temporal_graphs()
