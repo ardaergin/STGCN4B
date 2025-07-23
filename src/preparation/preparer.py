@@ -88,10 +88,11 @@ class BaseDataPreparer(ABC):
         logger.info(f"Metadata keys: {list(self.metadata.keys())}")
         
         # Workhour labels for masking
-        workhour_labels_fname = f'workhours_{self.args.interval}.parquet'
-        workhour_labels_path = os.path.join(self.args.processed_data_dir, workhour_labels_fname)
-        logger.info(f"Loading workhour labels from: {workhour_labels_path}")
-        self.workhour_labels_df = pd.read_parquet(workhour_labels_path)
+        if self.args.mask_workhours:
+            workhour_labels_fname = f'workhours_{self.args.interval}.parquet'
+            workhour_labels_path = os.path.join(self.args.processed_data_dir, workhour_labels_fname)
+            logger.info(f"Loading workhour labels from: {workhour_labels_path}")
+            self.workhour_labels_df = pd.read_parquet(workhour_labels_path)
         
         # Consumption target (if applicable)
         if self.args.task_type == "consumption_forecast":
