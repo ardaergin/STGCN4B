@@ -84,7 +84,7 @@ class BaseDataPreparer(ABC):
         logger.info(f"Loading joblib metadata from {metadata_file_path}")
         self.metadata = joblib.load(metadata_file_path)
         logger.info(f"Metadata keys: {list(self.metadata.keys())}")
-                
+        
         # Consumption target (if applicable)
         if self.args.task_type == "consumption_forecast":
             filename = f'target_consumption_{self.args.interval}.parquet'
@@ -193,7 +193,6 @@ class BaseDataPreparer(ABC):
         pass
 
 
-
 class LGBMDataPreparer(BaseDataPreparer):
     """Prepares data for the LightGBM model."""
     
@@ -270,13 +269,15 @@ class STGCNDataPreparer(BaseDataPreparer):
         super().__init__(args)
         assert self.args.model_family == "graph", "STGCNDataPreparer only supports 'graph' model_family."
         assert self.args.model == "STGCN", "STGCNDataPreparer only supports STGCN model."
+        self.device: torch.device = torch.device(
+            "cuda" if self.args.enable_cuda and torch.cuda.is_available() else "cpu")
+        self.graph_dict: Dict[str, Any] = {}
         self.target_data: Dict[str, Any] = {}
         self.feature_data: Dict[str, Any] = {}
-
-        # Device
-        self.device = torch.device("cuda" if self.args.enable_cuda and torch.cuda.is_available() else "cpu")
-
-        # Getting the requested adj, and already converting the obtained graph structures to tensors
+    
+    def _load_data_from_disk(self) -> None:
+        """Extension to the base class."""
+        super()._load_data_from_disk()
         self.graph_dict = self._get_requested_adjacency_tensors(device=self.device)
     
     def _prepare_target(self) -> None:
