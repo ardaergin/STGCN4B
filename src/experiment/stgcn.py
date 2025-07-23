@@ -194,9 +194,15 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         logger.info(f"Number of features: {n_features}")
         
         # Create GSO(s)
+        A = self.input_dict["f_adj_mat_tensor"]
+        M = self.input_dict["m_adj_mat_tensors"]
         gso = create_gso(
-            args        = args, 
-            input_dict  = self.input_dict)
+            args                = args,
+            device              = device,
+            n_nodes             = n_nodes,
+            adjacency_matrix    = A,
+            masked_adj_matrices = M if args.gso_mode == "dynamic" else None,
+        )
         
         # Initialize model
         model = HomogeneousSTGCN(

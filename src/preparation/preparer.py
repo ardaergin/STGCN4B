@@ -3,7 +3,7 @@ import torch
 import joblib
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, Tuple, List
+from typing import Dict, Any, List
 from abc import ABC, abstractmethod
 
 from ..utils.filename_util import get_data_filename
@@ -45,8 +45,7 @@ class BaseDataPreparer(ABC):
         
         # Step 3: Prepare targets (subclass-specific logic)
         self._prepare_target()
-        if not self.args.task_type == "workhour_classification":
-            self._handle_nan_targets()
+        self._handle_nan_targets()
         
         # Step 4: Drop features if requested, before _prepare_features()
         self._drop_requested_columns()
@@ -62,11 +61,13 @@ class BaseDataPreparer(ABC):
     def _load_data_from_disk(self) -> None:
         """Loads the base DataFrame and metadata from disk."""
         # DataFrame
-        data_fname_base = get_data_filename(file_type="dataframe", 
-                                            task_type=self.args.task_type,
-                                            model_family=self.args.model_family,
-                                            interval=self.args.interval, 
-                                            incorporate_weather=self.args.incorporate_weather)
+        data_fname_base = get_data_filename(
+            file_type       = "dataframe", 
+            interval        = self.args.interval, 
+            weather_mode    = self.args.weather_mode,
+            model_family    = self.args.model_family,
+            task_type       = self.args.task_type,
+        )
         data_file_path = os.path.join(self.args.processed_data_dir, f"{data_fname_base}.parquet")
         logger.info(f"Loading parquet data from {data_file_path}")
         self.raw_df = pd.read_parquet(data_file_path)
@@ -74,30 +75,27 @@ class BaseDataPreparer(ABC):
         self.df = self.raw_df.copy()
         
         # MetaData
-        metadata_fname_base = get_data_filename(file_type="metadata", 
-                                                task_type=self.args.task_type,
-                                                model_family=self.args.model_family,
-                                                interval=self.args.interval, 
-                                                incorporate_weather=self.args.incorporate_weather)
+        metadata_fname_base = get_data_filename(
+            file_type       = "metadata", 
+            interval        = self.args.interval, 
+            weather_mode    = self.args.weather_mode,
+        )
         metadata_file_path = os.path.join(self.args.processed_data_dir, f"{metadata_fname_base}.joblib")
         logger.info(f"Loading joblib metadata from {metadata_file_path}")
         self.metadata = joblib.load(metadata_file_path)
         
-        # Targets for certain tasks
-        if self.args.task_type == "workhour_classification":
-            filename = f'target_workhour_{self.args.interval}.parquet'
-            file_path = os.path.join(self.args.processed_data_dir, filename)
-            logger.info(f"Loading workhour labels from: {file_path}")
-            self.workhour_df = pd.read_parquet(file_path)
-            
-        elif self.args.task_type == "consumption_forecast":
+        # Consumption target (if applicable)
+        if self.args.task_type == "consumption_forecast":
             filename = f'target_consumption_{self.args.interval}.parquet'
             file_path = os.path.join(self.args.processed_data_dir, filename)
             logger.info(f"Loading consumption values from: {file_path}")
             self.consumption_df = pd.read_parquet(file_path)
-        
+    
     @staticmethod
-    def _reduce_mem_usage(df: pd.DataFrame, verbose: bool = True) -> pd.DataFrame:
+    def _reduce_mem_usage(
+            df: pd.DataFrame, 
+            verbose: bool = True
+    ) -> pd.DataFrame:
         """
         Iterate through all the columns of a dataframe and modify the data type
         to reduce memory usage.
@@ -131,12 +129,9 @@ class BaseDataPreparer(ABC):
         """Drop any column whose name contains a substring from args.features_to_drop."""
         if not self.args.features_to_drop:
             return
-        
         substrings_to_drop = self.args.features_to_drop
-        
         cols_to_drop = [col for col in self.df.columns 
                         if any(sub in col for sub in substrings_to_drop)]
-        
         if cols_to_drop:
             self.df.drop(columns=cols_to_drop, inplace=True)
             logger.info(f"Dropped {len(cols_to_drop)} columns containing substrings {substrings_to_drop}.")
@@ -151,28 +146,23 @@ class BaseDataPreparer(ABC):
         Subclasses should call this method via `super()._prepare_target()` and
         then add any model-specific target processing.
         """
-        if self.args.task_type == "workhour_classification":
-            self.target_colnames.append('target_workhour')
-            self.target_source_df = pd.DataFrame()
-            self.target_df = self.workhour_df.copy()
-        else:
-            # 1. Get the source column name based on the task
-            if self.args.task_type == "measurement_forecast":
-                self.source_colname = f'{self.args.measurement_variable}_{self.args.measurement_variable_stat}'
-                self.target_source_df = self.df[['bucket_idx', 'room_uri_str', self.source_colname]].copy()
-            else:  # consumption_forecast
-                self.source_colname = 'consumption'
-                self.target_source_df = self.consumption_df.copy() # just bucket_idx and consumption
-                        
-            # 2. Call the engineer to add target columns to the DataFrame
-            target_df_with_source_col, self.target_colnames, = self.target_engineer.add_forecast_targets_to_df(
-                task_type=self.args.task_type, data_frame=self.target_source_df,
-                source_colname=self.source_colname, horizons=self.args.forecast_horizons,
-                prediction_type=self.args.prediction_type
-            )
-            self.target_df = target_df_with_source_col.drop(columns=self.source_colname)
-            logger.info(f"Prepared {len(self.target_colnames)} target columns from {self.source_colname}. "
-                        f"New columns: {self.target_colnames}")
+        # 1. Get the source column name based on the task
+        if self.args.task_type == "measurement_forecast":
+            self.source_colname = f'{self.args.measurement_variable}_{self.args.measurement_variable_stat}'
+            self.target_source_df = self.df[['bucket_idx', 'room_uri_str', self.source_colname]].copy()
+        else:  # consumption_forecast
+            self.source_colname = 'consumption'
+            self.target_source_df = self.consumption_df.copy() # just bucket_idx and consumption
+                    
+        # 2. Call the engineer to add target columns to the DataFrame
+        target_df_with_source_col, self.target_colnames, = self.target_engineer.add_forecast_targets_to_df(
+            task_type=self.args.task_type, data_frame=self.target_source_df,
+            source_colname=self.source_colname, horizons=self.args.forecast_horizons,
+            prediction_type=self.args.prediction_type
+        )
+        self.target_df = target_df_with_source_col.drop(columns=self.source_colname)
+        logger.info(f"Prepared {len(self.target_colnames)} target columns from {self.source_colname}. "
+                    f"New columns: {self.target_colnames}")
     
     @abstractmethod
     def _handle_nan_targets(self) -> None:
@@ -284,28 +274,24 @@ class STGCNDataPreparer(BaseDataPreparer):
     
     def _prepare_target(self) -> None:
         super()._prepare_target()
-        if self.args.task_type == "workhour_classification":
-            workhour_array = self.workhour_df.sort_values('bucket_idx')['target_workhour'].to_numpy()
-            self.target_data["target_array"] = workhour_array
-        else:
-            # Using the helper to create the target array, mask array, and source array (if delta prediction)
-            if self.args.task_type == "consumption_forecast":
-                has_room_dimension = False
-            else: # measurement_forecast
-                has_room_dimension = True
-            
-            # Target array
-            self.target_data["raw_target_array"] = self._pivot_df_to_numpy(
-                df=self.target_df, 
-                columns_to_pivot=self.target_colnames, 
+        # Using the helper to create the target array, mask array, and source array (if delta prediction)
+        if self.args.task_type == "consumption_forecast":
+            has_room_dimension = False
+        else: # measurement_forecast
+            has_room_dimension = True
+        
+        # Target array
+        self.target_data["raw_target_array"] = self._pivot_df_to_numpy(
+            df=self.target_df, 
+            columns_to_pivot=self.target_colnames, 
+            has_room_dimension=has_room_dimension)
+        
+        # Source array (for delta prediction)
+        if self.args.prediction_type == "delta":
+            self.target_data["raw_target_source_array"] = self._pivot_df_to_numpy(
+                df=self.target_source_df, 
+                columns_to_pivot=[self.source_colname],
                 has_room_dimension=has_room_dimension)
-            
-            # Source array (for delta prediction)
-            if self.args.prediction_type == "delta":
-                self.target_data["raw_target_source_array"] = self._pivot_df_to_numpy(
-                    df=self.target_source_df, 
-                    columns_to_pivot=[self.source_colname],
-                    has_room_dimension=has_room_dimension)
     
     def _handle_nan_targets(self) -> None:
         """
@@ -328,7 +314,7 @@ class STGCNDataPreparer(BaseDataPreparer):
             #       But it does not hurt to impute NaNs just in case.
             raw_target_source_array = self.target_data['raw_target_source_array']
             self.target_data['target_source_array'] = np.nan_to_num(raw_target_source_array, nan=0.0)
-            
+    
     def _prepare_features(self) -> None:        
         # Identify feature columns (all numeric cols except identifiers and targets)
         identifier_cols = ['bucket_idx', 'block_id', 'room_uri_str']
@@ -342,11 +328,12 @@ class STGCNDataPreparer(BaseDataPreparer):
         feature_array = self._pivot_df_to_numpy(self.df, columns_to_pivot=feature_cols)
         self.feature_data["feature_array"] = feature_array
     
-    def _pivot_df_to_numpy(self,
-                           df: pd.DataFrame, 
-                           columns_to_pivot: List[str],
-                           has_room_dimension=True
-                           ) -> np.ndarray:
+    def _pivot_df_to_numpy(
+            self,
+            df: pd.DataFrame, 
+            columns_to_pivot: List[str],
+            has_room_dimension=True
+    ) -> np.ndarray:
         """
         Helper to convert DataFrame columns to a model-ready NumPy array, preserving NaNs.
         
@@ -361,8 +348,6 @@ class STGCNDataPreparer(BaseDataPreparer):
         +------------------------+------------------------------------+-----------------+----------------------+
         | `consumption_forecast`    | Single value for the building     | ``(T, H)``      | ``False``          |
         +------------------------+------------------------------------+-----------------+----------------------+
-        | `workhour_classification` | Single value for the floor        | ``(T, 1)``      | ``False``          |
-        +------------------------------------------------------------------------------------------------------+
         * T: Time steps, R: Rooms, F: Features, H: Horizons
         
         Args:
@@ -378,7 +363,7 @@ class STGCNDataPreparer(BaseDataPreparer):
         
         # Case for data WITH a room dimension (Features for all task types, targets for measurement_forecast)
         if has_room_dimension:
-            room_order = self.metadata["rooms"]
+            room_order = self.metadata["room_URIs_str"]
             T = sum(len(v["bucket_indices"]) for v in self.metadata["blocks"].values())
             R = len(room_order)
             F = len(columns_to_pivot)
@@ -400,59 +385,58 @@ class STGCNDataPreparer(BaseDataPreparer):
             logger.info(f"Created 2D NumPy array of shape {np_array.shape}")
             return np_array
     
-    def _prepare_input_dict(self):        
+    def _prepare_input_dict(self):
         # Device
         device = torch.device("cuda" if self.args.enable_cuda and torch.cuda.is_available() else "cpu")
         
         # Getting the requested adj, and already converting the obtained graph structures to tensors
-        adj_matrix, masked_adj_dict, outside_adj = self._get_requested_adjacency_tensors(device=device)
-
+        graph_dict = self._get_requested_adjacency_tensors(device=device)
+        
         # For the downstream code, ensuring we always have an ndarray, never None:
         target_source_array = self.target_data.get("target_source_array")
         if target_source_array is None: 
             target_source_array = np.zeros_like(self.target_data["target_array"])
-        target_mask = self.target_data.get("target_mask")
-        if target_mask is None: 
-            target_mask = np.ones_like(self.target_data["target_array"], dtype=float)
-        
+          
         # Creatign the input dict
         self.input_dict = {
-            "device": device,
-            
+            "device":               device,
             # Data indices in block format
-            "blocks": self.metadata["blocks"],
-            "block_size": self.metadata["block_size"],
-            
+            "blocks":               self.metadata["blocks"],
+            "block_size":           self.metadata["block_size"],
             # Graph structure
-            "rooms": self.metadata["rooms"],
-            "n_nodes": self.metadata["n_nodes"],
-            
+            "room_URIs_str":        graph_dict["room_URIs_str"],
+            "n_nodes":              graph_dict["n_nodes"],
             # Adjacency
-            "adjacency_matrix": adj_matrix,
-            "masked_adjacency_matrices": masked_adj_dict,
-            "outside_adjacency_vector": outside_adj,
-            
+            "h_adj_mat_tensor":     graph_dict["h_adj_mat_tensor"],
+            "v_adj_mat_tensor":     graph_dict["v_adj_mat_tensor"],
+            "f_adj_mat_tensor":     graph_dict["f_adj_mat_tensor"],
+            "m_adj_mat_tensors":    graph_dict["m_adj_mat_tensors"],
+            "o_adj_vec_tensor":     graph_dict["o_adj_vec_tensor"],
             # Feature data
-            "feature_array": self.feature_data["feature_array"],
-            "feature_names": self.feature_data["feature_names"],
-            "n_features": self.feature_data["n_features"],
-            
+            "feature_array":        self.feature_data["feature_array"],
+            "feature_names":        self.feature_data["feature_names"],
+            "n_features":           self.feature_data["n_features"],
             # Target
-            "target_array": self.target_data["target_array"],
-            "target_mask": target_mask,
-            "target_source_array": target_source_array, # for delta prediction
+            "target_array":         self.target_data["target_array"],
+            "target_mask":          self.target_data["target_mask"],
+            "target_source_array":  target_source_array, # for delta prediction
         }
     
     def _get_requested_adjacency_tensors(
-            self, device: torch.device
-            ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor], torch.Tensor]:
+            self, 
+            device: torch.device
+    ) -> Dict[str, Any]:
         """
         The loaded metadata includes both "binary" and "weighted" adjacency dictionaries.
         
         Both of the dictionaries have:
-            1. "adjacency_matrix"
-            2. "masked_adjacency_matrices"
-            3. "outside_vector"
+        1. "room_URIs_str":             List[str] (N)
+        2. "n_nodes":                   int (N)
+        3. "horizontal_adj_matrix":     np.ndarray (NxN)
+        4. "vertical_adj_matrix":       np.ndarray (NxN)
+        5. "full_adj_matrix":           np.ndarray (NxN)
+        6. "masked_adj_matrices":       Dict[int, np.ndarray (NxN)]
+        7. "outside_adj_vector":        np.ndarray (N)
         
         We get the requested "binary" or "weighted" adjacency dictionary.
         Then, we convert them into tensors and return them.
@@ -460,15 +444,28 @@ class STGCNDataPreparer(BaseDataPreparer):
         requested_adjacency = self.args.adjacency_type
         adjacency_data = self.metadata[requested_adjacency]
         
-        adj_matrix_tensor = torch.from_numpy(adjacency_data["adjacency_matrix"]).float().to(device)
-        masked_adj_dict_tensor = {
+        # Single matrix tensors
+        h_adj_mat_tensor = torch.from_numpy(adjacency_data["horizontal_adj_matrix"]).float().to(device)
+        v_adj_mat_tensor = torch.from_numpy(adjacency_data["vertical_adj_matrix"]).float().to(device)
+        f_adj_mat_tensor = torch.from_numpy(adjacency_data["full_adj_matrix"]).float().to(device)
+        o_adj_vec_tensor = torch.from_numpy(adjacency_data["outside_adj_vector"]).float().to(device)
+        
+        # List of masked adjacency matrices as tensors
+        m_adj_mat_tensors = {
             k: torch.from_numpy(v).float().to(device)
-            for k, v in adjacency_data["masked_adjacency_matrices"].items()
+            for k, v in adjacency_data["masked_adj_matrices"].items()
             }
         
-        if self.args.incorporate_weather:
-            outside_adj_tensor = torch.from_numpy(adjacency_data["outside_adjacency_vector"]).float().to(device)
-        else:
-            outside_adj_tensor = None
+        # Non-tensor
+        room_URIs_str = adjacency_data["room_URIs_str"]
+        n_nodes = adjacency_data["n_nodes"]
         
-        return adj_matrix_tensor, masked_adj_dict_tensor, outside_adj_tensor
+        return {
+            "room_URIs_str":        room_URIs_str,
+            "n_nodes":              n_nodes,
+            "h_adj_mat_tensor":     h_adj_mat_tensor,
+            "v_adj_mat_tensor":     v_adj_mat_tensor,
+            "f_adj_mat_tensor":     f_adj_mat_tensor,
+            "m_adj_mat_tensors":    m_adj_mat_tensors,
+            "o_adj_vec_tensor":     o_adj_vec_tensor,
+        }
