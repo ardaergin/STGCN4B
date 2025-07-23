@@ -910,7 +910,7 @@ class TemporalBuilderMixin:
     def add_workhour_labels_to_df(
             self,
             df: pd.DataFrame,
-            workhour_colname: str = "workhour",
+            workhour_colname: str = "is_workhour",
         ) -> pd.DataFrame:
         """Add binary work-hour labels onto a DataFrame on bucket_idx."""
         if not hasattr(self, "workhour_labels_df"):
@@ -955,7 +955,7 @@ class TemporalBuilderMixin:
 
         Produces:
             self.time_features_df       # DataFrame indexed by bucket_idx
-            self.time_feature_names # ['hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'workhour']
+            self.time_feature_names # ['hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'is_workhour']
         """
         if not hasattr(self, "time_buckets"):
             raise AttributeError("time_buckets not initialised; call initialize_time_parameters() first.")
@@ -966,7 +966,7 @@ class TemporalBuilderMixin:
         df = pd.DataFrame({"bucket_idx": range(len(self.time_buckets))})
         df = self.add_time_features_to_df(df)
         df = self.add_workhour_labels_to_df(df)
-        self.time_feature_names = ["hour_sin", "hour_cos", "dow_sin", "dow_cos", "workhour"]
+        self.time_feature_names = ["hour_sin", "hour_cos", "dow_sin", "dow_cos", "is_workhour"]
         self.time_features_df = df.set_index("bucket_idx")[self.time_feature_names]
 
         logger.info(
