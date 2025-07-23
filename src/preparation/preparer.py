@@ -83,7 +83,8 @@ class BaseDataPreparer(ABC):
         metadata_file_path = os.path.join(self.args.processed_data_dir, f"{metadata_fname_base}.joblib")
         logger.info(f"Loading joblib metadata from {metadata_file_path}")
         self.metadata = joblib.load(metadata_file_path)
-        
+        logger.info(f"Metadata keys: {list(self.metadata.keys())}")
+                
         # Consumption target (if applicable)
         if self.args.task_type == "consumption_forecast":
             filename = f'target_consumption_{self.args.interval}.parquet'
