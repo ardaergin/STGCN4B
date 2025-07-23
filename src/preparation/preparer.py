@@ -271,6 +271,12 @@ class STGCNDataPreparer(BaseDataPreparer):
         assert self.args.model == "STGCN", "STGCNDataPreparer only supports STGCN model."
         self.target_data: Dict[str, Any] = {}
         self.feature_data: Dict[str, Any] = {}
+
+        # Device
+        self.device = torch.device("cuda" if self.args.enable_cuda and torch.cuda.is_available() else "cpu")
+
+        # Getting the requested adj, and already converting the obtained graph structures to tensors
+        self.graph_dict = self._get_requested_adjacency_tensors(device=self.device)
     
     def _prepare_target(self) -> None:
         super()._prepare_target()
@@ -363,7 +369,7 @@ class STGCNDataPreparer(BaseDataPreparer):
         
         # Case for data WITH a room dimension (Features for all task types, targets for measurement_forecast)
         if has_room_dimension:
-            room_order = self.metadata["room_URIs_str"]
+            room_order = self.graph_dict["room_URIs_str"]
             T = sum(len(v["bucket_indices"]) for v in self.metadata["blocks"].values())
             R = len(room_order)
             F = len(columns_to_pivot)
@@ -385,13 +391,7 @@ class STGCNDataPreparer(BaseDataPreparer):
             logger.info(f"Created 2D NumPy array of shape {np_array.shape}")
             return np_array
     
-    def _prepare_input_dict(self):
-        # Device
-        device = torch.device("cuda" if self.args.enable_cuda and torch.cuda.is_available() else "cpu")
-        
-        # Getting the requested adj, and already converting the obtained graph structures to tensors
-        graph_dict = self._get_requested_adjacency_tensors(device=device)
-        
+    def _prepare_input_dict(self):                
         # For the downstream code, ensuring we always have an ndarray, never None:
         target_source_array = self.target_data.get("target_source_array")
         if target_source_array is None: 
@@ -399,19 +399,19 @@ class STGCNDataPreparer(BaseDataPreparer):
           
         # Creatign the input dict
         self.input_dict = {
-            "device":               device,
+            "device":               self.device,
             # Data indices in block format
             "blocks":               self.metadata["blocks"],
             "block_size":           self.metadata["block_size"],
             # Graph structure
-            "room_URIs_str":        graph_dict["room_URIs_str"],
-            "n_nodes":              graph_dict["n_nodes"],
+            "room_URIs_str":        self.graph_dict["room_URIs_str"],
+            "n_nodes":              self.graph_dict["n_nodes"],
             # Adjacency
-            "h_adj_mat_tensor":     graph_dict["h_adj_mat_tensor"],
-            "v_adj_mat_tensor":     graph_dict["v_adj_mat_tensor"],
-            "f_adj_mat_tensor":     graph_dict["f_adj_mat_tensor"],
-            "m_adj_mat_tensors":    graph_dict["m_adj_mat_tensors"],
-            "o_adj_vec_tensor":     graph_dict["o_adj_vec_tensor"],
+            "h_adj_mat_tensor":     self.graph_dict["h_adj_mat_tensor"],
+            "v_adj_mat_tensor":     self.graph_dict["v_adj_mat_tensor"],
+            "f_adj_mat_tensor":     self.graph_dict["f_adj_mat_tensor"],
+            "m_adj_mat_tensors":    self.graph_dict["m_adj_mat_tensors"],
+            "o_adj_vec_tensor":     self.graph_dict["o_adj_vec_tensor"],
             # Feature data
             "feature_array":        self.feature_data["feature_array"],
             "feature_names":        self.feature_data["feature_names"],
