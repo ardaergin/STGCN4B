@@ -182,10 +182,15 @@ class OfficeGraphBuilder(
         self.get_workhour_labels(
             country_code=args.country_code, 
             workhour_start=args.workhour_start, 
-            workhour_end=args.workhour_end)
+            workhour_end=args.workhour_end,
+            save=True
+        )
         
         # Get (possible) target data
-        self.get_consumption_values(consumption_dir=args.consumption_dir, save=True)
+        self.get_consumption_values(
+            consumption_dir=args.consumption_dir, 
+            save=True
+        )
         
         # Building different level feature DataFrames
         self.build_device_level_df()

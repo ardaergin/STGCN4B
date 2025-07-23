@@ -1,9 +1,7 @@
-import math
 import pandas as pd
-from typing import List, Dict, Tuple, Literal
+from typing import List, Dict, Literal, Optional, Any
 
-import logging
-logger = logging.getLogger(__name__)
+import logging; logger = logging.getLogger(__name__)
 
 
 class BlockAwareTargetEngineer:
@@ -21,107 +19,117 @@ class BlockAwareTargetEngineer:
         """Internal helper: map each bucket_idx to its block_id so we can group by block."""
         return df["bucket_idx"].map(self._block_map)
     
-    def add_forecast_targets_to_df(self,
-                                task_type: str,
-                                data_frame: pd.DataFrame,
-                                source_colname: str,
-                                horizons: List[int],
-                                prediction_type: Literal['absolute', 'delta'] = 'absolute',
-                                forecast_type: Literal['point', 'range'] = 'point',
-                                aggregation_type: Literal['mean', 'sum'] = 'mean',
-                                min_periods_ratio: float = 0.5
-                                ) -> Tuple[pd.DataFrame, List[str], Dict[str, str]]:
+    def add_forecast_targets_to_df(
+            self,
+            task_type:          Literal['consumption_forecast', 
+                                        'measurement_forecast'],
+            data_frame:         pd.DataFrame,
+            source_colname:     str,
+            horizons:           List[int],
+            prediction_type:    Literal['absolute', 'delta'],
+            get_workhour_mask:  bool                            = False,
+            workhour_df:        Optional[pd.DataFrame]          = None,
+            workhour_colname:   str                             = "is_workhour",
+    ) -> Dict[str, Any]:
         """
-        Creates future forecast targets for single or multiple horizons.
-        
-        This method is block-aware and supports both 'point' and 'range' forecasts.
+        Creates block-aware future forecast targets for single or multiple horizons.
         
         Args:
             task_type (str): 'consumption_forecast' or 'measurement_forecast'.
             data_frame (pd.DataFrame): The input DataFrame.
             source_colname (str): The column name from which to generate the target.
             horizons (List[int]): A list of time steps into the future.
-                - For 'point' forecast: [1, 4, 8] creates targets for t+1, t+4, t+8.
-                - For 'range' forecast: [4, 8] creates targets for agg(t+1..t+4), agg(t+1..t+8).
             prediction_type (str): 'absolute' or 'delta'. Only 'absolute' is supported for 'range' forecasts.
-            forecast_type (str): 'point' for single future values, or 'range' for aggregated values over a period.
-            aggregation_type (str): How to aggregate for 'range' forecasts. Can be 'mean' or 'sum'.
+            get_workhour_mask (bool): If True, create a work-hour mask for each horizon.
+            workhour_df (pd.DataFrame, optional): DataFrame with work-hour labels. Required if get_workhour_mask is True.
+            workhour_colname (str): The name of the boolean/int column in workhour_df.
         
         Returns:
-            df (pd.DataFrame): DataFrame with new target columns.
-            target_colnames (List[str]): Names of the created target columns.
-            delta_to_absolute_map (Dict[str, str]): A map from delta target names to their absolute counterparts. # Add this line
+            A dictionary containing the keys:
+                - target_df (pd.DataFrame): DataFrame with grouping columns and target columns.
+                - mask_df (pd.DataFrame): DataFrame with grouping columns and mask columns.
+                - target_colnames (List[str]): Names of the created target columns.
+                - mask_colnames (List[str]): Names of the created work-hour mask columns.
         """
-        ##### Validation #####
-        # Argument checks
+        ##### Preflight setup and validations #####
+        # Argument validation
         if prediction_type not in ['absolute', 'delta']:
             raise ValueError("prediction_type must be 'absolute' or 'delta'.")
-        if forecast_type not in ['point', 'range']:
-            raise ValueError("forecast_type must be 'point' or 'range'.")
-        if aggregation_type not in ['mean', 'sum']:
-            raise ValueError("aggregation_type must be 'mean' or 'sum' for 'range' forecasts.")
         
-        # Horizons
+        # Horizon validation
         if not all(h > 0 for h in horizons):
             raise ValueError("All horizons must be positive integers.")
         
-        # Delta limitation
-        if forecast_type == 'range' and prediction_type == 'delta':
-            raise ValueError("Delta prediction ('delta') is not supported for 'range' forecasts.")
-        
         # DataFrame
         if source_colname not in data_frame.columns:
-            raise KeyError(f"Required source column '{source_colname}' not found in DataFrame.")
+            raise KeyError(f"Required source column '{source_colname}' not found in DataFrame.")        
         grouping_cols = ['block_id']
+        final_grouping_cols = ['bucket_idx']
         if task_type == "measurement_forecast":
             if "room_uri_str" not in data_frame.columns:
                 raise KeyError("Task requires 'room_uri_str' for grouping, but it's not in the DataFrame.")
             grouping_cols.append('room_uri_str')
-        
-        logger.info(f"Creating {forecast_type} targets from '{source_colname}' for horizons {horizons}...")
+            final_grouping_cols.append('room_uri_str')
         
         df = data_frame.copy()
+        
+        # Workhour mask
+        if get_workhour_mask:
+            if workhour_df is None:
+                raise ValueError("get_workhour_mask=True but workhour_df=None")
+            if workhour_colname not in workhour_df.columns:
+                raise KeyError(f"'{workhour_colname}' missing from workhour_df")
+            df = df.merge(
+                workhour_df[['bucket_idx', workhour_colname]],
+                on='bucket_idx', how='left'
+            )
+        
+        ##### Target (and mask) Creation #####
+        logger.info(f"Creating targets from '{source_colname}' for horizons {horizons}...")
+        
+        # Sorting and grouping based on block_id + bucket_idx (+ room_uri_str, optionally)
         df['block_id'] = self._assign_block_id(df)
-        
-        # Sorting based on block_id + bucket_idx (+ room_uri_str, optionally)
         df.sort_values(['bucket_idx'] + grouping_cols, inplace=True)
+        grouped_df = df.groupby(grouping_cols)
         
-        # Groupby
-        grouped_data = df.groupby(grouping_cols)[source_colname]
+        target_colnames, mask_colnames = [], []
         
-        target_colnames = []
-        if forecast_type == 'point':
-            for h in horizons:
-                future_values = grouped_data.shift(-h)
-                
-                target_col = f'target_h_{h}'
-                target_colnames.append(target_col)
-                
-                if prediction_type == 'absolute':
-                    df[target_col] = future_values
-                
-                else:  # prediction_type == 'delta'
-                    df[target_col] = future_values - df[source_colname]
+        # Create shifted target columns for each horizon
+        shifted_src_df = pd.concat(
+            [grouped_df[source_colname]
+             .shift(-h)
+             .rename(f"target_h_{h}") for h in horizons],
+            axis=1
+        )
+        if prediction_type == "delta":
+            shifted_src_df = shifted_src_df.sub(df[source_colname], axis=0)
+        shifted_src_df = shifted_src_df.astype("float32", copy=False)
+        target_colnames = [f"target_h_{h}" for h in horizons]
+        target_df = pd.concat([df[final_grouping_cols], shifted_src_df], axis=1)
         
-        elif forecast_type == 'range':
-            for h in horizons:
-                target_col = f'target_{aggregation_type}_h_1_to_{h}'
-                target_colnames.append(target_col)                
+        # Create shifted mask columns (if requested)
+        if get_workhour_mask:
+            shifted_mask_df = pd.concat(
+                [grouped_df[workhour_colname]
+                 .shift(-h)
+                 .rename(f"mask_h_{h}") for h in horizons],
+                axis=1
+            ).fillna(0).astype("float32", copy=False)
+            mask_colnames   = [f"mask_h_{h}" for h in horizons]
+            mask_df = pd.concat([df[final_grouping_cols], shifted_mask_df], axis=1)
+        else:
+            mask_df = None
                 
-                # Reverse the series, apply rolling, then reverse back to get a "forward" rolling window
-                min_periods = math.ceil(h * min_periods_ratio)
-                future_aggregate = grouped_data.rolling(window=h, min_periods=min_periods).agg(aggregation_type).shift(-(h))
-                # NOTE:
-                # 1. grouped_data.rolling(window=h): Creates a rolling window of size 'h'.
-                #    For a value at time 't', it considers data from [t-h+1, ..., t].
-                # 2. .agg(aggregation_type): Calculates the sum or mean over that window.
-                # 3. .shift(-h): Shifts the entire result 'h' steps into the past.
-                #    The result at time 't' now corresponds to the original window from [t+1, ..., t+h].
-                
-                df[target_col] = future_aggregate
-
-        df.drop(columns='block_id', inplace=True)
-        nan_count = df[target_colnames].isna().sum().sum()
-        logger.info(f"Created {len(target_colnames)} target column(s). Found {nan_count} total NaN targets.")
-
-        return df, target_colnames
+        # Logging
+        target_df_nan_count = target_df[target_colnames].isna().sum().sum()
+        logger.info(f"Created {len(target_colnames)} targets. NaNs: {target_df_nan_count}.")
+        if get_workhour_mask:
+            mask_df_nan_count = mask_df[mask_colnames].isna().sum().sum()
+            logger.info(f"Created {len(mask_colnames)} work-hour mask columns. NaNs: {mask_df_nan_count}.")
+        
+        return {
+            "target_df":                target_df,
+            "target_colnames":          target_colnames,
+            "workhour_mask_df":         mask_df,
+            "workhour_mask_colnames":   mask_colnames,
+        }

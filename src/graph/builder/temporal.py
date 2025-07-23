@@ -167,7 +167,8 @@ class TemporalBuilderMixin:
             self, 
             country_code: str = 'NL', 
             workhour_start: int = 8,
-            workhour_end: int = 18
+            workhour_end: int = 18,
+            save: bool = True,
     ) -> None:
         """
         Generate work hour labels for each time bucket.
@@ -200,19 +201,28 @@ class TemporalBuilderMixin:
         # Build the DataFrame
         # NOTE: We know every bucket_idx is present.
         workhour_df = (
-            pd.DataFrame.from_dict(labels_dict, orient="index", columns=["workhour"])
+            pd.DataFrame.from_dict(labels_dict, orient="index", columns=["is_workhour"])
             .reset_index()
             .rename(columns={"index": "bucket_idx"})
-            .astype({"workhour": "int8"})
+            .astype({"is_workhour": "int8"})
         )
         self.workhour_labels_df = workhour_df
         
         # Logging
         n_labels = len(workhour_df)
-        work_hours   = workhour_df["workhour"].sum()
+        work_hours   = workhour_df["is_workhour"].sum()
         work_percent = work_hours / n_labels
         logger.info(f"Generated {n_labels} work‑hour labels "
                     f"({work_hours} work, {work_percent:.1%} of buckets).")
+        
+        # (Optional) Export
+        if save:
+            file_name = f'workhours_{self.interval}.parquet'
+            file_full_path = os.path.join(self.processed_data_dir, file_name)
+            logger.info(f"Saving workhour DataFrame to: {file_full_path}")
+            self.workhour_labels_df.to_parquet(file_full_path, index=False)
+
+        return None
     
     #############################
     # Task-Specific (Target) Data
@@ -221,7 +231,7 @@ class TemporalBuilderMixin:
     def get_consumption_values(
             self, 
             consumption_dir: str = "data/consumption", 
-            save: bool = True
+            save: bool = True,
     ) -> None:
         """
         Load and aggregate consumption data for forecasting.

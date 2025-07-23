@@ -10,8 +10,7 @@ from ..utils.filename_util import get_data_filename
 from .feature import BlockAwareFeatureEngineer
 from .target import BlockAwareTargetEngineer
 
-import logging
-logger = logging.getLogger(__name__)
+import logging; logger = logging.getLogger(__name__)
 
 
 class BaseDataPreparer(ABC):
@@ -27,8 +26,8 @@ class BaseDataPreparer(ABC):
         
         # Initializing the main product(s) of the class
         self.source_colname: str = ""
+        self.target_dict: Dict[str, Any] = {}
         self.target_source_df: pd.DataFrame = pd.DataFrame()
-        self.target_colnames: List[str] = []
         self.input_dict: Dict[str, Any] = {}
     
     def get_input_dict(self) -> Dict[str, Any]:
@@ -45,7 +44,10 @@ class BaseDataPreparer(ABC):
         
         # Step 3: Prepare targets (subclass-specific logic)
         self._prepare_target()
+        self._post_prepare_target()
         self._handle_nan_targets()
+        if self.args.mask_workhours:
+            self._mask_workhours()
         
         # Step 4: Drop features if requested, before _prepare_features()
         self._drop_requested_columns()
@@ -85,6 +87,12 @@ class BaseDataPreparer(ABC):
         self.metadata = joblib.load(metadata_file_path)
         logger.info(f"Metadata keys: {list(self.metadata.keys())}")
         
+        # Workhour labels for masking
+        workhour_labels_fname = f'workhours_{self.args.interval}.parquet'
+        workhour_labels_path = os.path.join(self.args.processed_data_dir, workhour_labels_fname)
+        logger.info(f"Loading workhour labels from: {workhour_labels_path}")
+        self.workhour_labels_df = pd.read_parquet(workhour_labels_path)
+        
         # Consumption target (if applicable)
         if self.args.task_type == "consumption_forecast":
             filename = f'target_consumption_{self.args.interval}.parquet'
@@ -94,31 +102,63 @@ class BaseDataPreparer(ABC):
     
     @staticmethod
     def _reduce_mem_usage(
-            df: pd.DataFrame, 
+            df: pd.DataFrame,
             verbose: bool = True
     ) -> pd.DataFrame:
         """
-        Iterate through all the columns of a dataframe and modify the data type
-        to reduce memory usage.
+        Iterate through numeric columns and downcast to save memory safely.
+        - Keeps datetimes/categories/objects untouched.
+        - Preserves integer dtypes when NaNs are absent; otherwise leaves them (avoids int→float surprises).
+        - Forces floats to float32 (good for both TF32 & LightGBM). Falls back to float64 if needed.
+        - Uses deep=True for more accurate memory stats.
         """
-        start_mem = df.memory_usage().sum() / 1024**2
-        if verbose: logger.info(f"Memory usage of dataframe is {start_mem:.2f} MB")
+        start_mem = df.memory_usage(deep=True).sum() / 1024**2
+        if verbose:
+            logger.info(f"Memory usage of dataframe is {start_mem:.2f} MB")
+
         for col in df.columns:
+            if col in df.select_dtypes(include=['datetime64[ns]', 'category', 'object']).columns:
+                continue
+
             col_type = df[col].dtype
-            if col_type != object and col_type.name != 'category' and 'datetime' not in col_type.name:
+
+            # Skip booleans
+            if pd.api.types.is_bool_dtype(col_type):
+                continue
+
+            # Integers
+            if pd.api.types.is_integer_dtype(col_type):
+                # If there are NaNs, don't cast to smaller numpy ints (would upcast to float)
+                if df[col].isna().any():
+                    continue
                 c_min, c_max = df[col].min(), df[col].max()
-                if str(col_type)[:3] == "int":
-                    if c_min > np.iinfo(np.int8).min and c_max < np.iinfo(np.int8).max: df[col] = df[col].astype(np.int8)
-                    elif c_min > np.iinfo(np.int16).min and c_max < np.iinfo(np.int16).max: df[col] = df[col].astype(np.int16)
-                    elif c_min > np.iinfo(np.int32).min and c_max < np.iinfo(np.int32).max: df[col] = df[col].astype(np.int32)
-                    elif c_min > np.iinfo(np.int64).min and c_max < np.iinfo(np.int64).max: df[col] = df[col].astype(np.int64)
+                # Try smallest fits
+                for t in (np.int8, np.int16, np.int32):
+                    if c_min >= np.iinfo(t).min and c_max <= np.iinfo(t).max:
+                        df[col] = df[col].astype(t)
+                        break
+                # else keep as is (likely int64)
+                continue
+
+            # Floats
+            if pd.api.types.is_float_dtype(col_type):
+                c_min, c_max = df[col].min(), df[col].max()
+                # Prefer float32 (works with TF32 & LightGBM); use 64 only if needed
+                if c_min >= np.finfo(np.float32).min and c_max <= np.finfo(np.float32).max:
+                    df[col] = df[col].astype(np.float32)
                 else:
-                    if c_min > np.finfo(np.float32).min and c_max < np.finfo(np.float32).max: df[col] = df[col].astype(np.float32)
-                    else: df[col] = df[col].astype(np.float64)
-        end_mem = df.memory_usage().sum() / 1024**2
+                    df[col] = df[col].astype(np.float64)
+                continue
+
+            # Anything else (e.g. nullable ints), just skip
+            # (nullable Int64 will often be fine; converting safely needs extra logic)
+            # pass
+
+        end_mem = df.memory_usage(deep=True).sum() / 1024**2
         if verbose:
             logger.info(f"Memory usage after optimization is: {end_mem:.2f} MB")
-            logger.info(f"Decreased by {(start_mem - end_mem) / start_mem * 100:.1f}%")
+            if start_mem > 0:
+                logger.info(f"Decreased by {(start_mem - end_mem) / start_mem * 100:.1f}%")
         return df
     
     def _initialize_engineers(self) -> None:
@@ -138,7 +178,6 @@ class BaseDataPreparer(ABC):
             logger.info(f"Dropped {len(cols_to_drop)} columns containing substrings {substrings_to_drop}.")
             logger.debug(f"Dropped columns: {cols_to_drop}")
     
-    @abstractmethod
     def _prepare_target(self) -> None:
         """
         Prepares the target columns. The common logic for identifying the source
@@ -156,15 +195,24 @@ class BaseDataPreparer(ABC):
             self.target_source_df = self.consumption_df.copy() # just bucket_idx and consumption
                     
         # 2. Call the engineer to add target columns to the DataFrame
-        target_df_with_source_col, self.target_colnames, = self.target_engineer.add_forecast_targets_to_df(
-            task_type=self.args.task_type, data_frame=self.target_source_df,
-            source_colname=self.source_colname, horizons=self.args.forecast_horizons,
-            prediction_type=self.args.prediction_type
-        )
-        self.target_df = target_df_with_source_col.drop(columns=self.source_colname)
-        logger.info(f"Prepared {len(self.target_colnames)} target columns from {self.source_colname}. "
-                    f"New columns: {self.target_colnames}")
-    
+        self.target_dict = self.target_engineer.add_forecast_targets_to_df(
+                task_type         = self.args.task_type,
+                data_frame        = self.target_source_df,
+                source_colname    = self.source_colname,
+                horizons          = self.args.forecast_horizons,
+                prediction_type   = self.args.prediction_type,
+                get_workhour_mask = self.args.mask_workhours,
+                workhour_df       = self.workhour_labels_df if self.args.mask_workhours else None,
+                workhour_colname  = "is_workhour"           if self.args.mask_workhours else None,
+            )
+        logger.info(f"Prepared {len(self.target_dict['target_colnames'])} target columns from {self.source_colname}. "
+                    f"New columns: {self.target_dict['target_colnames']}")
+
+    @abstractmethod
+    def _post_prepare_target(self) -> None:
+        """Any additional processing that needs to be done after _prepare_target() is called."""
+        pass
+
     @abstractmethod
     def _handle_nan_targets(self) -> None:
         """
@@ -177,6 +225,11 @@ class BaseDataPreparer(ABC):
             - end-of-block NaNs (due to grouping by block & room_uri_str)
             - Missing measurements in certain time buckets, resulting in NaNs in target columns
         """
+        pass
+    
+    @abstractmethod
+    def _mask_workhours(self) -> None:
+        """Mask data based on whether it is a workhour or not."""
         pass
     
     @abstractmethod
@@ -198,39 +251,54 @@ class LGBMDataPreparer(BaseDataPreparer):
     
     def __init__(self, args: Any):
         super().__init__(args)
-        assert self.args.model_family == "tabular", "LGBMDataPreparer only supports 'tabular' model_family."
-        assert self.args.model == "LightGBM", "LGBMDataPreparer only supports LightGBM model."
+        assert args.model_family == "tabular", "LGBMDataPreparer only supports 'tabular' model_family."
+        assert args.model == "LightGBM", "LGBMDataPreparer only supports LightGBM model."
+        assert len(args.forecast_horizons)==1, "LightGBM only supports single-horizon forecasting." 
+        self.id_cols = ['bucket_idx', 'room_uri_str'] if self.args.task_type == "measurement_forecast" else ['bucket_idx']
     
-    def _prepare_target(self) -> None:
-        """Generates forecast targets for the LGBM model."""
-        super()._prepare_target()
+    def _post_prepare_target(self) -> None:
+        """
+        Generates forecast targets for the LGBM model.
 
-        # NOTE: For LGBM, we have the target columns and feature columns in one DataFrame
-        #       1. It is just easier to slice for train/val/test splits
-        #       2. For the LGBM model, there can be missing buckets, so there can be a mismatch
-        #          between the target_df and the feature_df if we just use as they are.
-        if self.args.task_type == "measurement_forecast": 
-            self.df = pd.merge(self.df, self.target_df, on=['bucket_idx', 'room_uri_str'], how='left')
-        else:
-            self.df = pd.merge(self.df, self.target_df, on='bucket_idx', how='left')
+        Note: 
+        For LGBM, we have the target columns and feature columns in one DataFrame
+        1. It is just easier to slice for train/val/test splits
+        2. For the LGBM model, there can be missing buckets, so there can be a mismatch
+        between the target_df and the feature_df if we just use as they are.
+        """
+        self.df = pd.merge(self.df, self.target_dict["target_df"], on=self.id_cols, how='left')
+    
+    @staticmethod
+    def _log_drop(before: int, after: int, reason: str) -> None:
+        """Helper to log the number of rows dropped."""
+        lost = before - after
+        pct  = (lost / before * 100) if before else 0.0
+        logger.info(f"Dropped {lost} rows due to {reason}. {after} rows remain ({pct:.2f}% loss).")
     
     def _handle_nan_targets(self) -> None:
         """
-        Handling NaN targets for the LGBM model.
-        
         Method: After target preparation, any row with a NaN in one of the target columns will be dropped.
         """
-        initial_rows = len(self.df)
-        self.df.dropna(subset=self.target_colnames, inplace=True)
-        final_rows = len(self.df)
-        lost_rows = initial_rows - final_rows
-        lost_percentage = (lost_rows / initial_rows) * 100
+        before_nan = len(self.df)
+        self.df.dropna(subset=self.target_dict["target_colnames"], inplace=True)
+        after_nan = len(self.df)
+        self._log_drop(before_nan, after_nan, "NaN targets")
+        if after_nan == 0:
+            raise ValueError("DataFrame empty after dropping NaN targets.")
         
-        logger.info(f"Dropped {lost_rows} rows with NaN targets. {final_rows} rows remaining.")
-        logger.info(f"Lost {lost_percentage:.2f}% of the data due to NaN targets.")
+    def _mask_workhours(self) -> None:
+        """Merge the workhour mask DataFrame into the main DataFrame, mask, then drop the mask columns."""
+        self.df = pd.merge(self.df, self.target_dict["workhour_mask_df"], on=self.id_cols, how='left')
+
+        before_mask = len(self.df)
+        self.df = self.df[self.df[self.target_dict["workhour_mask_colnames"]].all(axis=1)]
+        after_mask = len(self.df)
+        self._log_drop(before_mask, after_mask, "work-hour mask")
+        if after_mask == 0:
+            raise ValueError("DataFrame empty after applying work-hour mask.")
         
-        if self.df.empty:
-            raise ValueError("DataFrame is empty after dropping NaN targets.")
+        # We don't need the mask columns anymore
+        self.df.drop(columns=self.target_dict["workhour_mask_colnames"], inplace=True)
     
     def _prepare_features(self) -> None:
         """
@@ -254,11 +322,11 @@ class LGBMDataPreparer(BaseDataPreparer):
     
     def _prepare_input_dict(self) -> None:
         self.input_dict = {
-            "blocks": self.metadata["blocks"],
-            "df": self.df,
-            "source_colname": self.source_colname,
-            "target_source_df": self.target_source_df,
-            "target_colnames": self.target_colnames
+            "blocks":               self.metadata["blocks"],
+            "df":                   self.df,
+            "source_colname":       self.source_colname,
+            "target_source_df":     self.target_source_df,
+            "target_colnames":      self.target_dict["target_colnames"],
         }
 
 
@@ -267,12 +335,13 @@ class STGCNDataPreparer(BaseDataPreparer):
     
     def __init__(self, args: Any):
         super().__init__(args)
-        assert self.args.model_family == "graph", "STGCNDataPreparer only supports 'graph' model_family."
-        assert self.args.model == "STGCN", "STGCNDataPreparer only supports STGCN model."
+        assert args.model_family == "graph", "STGCNDataPreparer only supports 'graph' model_family."
+        assert args.model == "STGCN", "STGCNDataPreparer only supports STGCN model."
         self.device: torch.device = torch.device(
-            "cuda" if self.args.enable_cuda and torch.cuda.is_available() else "cpu")
+            "cuda" if args.enable_cuda and torch.cuda.is_available() else "cpu")
         self.graph_dict: Dict[str, Any] = {}
         self.target_data: Dict[str, Any] = {}
+        self.target_has_room_dimension: bool = (args.task_type == "measurement_forecast")
         self.feature_data: Dict[str, Any] = {}
     
     def _load_data_from_disk(self) -> None:
@@ -280,50 +349,71 @@ class STGCNDataPreparer(BaseDataPreparer):
         super()._load_data_from_disk()
         self.graph_dict = self._get_requested_adjacency_tensors(device=self.device)
     
-    def _prepare_target(self) -> None:
-        super()._prepare_target()
-        # Using the helper to create the target array, mask array, and source array (if delta prediction)
-        if self.args.task_type == "consumption_forecast":
-            has_room_dimension = False
-        else: # measurement_forecast
-            has_room_dimension = True
-        
+    def _post_prepare_target(self) -> None:
+        """        
+        For STGCN, we mainly use the _pivot_df_to_numpy helper 
+        to create the target array, mask array, and source array (if delta prediction).
+        """
         # Target array
         self.target_data["raw_target_array"] = self._pivot_df_to_numpy(
-            df=self.target_df, 
-            columns_to_pivot=self.target_colnames, 
-            has_room_dimension=has_room_dimension)
+            df                      = self.target_dict["target_df"],
+            columns_to_pivot        = self.target_dict["target_colnames"],
+            has_room_dimension      = self.target_has_room_dimension,
+        )
         
         # Source array (for delta prediction)
         if self.args.prediction_type == "delta":
             self.target_data["raw_target_source_array"] = self._pivot_df_to_numpy(
-                df=self.target_source_df, 
-                columns_to_pivot=[self.source_colname],
-                has_room_dimension=has_room_dimension)
-    
+                df                  = self.target_source_df, 
+                columns_to_pivot    = [self.source_colname],
+                has_room_dimension  = self.target_has_room_dimension,
+            )
+
     def _handle_nan_targets(self) -> None:
         """
         Handling NaN targets for the STGCN model. 
         
         Method: Create a mask to be fed to the STGCN model, and fill the NaNs at the target with 0s.
+        
+        **Note**: 
+        We impute NaNs to the source array (used in delta forecast) as well.
+        Since the target_mask is created based on the NaNs in the target array, 
+        and that same mask will be used during evaluation to filter which points are compared, 
+        the corresponding NaNs in the raw_target_source_array would be ignored. 
+        But it does not hurt to impute NaNs just in case.
         """
-        # Create the mask from the raw array
         target_mask = ~np.isnan(self.target_data["raw_target_array"])
-        self.target_data['target_mask'] = target_mask.astype(float)
+        self.target_data['target_mask'] = target_mask.astype(np.float32, copy=False)
         
         # Impute the NaNs to get the final, clean target array
-        self.target_data['target_array'] = np.nan_to_num(self.target_data["raw_target_array"], nan=0.0)
+        self.target_data["target_array"] = np.nan_to_num(
+            self.target_data["raw_target_array"], nan=0.0
+        ).astype(np.float32, copy=False)
         
+        # Impute the NaNs for the source values as well
         if self.args.prediction_type == "delta":
-            # Impute the NaNs for the source values as well
-            # NOTE: Since the target_mask is created based on the NaNs in the target array, 
-            #       and that same mask will be used during evaluation to filter which points are compared, 
-            #       the corresponding NaNs in the raw_target_source_array would be ignored. 
-            #       But it does not hurt to impute NaNs just in case.
-            raw_target_source_array = self.target_data['raw_target_source_array']
-            self.target_data['target_source_array'] = np.nan_to_num(raw_target_source_array, nan=0.0)
+            self.target_data["target_source_array"] = np.nan_to_num(
+                self.target_data["raw_target_source_array"], nan=0.0
+            ).astype(np.float32, copy=False)
     
-    def _prepare_features(self) -> None:        
+    def _mask_workhours(self) -> None:
+        """Multiplying the existing mask array with the workhour mask array."""
+        # Get the workhour mask by pivoting the workhour mask DataFrame
+        workhour_mask = self._pivot_df_to_numpy(
+            df                  = self.target_dict["workhour_mask_df"],
+            columns_to_pivot    = self.target_dict["workhour_mask_colnames"],
+            has_room_dimension  = self.target_has_room_dimension,
+        )
+        
+        # Apply the mask to the target array
+        self.target_data["target_mask"] *= workhour_mask
+    
+    def _prepare_features(self) -> None:
+        """
+        Prepares features for the STGCN model.
+        
+        Note: The features are always 3D (T, R, F) for STGCN.
+        """
         # Identify feature columns (all numeric cols except identifiers and targets)
         identifier_cols = ['bucket_idx', 'block_id', 'room_uri_str']
         feature_cols = sorted([c for c in self.df.columns if c not in identifier_cols])
@@ -333,7 +423,11 @@ class STGCNDataPreparer(BaseDataPreparer):
         self.feature_data["n_features"] = len(feature_cols)
         
         # Use the generic helper to create the feature array and a feature mask (which we might ignore)
-        feature_array = self._pivot_df_to_numpy(self.df, columns_to_pivot=feature_cols)
+        feature_array = self._pivot_df_to_numpy(
+            df                  = self.df, 
+            columns_to_pivot    = feature_cols,
+            has_room_dimension  = True,
+        )
         self.feature_data["feature_array"] = feature_array
     
     def _pivot_df_to_numpy(
@@ -383,7 +477,7 @@ class STGCNDataPreparer(BaseDataPreparer):
             
             np_array = pivoted_df.values.reshape(T, R, F)
             logger.info(f"Created 3D NumPy array of shape {np_array.shape}")
-            return np_array
+            return np_array.astype(np.float32, copy=False)
         
         # Case for data WITHOUT a room dimension (targets for consumption_forecast)
         else:
@@ -391,7 +485,7 @@ class STGCNDataPreparer(BaseDataPreparer):
             values_df = df[['bucket_idx'] + columns_to_pivot].groupby('bucket_idx').first()
             np_array = values_df.reindex(range(total_timesteps))[columns_to_pivot].values
             logger.info(f"Created 2D NumPy array of shape {np_array.shape}")
-            return np_array
+            return np_array.astype(np.float32, copy=False)
     
     def _prepare_input_dict(self):                
         # For the downstream code, ensuring we always have an ndarray, never None:

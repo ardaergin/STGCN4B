@@ -168,7 +168,12 @@ def add_OfficeGraph_args(parser):
     parser.add_argument('--min_periods_ratio', type=float,
                         default=0.5,
                         help="The minimum ratio of non-null data points required in a window to compute a value. Default is 0.5.")
-
+    
+    # Workhour masking
+    parser.add_argument("--do_not_mask_workhours", action="store_false",
+                        dest="mask_workhours",
+                        help="Disable work-hour masking. By default, masking is enabled."
+    )
 
 
 def add_base_modelling_args(parser):
