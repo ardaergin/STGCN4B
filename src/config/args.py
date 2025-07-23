@@ -97,15 +97,11 @@ def add_OfficeGraph_args(parser):
     parser.add_argument('--weather_csv_path', type=str,
                         default="data/weather/hourly_weather_2022_2023.csv",
                         help='Path to weather data CSV file')
-
-    parser.add_argument('--incorporate_weather', 
-                        action='store_true',
-                        help='Add the weather info to the homogeneous graph (default: False)')
     parser.add_argument("--weather_mode", type=str,
                         default="feature",
                         choices=["feature", "node"],
                         help="How to incorporate weather data: 'feature' (add to all rooms) or 'node' (add as separate room node)")
-
+    
     ##############################
     #  Spatial Builder
     ##############################
@@ -159,8 +155,8 @@ def add_OfficeGraph_args(parser):
                         help='A space-separated list of forecast horizons in hours (e.g., --forecast_horizons 1 24). Default is [1].')
     parser.add_argument('--prediction_type', type=str,
                         choices=['absolute', 'delta'],
-                        default="absolute",
-                        help='Whether to predict the actual target value ("absolute") or the change from the current value ("delta"). Default is "absolute".')
+                        default="delta",
+                        help='Whether to predict the actual target value ("absolute") or the change from the current value ("delta"). Default is "delta".')
     parser.add_argument('--forecast_type', type=str,
                         choices=['point', 'range'],
                         default='point',
@@ -224,10 +220,10 @@ def add_base_modelling_args(parser):
     parser.set_defaults(drop_last_train_batch=True)
 
     parser.add_argument('--epochs', type=int, 
-                        default=50, 
+                        default=100, 
                         help='Number of epochs')
-    parser.add_argument('--final_epoch_multiplier', type=int, 
-                        default=1.2, 
+    parser.add_argument('--final_epoch_multiplier', type=float, 
+                        default=1.1, 
                         help='Multiply the optimal epochs with this factor for the final training.')
     
     # Stratified data splitting
@@ -261,7 +257,7 @@ def add_base_modelling_args(parser):
     
     # Optuna general args
     parser.add_argument('--n_optuna_trials', type=int, 
-                        default=20,
+                        default=50,
                         help='Number of Optuna trials for HPO.')
     
     parser.add_argument('--n_jobs_in_hpo', type=int, 
@@ -285,8 +281,9 @@ def add_base_modelling_args(parser):
     
     # Pruning slow models
     parser.add_argument("--max_epoch_duration", type=int,
-                        default=45,
-                        help="Maximum duration for a single epoch in seconds. Trials exceeding this will be pruned during HPO.")
+                        default=30,
+                        help="Maximum duration for a single epoch in seconds, for pruning slow trials. "
+                            "Pruning starts after the first epoch, to accomodate for compiling the model.")
 
 
 def add_STGCN_args(parser):
@@ -342,8 +339,6 @@ def add_STGCN_args(parser):
     parser.add_argument('--n_his', type=int, 
                         default=24,
                         help='Number of historical time steps to use')
-    parser.add_argument('--time_intvl', type=int, 
-                        default=5)
     
     parser.add_argument('--Kt', type=int, 
                         default=3, 
@@ -434,6 +429,8 @@ def add_LightGBM_args(parser):
     parser.add_argument('--n_estimators', type=int, 
                         default=1000,
                         help='Number of boosting rounds')
+    
+    # Verbosity
     parser.add_argument('--verbosity', type=int, 
                         default=1,
                         help='Controls the level of LightGBM verbosity')

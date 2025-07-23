@@ -103,7 +103,6 @@ srun python -m src.experiment.lgbm \
     --run_mode experiment \
     --experiment_id ${SLURM_ARRAY_TASK_ID} \
     --n_jobs_in_hpo 5 \
-    --n_optuna_trials 50 \
     --data_dir $SCRATCH_DATA_DIR \
     --output_dir $SCRATCH_RUN_OUTPUT_DIR \
     --processed_data_dir $SCRATCH_PROCESSED_DATA_DIR \

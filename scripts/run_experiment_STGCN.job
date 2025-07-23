@@ -110,13 +110,13 @@ srun python -m src.experiment.stgcn \
     --run_mode experiment \
     --experiment_id ${SLURM_ARRAY_TASK_ID} \
     --n_jobs_in_hpo 1 \
-    --n_optuna_trials 50 \
     --data_dir $SCRATCH_DATA_DIR \
     --output_dir $SCRATCH_TASK_OUTPUT_DIR \
     --processed_data_dir $SCRATCH_PROCESSED_DATA_DIR \
     --model_family graph \
     --model STGCN \
     --enable_cuda \
+    --compile_model \
     --amp \
     --amp_dtype bf16 \
     --tf32 \
