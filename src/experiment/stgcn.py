@@ -200,7 +200,7 @@ class STGCNExperimentRunner(BaseExperimentRunner):
             args                = args,
             device              = device,
             n_nodes             = n_nodes,
-            adjacency_matrix    = A,
+            adj_matrix          = A,
             masked_adj_matrices = M if args.gso_mode == "dynamic" else None,
         )
         
