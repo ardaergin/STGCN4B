@@ -1,5 +1,4 @@
 # from https://github.com/hazdzz/stgcn/blob/main/model/layers.py
-# No changes made to the original code.
 
 import math
 import torch
@@ -234,47 +233,88 @@ class GraphConvLayer(nn.Module):
         return x_gc_out
 
 class STConvBlock(nn.Module):
-    # STConv Block contains 'TGTND' structure
-    # T: Gated Temporal Convolution Layer (GLU or GTU)
-    # G: Graph Convolution Layer (ChebGraphConv or GraphConv)
-    # T: Gated Temporal Convolution Layer (GLU or GTU)
-    # N: Layer Normolization
-    # D: Dropout
-
-    def __init__(self, Kt, Ks, n_vertex, last_block_channel, channels, act_func, graph_conv_type, gso, bias, droprate):
+    """
+    STConv Block has the structure of: T -> S -> T - > N -> D
+    1. T: Gated Temporal Convolution Layer (GLU or GTU)
+    2. S: Graph Convolution Layer (ChebGraphConv or GraphConv)
+    3. T: Gated Temporal Convolution Layer (GLU or GTU)
+    4. N: Layer Normalization
+    5. D: Dropout
+    """
+    def __init__(
+            self, 
+            Kt:                     int, 
+            Ks:                     int, 
+            n_vertex:               int, 
+            last_block_channel:     int, 
+            channels:               list[int], 
+            act_func:               str, 
+            graph_conv_type:        str,
+            gso:                    torch.Tensor, 
+            bias:                   bool, 
+            droprate:               float, 
+            drop_spatial_layer:     bool = False
+    ):
         super(STConvBlock, self).__init__()
-        self.tmp_conv1 = TemporalConvLayer(Kt, last_block_channel, channels[0], n_vertex, act_func)
-        self.graph_conv = GraphConvLayer(graph_conv_type, channels[0], channels[1], Ks, gso, bias)
-        self.tmp_conv2 = TemporalConvLayer(Kt, channels[1], channels[2], n_vertex, act_func)
-        self.tc2_ln = nn.LayerNorm([n_vertex, channels[2]], eps=1e-12)
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(p=droprate)
+        self.drop_spatial_layer = drop_spatial_layer
+        c_t1_out, c_g_mid, c_t2_out = channels
 
+        # T
+        self.tmp_conv1  = TemporalConvLayer(Kt, last_block_channel, c_t1_out, n_vertex, act_func)
+
+        # S
+        if drop_spatial_layer:
+            self.gc_bypass = nn.Identity()
+        else:
+            self.graph_conv = GraphConvLayer(graph_conv_type, c_t1_out, c_g_mid, Ks, gso, bias)
+                
+        # T
+        self.tmp_conv2  = TemporalConvLayer(Kt, c_g_mid, c_t2_out, n_vertex, act_func)
+
+        # N, D
+        self.tc2_ln     = nn.LayerNorm([n_vertex, c_t2_out], eps=1e-12)
+        self.relu       = nn.ReLU()
+        self.dropout    = nn.Dropout(p=droprate)
+    
     def forward(self, x):
         x = self.tmp_conv1(x)
-        x = self.graph_conv(x)
+        if not self.drop_spatial_layer:
+            x = self.graph_conv(x)
+        else:
+            x = self.gc_bypass(x)
         x = self.relu(x)
         x = self.tmp_conv2(x)
         x = self.tc2_ln(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
         x = self.dropout(x)
-
+        
         return x
 
 class OutputBlock(nn.Module):
-    # Output block contains 'TNFF' structure
-    # T: Gated Temporal Convolution Layer (GLU or GTU)
-    # N: Layer Normolization
-    # F: Fully-Connected Layer
-    # F: Fully-Connected Layer
-
-    def __init__(self, Ko, last_block_channel, channels, end_channel, n_vertex, act_func, bias, droprate):
+    """
+    Output Block contains 'TNFF' structure
+    1. T: Gated Temporal Convolution Layer (GLU or GTU)
+    2. N: Layer Normalization
+    3. F: Fully-Connected Layer
+    4. F: Fully-Connected Layer
+    """    
+    def __init__(
+            self, 
+            Ko:                     int, 
+            last_block_channel:     int, 
+            channels:               list[int], 
+            end_channel:            int, 
+            n_vertex:               int, 
+            act_func:               str, 
+            bias:                   bool, 
+            droprate:               float,
+    ):
         super(OutputBlock, self).__init__()
-        self.tmp_conv1 = TemporalConvLayer(Ko, last_block_channel, channels[0], n_vertex, act_func)
-        self.fc1 = nn.Linear(in_features=channels[0], out_features=channels[1], bias=bias)
-        self.fc2 = nn.Linear(in_features=channels[1], out_features=end_channel, bias=bias)
-        self.tc1_ln = nn.LayerNorm([n_vertex, channels[0]], eps=1e-12)
-        self.relu = nn.ReLU()
-        self.dropout = nn.Dropout(p=droprate)
+        self.tmp_conv1  = TemporalConvLayer(Ko, last_block_channel, channels[0], n_vertex, act_func)
+        self.fc1        = nn.Linear(in_features=channels[0], out_features=channels[1], bias=bias)
+        self.fc2        = nn.Linear(in_features=channels[1], out_features=end_channel, bias=bias)
+        self.tc1_ln     = nn.LayerNorm([n_vertex, channels[0]], eps=1e-12)
+        self.relu       = nn.ReLU()
+        self.dropout    = nn.Dropout(p=droprate)
 
     def forward(self, x):
         x = self.tmp_conv1(x)

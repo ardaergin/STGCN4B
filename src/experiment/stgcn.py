@@ -166,11 +166,16 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         trial_args.gamma = trial.suggest_float("gamma", 0.5, 0.95, log=True)
         trial_args.droprate = trial.suggest_float("droprate", 0.1, 0.5)
         trial_args.enable_bias = trial.suggest_categorical("enable_bias", [True, False])
+        trial_args.act_func = trial.suggest_categorical("act_func", ["glu", 'gtu', "relu", "silu"])
         
         # --- STGCN Architecture Hyperparameters ---
-        trial_args.graph_conv_type = trial.suggest_categorical("graph_conv_type", ["gcn", "cheb"])
-        trial_args.act_func = trial.suggest_categorical("act_func", ["glu", "relu", "silu"])
-        trial_args.Ks = trial.suggest_categorical("Ks", [2, 3])
+        if self.args.drop_spatial_layer:
+            # Placeholders
+            trial_args.graph_conv_type = "none"
+            trial_args.Ks = 1
+        else:
+            trial_args.graph_conv_type = trial.suggest_categorical("graph_conv_type", ["gcn", "cheb"])
+            trial_args.Ks = trial.suggest_categorical("Ks", [2, 3])
         trial_args.st_main_channels = trial.suggest_categorical("st_main_channels", [32, 64, 96])
         trial_args.st_bottleneck_channels = trial.suggest_categorical("st_bottleneck_channels", [8, 16, 24])
         trial_args.output_channels = trial.suggest_categorical("output_channels", [128, 256, 512])
@@ -199,15 +204,18 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         logger.info(f"Number of features: {n_features}")
         
         # Create GSO(s)
-        A = self.input_dict["f_adj_mat_tensor"]
-        M = self.input_dict["m_adj_mat_tensors"]
-        gso = create_gso(
-            args                = args,
-            device              = device,
-            n_nodes             = n_nodes,
-            adj_matrix          = A,
-            masked_adj_matrices = M if args.gso_mode == "dynamic" else None,
-        )
+        if args.drop_spatial_layer:
+            gso = None
+        else:
+            A = self.input_dict["f_adj_mat_tensor"]
+            M = self.input_dict["m_adj_mat_tensors"]
+            gso = create_gso(
+                args                = args,
+                device              = device,
+                n_nodes             = n_nodes,
+                adj_matrix          = A,
+                masked_adj_matrices = M if args.gso_mode == "dynamic" else None,
+            )
         
         # Initialize model
         model = HomogeneousSTGCN(

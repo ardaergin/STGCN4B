@@ -8,9 +8,9 @@ Main enhancements:
 - Supports different task types via `task_type` parameter:
     • 'default': full spatio-temporal prediction (original STGCN)
     • 'measurement_forecast': predicts time series values for each node (e.g., temperature, CO₂)
-    • 'consumption_forecast': predicts a single aggregated target (e.g., building-wide consumption)
-    • 'workhour_classification': classifies each time window (e.g., work hour vs. non-work hour)
-- Modular design with output pooling and optional classifiers for consumption/classification tasks
+    • 'single_value_forecast': predicts a single aggregated target (e.g., building-wide consumption)
+    • 'single_value_classification': classifies each time window (e.g., work hour vs. non-work hour)
+- Modular design with output pooling and optional classifiers for single_value/classification tasks
 - Dynamic support for per-block graph shift operators (GSOs), including Chebyshev and GCN graph convolutions
 
 Model variants:
@@ -36,8 +36,11 @@ class HomogeneousSTGCN(nn.Module):
     """
     Spatio-Temporal Graph Convolutional Network supporting
     • Chebyshev or GCN 1-hop graph convolutions
-    • Four task types: default, measurement_forecast,
-      consumption_forecast, workhour_classification
+    • Four task types: 
+        1. default, 
+        2. measurement_forecast,
+        3. single_value_forecast,
+        4. single_value_classification
 
     Parameters
     ----------
@@ -47,24 +50,26 @@ class HomogeneousSTGCN(nn.Module):
     n_vertex      : Number of graph nodes
     gso           : Graph shift operator, can be a list for dynamic progression in each block.
     conv_type     : "gcn" or "cheb"
-    task_type     : "default", 'workhour_classification', 'consumption_forecast', or 'measurement_forecast'
-    num_classes   : Number of classes (only used for classification task)
+    task_type     : "default", "measurement_forecast", "single_value_forecast", or "single_value_classification"
+    num_classes   : Number of classes (only used for classification)
     """
     def __init__(
         self, 
-        args:       argparse.Namespace, 
-        n_vertex:   int, 
-        n_features: int,
-        gso:        torch.Tensor | List[torch.Tensor], 
-        *,
-        conv_type:      Literal["gcn", "cheb"] = "gcn",
-        task_type:      str = "measurement_forecast",
-        num_classes:    int | None = None
+        args:           argparse.Namespace, 
+        n_vertex:       int,
+        n_features:     int,
+        task_type:      str,
+        gso:            torch.Tensor | List[torch.Tensor] | None    = None,
+        conv_type:      Literal["gcn", "cheb", "none"]              = "gcn",
+        num_classes:    int | None                                  = None
     ):
         super().__init__()
         
-        if conv_type not in {"gcn", "cheb"}:
-            raise ValueError("conv_type must be 'gcn' or 'cheb'")
+        if conv_type not in {"gcn", "cheb", "none"}:
+            raise ValueError("conv_type must be 'gcn' or 'cheb' or 'none'")
+        if conv_type == "none" and not args.drop_spatial_layer:
+            raise ValueError("conv_type='none' requires drop_spatial_layer=True")
+        
         self.task_type = task_type
         self.n_vertex = n_vertex
         self.n_features = n_features
@@ -75,29 +80,34 @@ class HomogeneousSTGCN(nn.Module):
         self.Ko = Ko
 
         # Handle per-block GSOs (allow single tensor or iterable)
-        if not isinstance(gso, (list, tuple)):
-            gso = [gso] * (len(blocks) - 3)
-        if len(gso) != len(blocks) - 3:
-            raise ValueError(f"Need {len(blocks)-3} GSOs for {len(blocks)-3} blocks, got {len(gso)}")
-        self.gso = gso
+        if args.drop_spatial_layer:
+            self.gso = [None] * (len(blocks) - 3)
+        else:
+            if not isinstance(gso, (list, tuple)):
+                gso = [gso] * (len(blocks) - 3)
+            if len(gso) != len(blocks) - 3:
+                raise ValueError(f"Need {len(blocks)-3} GSOs for {len(blocks)-3} blocks, got {len(gso)}")
+            self.gso = gso
         
         ########## Spatio-Temporal blocks ##########
-        # (T -> S -> T - > N -> D)
-        conv_op_name = "cheb_graph_conv" if conv_type == "cheb" else "graph_conv"
+        if args.drop_spatial_layer:     conv_op_name = None
+        else:                           conv_op_name = "cheb_graph_conv" if conv_type == "cheb" else "graph_conv"
+        
         st_layers = []
         for l, gso_l in enumerate(self.gso):
             st_layers.append(
                 STConvBlock(
-                    Kt=args.Kt, 
-                    Ks=args.Ks, 
-                    n_vertex=n_vertex,
-                    last_block_channel=blocks[l][-1],
-                    channels=blocks[l+1],
-                    act_func=args.act_func,
-                    graph_conv_type=conv_op_name,
-                    gso=gso_l,
-                    bias=args.enable_bias,
-                    droprate=args.droprate,
+                    Kt                  = args.Kt,
+                    Ks                  = args.Ks,
+                    n_vertex            = n_vertex,
+                    last_block_channel  = blocks[l][-1],
+                    channels            = blocks[l+1],
+                    act_func            = args.act_func,
+                    graph_conv_type     = conv_op_name,
+                    gso                 = gso_l,
+                    bias                = args.enable_bias,
+                    droprate            = args.droprate,
+                    drop_spatial_layer  = args.drop_spatial_layer if hasattr(args, 'drop_spatial_layer') else False,
                 )
             )
         self.st_blocks = nn.Sequential(*st_layers)
@@ -105,14 +115,14 @@ class HomogeneousSTGCN(nn.Module):
         ########## Output block ##########
         if self.Ko > 1:
             self.output = OutputBlock(
-                Ko=self.Ko,                    # remaining temporal size
-                last_block_channel=blocks[-3][-1],  # last ST block's out-channels
-                channels=blocks[-2],
-                end_channel=blocks[-1][0],
-                n_vertex=n_vertex,
-                act_func=args.act_func,
-                bias=args.enable_bias,
-                droprate=args.droprate,
+                Ko                      = self.Ko,                    # remaining temporal size
+                last_block_channel      = blocks[-3][-1],  # last ST block's out-channels
+                channels                = blocks[-2],
+                end_channel             = blocks[-1][0],
+                n_vertex                = n_vertex,
+                act_func                = args.act_func,
+                bias                    = args.enable_bias,
+                droprate                = args.droprate,
             )
         elif self.Ko == 0:
             # If no more temporal dimension left, use only fully connected layers
@@ -135,10 +145,10 @@ class HomogeneousSTGCN(nn.Module):
             )
         
         ########## Extras for pooling / classification ##########
-        if task_type in {"consumption_forecast", "workhour_classification"}:
+        if task_type in {"single_value_forecast", "single_value_classification"}:
             self.global_pool = nn.AdaptiveAvgPool2d((1, 1))
             
-        if task_type == "workhour_classification":
+        if task_type == "single_value_classification":
             if num_classes is None:
                 num_classes = 1   # binary by default
             if num_classes > 1:
@@ -155,10 +165,10 @@ class HomogeneousSTGCN(nn.Module):
         ------
         Input : (batch_size, features, time_steps, n_vertex)
         Output:
-            default              -> (B, C_out, T_out, V)
-            measurement_forecast -> (B, C_out, V)
-            consumption_forecast -> (B, C_out)
-            workhour_classif.    -> (B, num_classes)
+            default                         -> (B, C_out, T_out, V)
+            measurement_forecast            -> (B, C_out, V)
+            single_value_forecast           -> (B, C_out)
+            single_value_classification     -> (B, num_classes)
         """
         # Pass through ST blocks
         x = self.st_blocks(x)
@@ -182,11 +192,11 @@ class HomogeneousSTGCN(nn.Module):
             x = x.squeeze(2)            # (B, C_out=n_pred, N)
             return x                    # which aligns perfectly with y: (B, n_pred, N)
 
-        elif self.task_type == 'consumption_forecast':
+        elif self.task_type == 'single_value_forecast':
             x = self.global_pool(x)                # [B,1,1,1]
             return x.squeeze(-1).squeeze(-1)       # [B, n_pred]
 
-        elif self.task_type == 'workhour_classification':
+        elif self.task_type == 'single_value_classification':
             # Global pooling to get final classification output
             x = self.global_pool(x).squeeze(-1).squeeze(-1)
             # Apply classifier for multi-class if needed

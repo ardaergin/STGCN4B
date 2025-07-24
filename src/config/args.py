@@ -298,9 +298,10 @@ def add_STGCN_args(parser):
     STGCN: Spatio-temporal graph convolutional network.
     (Yu et al., 2018)
     """
-
-    parser.add_argument('--compile_model',
-                        action='store_true',
+    parser.add_argument('--drop_spatial_layer', action='store_true',
+                        help='Whether to turn off the spatial layer (Default: False).')
+    
+    parser.add_argument('--compile_model', action='store_true',
                         dest='compile_model',
                         help='Enable model compilation. (Default: compilation is disabled).')
     parser.set_defaults(compile_model=False)
