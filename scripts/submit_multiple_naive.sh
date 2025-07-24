@@ -2,37 +2,45 @@
 
 # =================================================================
 # Wrapper script to submit multiple Naive-Persistence array jobs to SLURM.
-# Each job will have a different configuration based on the
-# parameters defined in the arrays below.
+# It loops through different measurement variables and forecast horizons.
 # =================================================================
 
 echo "Starting submission of multiple Naive-Persistence array jobs..."
 
 # --- 1. DEFINE EXPERIMENT PARAMETERS ---
-MEASUREMENT_VARIABLE="Temperature"
+# Define the full variable names and their corresponding short prefixes for the suffix
+MEASUREMENT_VARS=("Temperature" "CO2Level" "Humidity")
+MEASUREMENT_PREFIXES=("T" "C" "H")
+
+# Define the forecast horizons to test
 FORECAST_HORIZONS=(1 2 3 4 5 6 7 8)
-FOLDER_SUFFIXES=("T1" "T2" "T3" "T4" "T5" "T6" "T7" "T8")
 
 # --- 2. LOOP THROUGH PARAMETERS AND SUBMIT JOBS ---
-num_experiments=${#FOLDER_SUFFIXES[@]}
+# Outer loop for measurement variables
+for j in "${!MEASUREMENT_VARS[@]}"; do
+    variable=${MEASUREMENT_VARS[j]}
+    prefix=${MEASUREMENT_PREFIXES[j]}
 
-for (( i=0; i<${num_experiments}; i++ )); do
-    suffix=${FOLDER_SUFFIXES[i]}
-    horizon=${FORECAST_HORIZONS[i]}
-    
-    echo "----------------------------------------------------"
-    echo "Submitting job $((i+1)) of ${num_experiments}"
-    echo "Folder Suffix: ${suffix}"
-    echo "Forecast Horizon: ${horizon}"
-    echo "----------------------------------------------------"
-    
-    sbatch scripts/run_experiment_naive.job \
-        --folder_suffix "${suffix}" \
-        --forecast_horizons "${horizon}" \
-        --measurement_variable "${MEASUREMENT_VARIABLE}"
-    
-    # Add a small delay to avoid overwhelming the SLURM controller
-    sleep 1
+    # Inner loop for forecast horizons
+    for horizon in "${FORECAST_HORIZONS[@]}"; do
+        # Construct the folder suffix dynamically (e.g., T1, C1, H1, etc.)
+        suffix="${prefix}${horizon}"
+
+        echo "----------------------------------------------------"
+        echo "Submitting Job:"
+        echo "  Measurement Variable: ${variable}"
+        echo "  Forecast Horizon:     ${horizon}"
+        echo "  Folder Suffix:        ${suffix}"
+        echo "----------------------------------------------------"
+
+        sbatch scripts/run_experiment_naive.job \
+            --folder_suffix "${suffix}" \
+            --forecast_horizons "${horizon}" \
+            --measurement_variable "${variable}"
+
+        # Add a small delay to avoid overwhelming the SLURM controller
+        sleep 1
+    done
 done
 
 echo "All jobs submitted successfully."
