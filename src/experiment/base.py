@@ -114,7 +114,7 @@ class BaseExperimentRunner(ABC):
         test_block_ids = self.splitter.test_block_ids
         
         # Setup final model
-        logger.info("Setting up the final model with the best hyperparameters...")
+        logger.info("Setting up the single-run model...")
         model = self._setup_model(args=self.args)
         
         # Train and evaluate the final model

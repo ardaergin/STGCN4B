@@ -253,6 +253,7 @@ class TabularDataPreparer(BaseDataPreparer):
     def __init__(self, args: Any):
         super().__init__(args)
         assert args.model_family == "tabular", "TabularDataPreparer only supports 'tabular' model_family."
+        assert len(args.forecast_horizons)==1, "Tabular models only support single-horizon forecasting."
         self.id_cols = ['bucket_idx', 'room_uri_str'] if self.args.task_type == "measurement_forecast" else ['bucket_idx']
     
     def _post_prepare_target(self) -> None:

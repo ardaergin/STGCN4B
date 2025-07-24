@@ -35,7 +35,7 @@ class NaiveExperimentRunner(BaseExperimentRunner):
     def _normalize_split(self): pass
     def _impute_split(self): pass
     
-    def _get_split_payload(self, block_ids: List[int]) -> Tuple[pd.Series, pd.DataFrame]:
+    def _get_split_payload(self, block_ids: List[int]) -> Tuple[pd.Series, pd.Series]:
         """
         Indicing is the same as in LGBMExperimentRunner._get_split_payload().
 
@@ -50,7 +50,8 @@ class NaiveExperimentRunner(BaseExperimentRunner):
         split_df = self.input_dict['df'][self.input_dict['df']['bucket_idx'].isin(indices)].copy()
         
         # Get target (y)
-        y = split_df[self.input_dict['target_colnames']]
+        target_colname = self.input_dict['target_colnames'][0]
+        y = split_df[target_colname]
 
         # Get source (X)
         full_target_source_df = self.input_dict["target_source_df"]
@@ -110,7 +111,7 @@ class NaiveExperimentRunner(BaseExperimentRunner):
         history = TrainingHistory(train_metric=None, train_objective=None)
         
         # Evaluate test
-        metrics, model_outputs = model.evaluate(X_test=X, y_test=y)
+        metrics, model_outputs = model.evaluate_model(X_test=X, y_test=y)
                 
         return trained_model, history, metrics, model_outputs
 

@@ -19,7 +19,6 @@ import logging; logger = logging.getLogger(__name__)
 
 class LGBMExperimentRunner(BaseExperimentRunner):
     def __init__(self, args: Any):
-        assert len(args.forecast_horizons)==1, "LightGBM only supports single-horizon forecasting."
         super().__init__(args)
     
     def _prepare_data(self) -> Dict[str, Any]:
