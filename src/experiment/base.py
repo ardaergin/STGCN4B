@@ -232,6 +232,22 @@ class BaseExperimentRunner(ABC):
         """
         pass
     
+    @abstractmethod
+    def _cleanup_after_trial(self) -> None:
+        """
+        Cleans up resources after a trial is completed.
+        This is called at the end of each trial in HPO.
+        """
+        pass
+
+    @abstractmethod
+    def _cleanup_after_fold(self) -> None:
+        """
+        Cleans up resources after a fold is completed.
+        This is called at the end of each fold in cross-validation.
+        """
+        pass
+    
     # General training and evaluation methods
     @abstractmethod
     def _train_and_evaluate_final_model(
@@ -318,70 +334,83 @@ class BaseExperimentRunner(ABC):
         """
         logger.info("=" * 50)
         logger.info(f">>> Starting trial {trial.number} <<<")
+        
+        try:
+            trial_args = self._suggest_hyperparams(trial)
+            model = self._setup_model(args=trial_args)
+            
+            fold_results: List[TrainingResult] = []
+            for fold_num, (train_idx, val_idx) in enumerate(self.splitter.split()):
+                logger.info(f">>> Starting CV Fold {fold_num + 1}/{self.splitter.n_splits} <<<")
+                
+                result = self._train_one_fold(
+                    model           = model,
+                    trial           = trial,
+                    trial_params    = trial_args,
+                    fold_index      = fold_num,
+                    train_block_ids = train_idx,
+                    val_block_ids   = val_idx
+                )
+                fold_results.append(result)
 
-        trial_args = self._suggest_hyperparams(trial)
-        model = self._setup_model(args=trial_args)
-        
-        fold_results: List[TrainingResult] = []
-        for fold_num, (train_idx, val_idx) in enumerate(self.splitter.split()):
-            logger.info(f">>> Starting CV Fold {fold_num + 1}/{self.splitter.n_splits} <<<")
+                # Light cleanup between folds
+                self._cleanup_after_fold()
+                
+                # Keep detailed record
+                self.cv_records.append({
+                    "experiment_id":        self.experiment_id,
+                    "trial":                trial.number,
+                    "fold":                 fold_num,
+                    "metric":               result.metric,
+                    "best_epoch":           result.best_epoch,
+                    "optimal_threshold":    result.optimal_threshold,
+                    **trial.params
+                })
+                
+                # Logging: Announce the result of the completed fold
+                logger.info(f">>> Finished [Trial {trial.number}] CV Fold {fold_num + 1}/{self.splitter.n_splits} <<<")
+                log_msg = f"Metric: {result.metric:.4f} | Epochs: {result.best_epoch}"
+                if self.args.task_type == "workhour_classification":
+                    log_msg += f" | Optimal threshold: {result.optimal_threshold:.4f}"
+                logger.info(log_msg)
             
-            result = self._train_one_fold(
-                model           = model,
-                trial           = trial,
-                trial_params    = trial_args,
-                fold_index      = fold_num,
-                train_block_ids = train_idx,
-                val_block_ids   = val_idx
-            )
-            fold_results.append(result)
+            # Average metric
+            avg_metric = float(np.mean([r.metric for r in fold_results]))
             
-            # Keep detailed record
-            self.cv_records.append({
-                "experiment_id":        self.experiment_id,
-                "trial":                trial.number,
-                "fold":                 fold_num,
-                "metric":               result.metric,
-                "best_epoch":           result.best_epoch,
-                "optimal_threshold":    result.optimal_threshold,
-                **trial.params
-            })
+            # Best number of epochs
+            epochs = [r.best_epoch for r in fold_results if r.best_epoch is not None]
+            best_n_epochs = float(np.mean(epochs)) if epochs else None
+            trial.set_user_attr("best_n_epochs", best_n_epochs)
             
-            # Logging: Announce the result of the completed fold
-            logger.info(f">>> Finished [Trial {trial.number}] CV Fold {fold_num + 1}/{self.splitter.n_splits} <<<")
-            log_msg = f"Metric: {result.metric:.4f} | Epochs: {result.best_epoch}"
+            # Optimal threshold
+            best_thresh = None
             if self.args.task_type == "workhour_classification":
-                log_msg += f" | Optimal threshold: {result.optimal_threshold:.4f}"
-            logger.info(log_msg)
+                thresholds = [r.optimal_threshold for r in fold_results
+                            if r.optimal_threshold is not None]
+                best_thresh = float(np.mean(thresholds)) if thresholds else None
+                trial.set_user_attr("optimal_threshold", best_thresh)
+            
+            # Logging: Announce the final aggregated result for the trial
+            logger.info(f">>> Finished Optuna Trial {trial.number} <<<")
+            logger.info(" Average validation metric across %d folds: %.4f",
+                        self.splitter.n_splits, avg_metric)
+            logger.info(" Average epochs: %s",
+                        f"{best_n_epochs:.1f}" if best_n_epochs is not None else "n/a")
+            if self.args.task_type == "workhour_classification":
+                logger.info(" Average optimal threshold: %s",
+                            f"{best_thresh:.4f}" if best_thresh is not None else "n/a")
+            logger.info("=" * 50)
+
+            return avg_metric
         
-        # Average metric
-        avg_metric = float(np.mean([r.metric for r in fold_results]))
-        
-        # Best number of epochs
-        epochs = [r.best_epoch for r in fold_results if r.best_epoch is not None]
-        best_n_epochs = float(np.mean(epochs)) if epochs else None
-        trial.set_user_attr("best_n_epochs", best_n_epochs)
-        
-        # Optimal threshold
-        best_thresh = None
-        if self.args.task_type == "workhour_classification":
-            thresholds = [r.optimal_threshold for r in fold_results
-                        if r.optimal_threshold is not None]
-            best_thresh = float(np.mean(thresholds)) if thresholds else None
-            trial.set_user_attr("optimal_threshold", best_thresh)
-        
-        # Logging: Announce the final aggregated result for the trial
-        logger.info(f">>> Finished Optuna Trial {trial.number} <<<")
-        logger.info(" Average validation metric across %d folds: %.4f",
-                    self.splitter.n_splits, avg_metric)
-        logger.info(" Average epochs: %s",
-                    f"{best_n_epochs:.1f}" if best_n_epochs is not None else "n/a")
-        if self.args.task_type == "workhour_classification":
-            logger.info(" Average optimal threshold: %s",
-                        f"{best_thresh:.4f}" if best_thresh is not None else "n/a")
-        logger.info("=" * 50)
-        
-        return avg_metric
+        finally:
+            # Dropping references so empty_cache can actually release
+            # NOTE: None assignment is a bit more robust than 'del'.
+            model = None
+            trial_args = None
+            fold_results = None
+            # Cleanup resources after the trial
+            self._cleanup_after_trial()
     
     #########################
     # Saves

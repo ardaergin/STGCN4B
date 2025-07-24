@@ -7,6 +7,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 import optuna
+import gc
+import torch._dynamo
+import torch._inductor.codecache
+import torch._inductor.utils
 
 from ..preparation.preparer import STGCNDataPreparer
 from ..models.STGCN4B.homogeneous.normalizer import STGCNNormalizer
@@ -180,6 +184,7 @@ class STGCNExperimentRunner(BaseExperimentRunner):
     ##########################
     # Setup model
     ##########################
+    
     def _setup_model(
             self, 
             args: Any
@@ -265,6 +270,35 @@ class STGCNExperimentRunner(BaseExperimentRunner):
             epoch_offset    = fold_index * trial_params.epochs)
                 
         return training_result
+    
+    ##########################
+    # Cleanup
+    ##########################
+    
+    def _cleanup_after_fold(self):
+        before = torch.cuda.memory_reserved()
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        gc.collect()
+        after = torch.cuda.memory_reserved()
+        logger.info(f"[fold-cleanup] freed {(before-after)/1024**2:.1f} MiB (reserved {after/1024**2:.1f} MiB)")
+
+    def _cleanup_after_trial(self):
+        torch.cuda.synchronize()
+        before = torch.cuda.memory_reserved()
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        gc.collect()
+        
+        # Clear Dynamo & Inductor caches
+        try: torch._dynamo.reset()
+        except Exception: pass
+        try: torch._inductor.codecache.clear()
+        except Exception: pass
+        try: torch._inductor.utils.free_runtime_memory()
+        except Exception: pass
+        after = torch.cuda.memory_reserved()
+        logger.info(f"[trial-cleanup] freed {(before-after)/1024**2:.1f} MiB (reserved {after/1024**2:.1f} MiB)")
     
     ##########################
     # Final Training & Evaluation
