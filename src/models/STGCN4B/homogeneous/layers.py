@@ -264,7 +264,7 @@ class STConvBlock(nn.Module):
 
         # S
         if drop_spatial_layer:
-            self.gc_bypass = nn.Identity()
+            self.gc_bypass = Align(c_in=c_t1_out, c_out=c_g_mid)
         else:
             self.graph_conv = GraphConvLayer(graph_conv_type, c_t1_out, c_g_mid, Ks, gso, bias)
                 
