@@ -1,0 +1,145 @@
+#!/bin/bash
+
+#SBATCH --job-name=naive-array
+#SBATCH --partition=genoa
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=2
+#SBATCH --mem=8G
+#SBATCH --time=00:30:00
+#SBATCH --array=0-4
+#SBATCH --output=logs/experiments/naive/%A_%a.out # %A=job ID, %a=array task ID
+#SBATCH --error=logs/experiments/naive/%A_%a.err
+
+
+# --- 1. DEFINE PERSISTENT STORAGE DIRECTORIES ---
+PERSISTENT_PROJECT_DIR=$HOME/eSTGNN
+PERSISTENT_DATA_DIR=$PERSISTENT_PROJECT_DIR/data
+PERSISTENT_PROCESSED_DATA_DIR=$PERSISTENT_DATA_DIR/processed
+PERSISTENT_LOG_DIR=$PERSISTENT_PROJECT_DIR/logs/experiments/naive
+
+
+# --- 1.5. CUSTOM SUFFIX FOR FOLDER (OPTIONAL) ---
+
+# Set a default empty value for the suffix.
+# So, if no argument is given, the suffix is empty.
+CUSTOM_NAME_SUFFIX=""
+
+# Check if the first argument is our dedicated flag
+if [[ "$1" == "--folder_suffix" ]]; then
+  # Check that a name was actually provided after the flag
+  if [ -n "$2" ]; then
+    CUSTOM_NAME_SUFFIX="_$2"
+    shift 2 # IMPORTANT: Shift away both the flag and its value
+  else
+    echo "Error: --folder_suffix option requires a value." >&2
+    exit 1
+  fi
+fi
+
+# Base output directory on persistent storage for the entire job array
+PERSISTENT_BASE_OUTPUT_DIR=$PERSISTENT_PROJECT_DIR/output/experiments/naive/${SLURM_ARRAY_JOB_ID}_naiveA${CUSTOM_NAME_SUFFIX}
+# A unique output directory on persistent storage for this specific task's final results
+PERSISTENT_TASK_OUTPUT_DIR=$PERSISTENT_BASE_OUTPUT_DIR/experiment_${SLURM_ARRAY_TASK_ID}
+
+
+# --- 2. DEFINE SCRATCH SPACE DIRECTORIES ---
+SCRATCH_PROJECT_DIR=$TMPDIR/eSTGNN
+SCRATCH_DATA_DIR=$SCRATCH_PROJECT_DIR/data
+SCRATCH_PROCESSED_DATA_DIR=$SCRATCH_DATA_DIR/processed
+
+# The training script will write its output here on the fast scratch disk for this task
+SCRATCH_RUN_OUTPUT_DIR=$SCRATCH_PROJECT_DIR/output/experiment_${SLURM_ARRAY_TASK_ID}
+
+
+# --- 3. ENSURE ALL NECESSARY DIRECTORIES EXIST ---
+echo "Creating directories..."
+# Create persistent directories for final results and logs
+# The -p flag ensures parent directories (like the base output) are also created
+mkdir -p $PERSISTENT_TASK_OUTPUT_DIR
+mkdir -p $PERSISTENT_LOG_DIR
+
+# Create scratch directories for the job to run in
+mkdir -p $SCRATCH_PROCESSED_DATA_DIR
+mkdir -p $SCRATCH_RUN_OUTPUT_DIR
+
+
+# --- 4. LOAD MODULES ---
+echo "Loading required modules..."
+module purge
+module load 2023
+module load Python/3.11.3-GCCcore-12.3.0
+module load PyTorch/2.1.2-foss-2023a-CUDA-12.1.1
+module load Python-bundle-PyPI/2023.06-GCCcore-12.3.0
+module load matplotlib/3.7.2-gfbf-2023a
+module load scikit-learn/1.3.1-gfbf-2023a
+
+
+# --- 5. PREPARE DATA ON SCRATCH ---
+echo "Copying input data from persistent storage to scratch space..."
+rsync -a --info=progress2 "$PERSISTENT_PROCESSED_DATA_DIR/" "$SCRATCH_PROCESSED_DATA_DIR"
+
+# Check if data copy succeeded
+if [ ! -d "$SCRATCH_PROCESSED_DATA_DIR" ] || [ -z "$(ls -A "$SCRATCH_PROCESSED_DATA_DIR")" ]; then
+    echo "ERROR: Data directory not copied to scratch space correctly"
+    exit 1
+fi
+echo "Data copy complete."
+
+# Set environment variables for performance
+echo "Setting OMP_NUM_THREADS and NUMEXPR_NUM_THREADS to $SLURM_CPUS_PER_TASK"
+export OMP_NUM_THREADS=$SLURM_CPUS_PER_TASK
+export NUMEXPR_NUM_THREADS=$SLURM_CPUS_PER_TASK
+
+
+# --- 6. RUN THE PYTHON SCRIPT ---
+echo "Starting Python script for Job Array Task ID: ${SLURM_ARRAY_TASK_ID}"
+echo "Project running from: $PERSISTENT_PROJECT_DIR"
+echo "Input data is read from: $SCRATCH_DATA_DIR"
+echo "Output will be written to: $SCRATCH_RUN_OUTPUT_DIR"
+
+cd $PERSISTENT_PROJECT_DIR
+
+srun python -m src.experiment.naive \
+    --run_mode single_run \
+    --experiment_id ${SLURM_ARRAY_TASK_ID} \
+    --data_dir $SCRATCH_DATA_DIR \
+    --output_dir $SCRATCH_RUN_OUTPUT_DIR \
+    --processed_data_dir $SCRATCH_PROCESSED_DATA_DIR \
+    --model_family tabular \
+    --model naive \
+    "$@"
+
+
+# --- 7. COPY RESULTS BACK TO PERSISTENT STORAGE ---
+echo "Copying results from scratch back to persistent storage..."
+rsync -a "$SCRATCH_RUN_OUTPUT_DIR/" "$PERSISTENT_TASK_OUTPUT_DIR/"
+echo "Results for task ${SLURM_ARRAY_TASK_ID} successfully copied to $PERSISTENT_TASK_OUTPUT_DIR"
+
+
+# --- 8. CLEAN UP SCRATCH SPACE ---
+echo "Cleaning up scratch space..."
+rm -rf $TMPDIR/*
+
+# --- 9. MOVE LOG FILES TO TASK-SPECIFIC EXPERIMENT DIRECTORY ---
+echo "Moving log files for task ${SLURM_ARRAY_TASK_ID}..."
+
+# Construct the original, full path to the log files
+# These are based on your #SBATCH directives
+SLURM_OUT_FILE_ORIGINAL="$PERSISTENT_LOG_DIR/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.out"
+SLURM_ERR_FILE_ORIGINAL="$PERSISTENT_LOG_DIR/${SLURM_ARRAY_JOB_ID}_${SLURM_ARRAY_TASK_ID}.err"
+
+# The destination is the unique output directory for this specific task
+LOG_DESTINATION_DIR=$PERSISTENT_TASK_OUTPUT_DIR
+
+# Move the files, but only if they actually exist
+if [ -f "$SLURM_OUT_FILE_ORIGINAL" ]; then
+    mv "$SLURM_OUT_FILE_ORIGINAL" "$LOG_DESTINATION_DIR/"
+    echo "Moved .out log to $LOG_DESTINATION_DIR"
+fi
+
+if [ -f "$SLURM_ERR_FILE_ORIGINAL" ]; then
+    mv "$SLURM_ERR_FILE_ORIGINAL" "$LOG_DESTINATION_DIR/"
+    echo "Moved .err log to $LOG_DESTINATION_DIR"
+fi
+
+echo "Job task ${SLURM_ARRAY_TASK_ID} fully completed and logs moved!"

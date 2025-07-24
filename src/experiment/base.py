@@ -46,7 +46,7 @@ class BaseExperimentRunner(ABC):
         # Args
         self.args = args
         # A unique ID for this specific experiment run (e.g., from SLURM_ARRAY_TASK_ID)
-        self.experiment_id = args.experiment_id # (default of args.experiment_id==0, for test run)
+        self.experiment_id = args.experiment_id # (default is args.experiment_id==0)
         # Create a unique seed for this run to ensure data splits are different
         self.seed = args.seed + self.experiment_id
 
@@ -97,17 +97,17 @@ class BaseExperimentRunner(ABC):
         )
         self.splitter.get_train_test_split()
 
-        if self.run_mode == 'test':
-            logger.info(f"===== Starting Single Test Run | Seed: {self.seed} =====")
+        if self.run_mode == 'single_run':
+            logger.info(f"===== Starting Single Run | Seed: {self.seed} =====")
             self._run_test()
         elif self.run_mode == 'experiment':
             logger.info(f"===== Starting HPO Experiment [{self.experiment_id+1}] | Seed: {self.seed} =====")
             self._run_experiment()
         else:
-            raise ValueError(f"Invalid run_mode: {self.run_mode}. Choose from 'experiment' or 'test'.")
+            raise ValueError(f"Invalid run_mode: {self.run_mode}. Choose from 'experiment' or 'single_run'.")
     
     def _run_test(self) -> None:
-        """Single test run without CV or HPO."""
+        """Single run without CV or HPO."""
         
         # Train and evaluate the final model using the best hyperparameters
         train_block_ids, val_block_ids = self.splitter.get_single_split()
@@ -258,7 +258,7 @@ class BaseExperimentRunner(ABC):
         threshold:          float = None,
         *,
         train_block_ids:    List[int],
-        val_block_ids:      List[int], # For run_mode="test", we do have a validation set
+        val_block_ids:      List[int], # For run_mode="single_run", we do have a validation set
         test_block_ids:     List[int],
         ) -> Tuple[Any, TrainingHistory, Dict[str, Any], Dict[str, Any]]:
         """Trains the final model."""

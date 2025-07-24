@@ -180,8 +180,8 @@ def add_base_modelling_args(parser):
     """Parse common data and training arguments."""
     
     # Run mode for experimenter
-    parser.add_argument('--run_mode', type=str, default='test',
-                        choices=['test', 'experiment'],
+    parser.add_argument('--run_mode', type=str, default='single_run',
+                        choices=['single_run', 'experiment'],
                         help='Run mode for the experiment runners.')
     
     # Model arguments
@@ -192,7 +192,7 @@ def add_base_modelling_args(parser):
                         choices=['heterogeneous', 'homogeneous'],
                         help='Graph type')
     parser.add_argument('--model', type=str, default='STGCN',
-                        choices=['STGCN', 'LightGBM'], 
+                        choices=['STGCN', 'LightGBM', 'naive'], 
                         help='Model type')
     
     # Task-related arguments

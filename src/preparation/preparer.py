@@ -208,12 +208,12 @@ class BaseDataPreparer(ABC):
             )
         logger.info(f"Prepared {len(self.target_dict['target_colnames'])} target columns from {self.source_colname}. "
                     f"New columns: {self.target_dict['target_colnames']}")
-
+    
     @abstractmethod
     def _post_prepare_target(self) -> None:
         """Any additional processing that needs to be done after _prepare_target() is called."""
         pass
-
+    
     @abstractmethod
     def _handle_nan_targets(self) -> None:
         """
@@ -247,25 +247,19 @@ class BaseDataPreparer(ABC):
         pass
 
 
-class LGBMDataPreparer(BaseDataPreparer):
-    """Prepares data for the LightGBM model."""
+class TabularDataPreparer(BaseDataPreparer):
+    """Prepares data for a Tabular model."""
     
     def __init__(self, args: Any):
         super().__init__(args)
-        assert args.model_family == "tabular", "LGBMDataPreparer only supports 'tabular' model_family."
-        assert args.model == "LightGBM", "LGBMDataPreparer only supports LightGBM model."
-        assert len(args.forecast_horizons)==1, "LightGBM only supports single-horizon forecasting." 
+        assert args.model_family == "tabular", "TabularDataPreparer only supports 'tabular' model_family."
         self.id_cols = ['bucket_idx', 'room_uri_str'] if self.args.task_type == "measurement_forecast" else ['bucket_idx']
     
     def _post_prepare_target(self) -> None:
         """
-        Generates forecast targets for the LGBM model.
-
-        Note: 
-        For LGBM, we have the target columns and feature columns in one DataFrame
-        1. It is just easier to slice for train/val/test splits
-        2. For the LGBM model, there can be missing buckets, so there can be a mismatch
-        between the target_df and the feature_df if we just use as they are.
+        For tabular models, we have the target columns and feature columns in one DataFrame
+        1. It is just easier to slice for train/val/test splits.
+        2. Due to missing buckets, there can be a mismatch between the target_df and the feature_df.
         """
         self.df = pd.merge(self.df, self.target_dict["target_df"], on=self.id_cols, how='left')
     
@@ -302,9 +296,7 @@ class LGBMDataPreparer(BaseDataPreparer):
         self.df.drop(columns=self.target_dict["workhour_mask_colnames"], inplace=True)
     
     def _prepare_features(self) -> None:
-        """
-        Engineers features for the LGBM model.
-        
+        """        
         This is mainly for adding lag and moving average features for the consumption variable,
         if the task is consumption forecasting and the feature is not already requested to be dropped.
         """

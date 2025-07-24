@@ -8,7 +8,7 @@ from argparse import Namespace
 import gc
 import optuna
 
-from ..preparation.preparer import LGBMDataPreparer
+from ..preparation.preparer import TabularDataPreparer
 from ..models.LightGBM.train import LGBMTrainer
 from ..utils.tracking import TrainingResult, TrainingHistory
 from .base import BaseExperimentRunner
@@ -19,11 +19,12 @@ import logging; logger = logging.getLogger(__name__)
 
 class LGBMExperimentRunner(BaseExperimentRunner):
     def __init__(self, args: Any):
+        assert len(args.forecast_horizons)==1, "LightGBM only supports single-horizon forecasting."
         super().__init__(args)
     
     def _prepare_data(self) -> Dict[str, Any]:
-        logger.info("Handling data preparation for LGBM...")
-        data_preparer = LGBMDataPreparer(self.args)
+        logger.info("Handling data preparation via TabularDataPreparer...")
+        data_preparer = TabularDataPreparer(self.args)
         input_dict = data_preparer.get_input_dict()
         return input_dict
         
@@ -54,14 +55,14 @@ class LGBMExperimentRunner(BaseExperimentRunner):
         if len(target_colnames) != 1:
             raise ValueError(f"This script is intended for a single target, "
                              f"but found {len(target_colnames)}: {target_colnames}")
-        target_col_name = target_colnames[0]
-        y = split_df[target_col_name]
+        target_colname = target_colnames[0]
+        y = split_df[target_colname]
         
         # Delta forecasting logic
-        reconstruction_t_df = None
+        target_source_df = None
         if self.args.prediction_type == "delta":
-            source_col_name = self.input_dict["source_colname"]
-            target_source_df = self.input_dict["target_source_df"]
+            source_colname = self.input_dict["source_colname"]
+            full_target_source_df = self.input_dict["target_source_df"]
             
             # Define the columns to merge on
             merge_on_cols = ['bucket_idx']
@@ -70,15 +71,18 @@ class LGBMExperimentRunner(BaseExperimentRunner):
             merge_keys_df = split_df[merge_on_cols].copy()
             
             # Merge
-            merged_df = pd.merge(merge_keys_df, target_source_df, on=merge_on_cols, how='left')
-            reconstruction_t_df = merged_df[source_col_name]
+            merged_df = pd.merge(
+                merge_keys_df, full_target_source_df, 
+                on=merge_on_cols, how='left'
+            )
+            target_source_df = merged_df[source_colname]
         
         # Get features (X)
         cols_to_drop = ['bucket_idx'] + target_colnames
         cols_to_drop = [col for col in cols_to_drop if col in split_df.columns]
         X = split_df.drop(columns=cols_to_drop)
         
-        return X, y, reconstruction_t_df
+        return X, y, target_source_df
 
     #########################
     # HPO
@@ -242,10 +246,10 @@ class LGBMExperimentRunner(BaseExperimentRunner):
                         f"Training final model for {final_params.n_estimators} rounds ({multiplier}x).")
         
         # Get split payload
-        X_train, y_train, _ = self._get_split_payload(block_ids=train_block_ids)
+        X_train, y_train, _         = self._get_split_payload(block_ids = train_block_ids)
         if val_block_ids:
-            X_val, y_val, _ = self._get_split_payload(block_ids=val_block_ids)
-        X_test, y_test, y_source_df = self._get_split_payload(block_ids=test_block_ids)
+            X_val, y_val, _         = self._get_split_payload(block_ids = val_block_ids)
+        X_test, y_test, y_source_df = self._get_split_payload(block_ids = test_block_ids)
 
         # Final seed
         # NOTE: For final training, using a different seed,
