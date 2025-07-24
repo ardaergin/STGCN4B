@@ -457,23 +457,13 @@ class BaseExperimentRunner(ABC):
         study: optuna.Study = None
         ) -> None:
         """Handles saving all experiment artifacts."""
-        handler = ResultHandler(
-            output_dir=self.output_dir, 
-            task_type=self.args.task_type,
-            history=history, 
-            metrics=metrics, 
-            model_outputs=model_outputs,
-            model=model
-        )
-        handler.process()
-        
         # Save CV records (if it's an experiment run)
         if self.run_mode == 'experiment':
             cv_path = os.path.join(self.output_dir, "results_CV.csv")
             cv_results_df = pd.DataFrame(self.cv_records)
             cv_results_df.to_csv(cv_path, index=False)
             logger.info(f"Saved detailed CV results for this split to {cv_path}")
-
+        
         # Save final test metrics
         scalar_metrics = {k: v for k, v in metrics.items() if np.isscalar(v)}
         if self.run_mode == 'experiment':
@@ -484,3 +474,13 @@ class BaseExperimentRunner(ABC):
         test_results_df = pd.DataFrame([scalar_metrics])
         test_results_df.to_csv(test_path, index=False)
         logger.info(f"Test metrics saved to {test_path}")
+        
+        handler = ResultHandler(
+            output_dir=self.output_dir, 
+            task_type=self.args.task_type,
+            history=history, 
+            metrics=metrics, 
+            model_outputs=model_outputs,
+            model=model
+        )
+        handler.process()
