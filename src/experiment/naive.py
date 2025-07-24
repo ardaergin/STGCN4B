@@ -107,7 +107,7 @@ class NaiveExperimentRunner(BaseExperimentRunner):
         
         # No training
         trained_model = None
-        history = TrainingHistory(train_metrics=[], val_metrics=[], best_iteration=None)
+        history = TrainingHistory(train_metric=None, train_objective=None)
         
         # Evaluate test
         metrics, model_outputs = model.evaluate(X_test=X, y_test=y)
@@ -119,6 +119,3 @@ def main():
     args = parse_args()
     runner = NaiveExperimentRunner(args)
     runner.run()
-
-if __name__ == "__main__":
-    main()
