@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from typing import Dict, Any, List, Tuple, Union
 from argparse import Namespace
-
+import gc
 import optuna
 
 from ..preparation.preparer import LGBMDataPreparer
@@ -191,12 +191,36 @@ class LGBMExperimentRunner(BaseExperimentRunner):
                 verbose             = True,
                 callbacks           = [pruning_callback_with_offset]
             )
+            return training_result
         except optuna.exceptions.TrialPruned as e:
             logger.warning(f"Trial {trial.number} was pruned at fold {fold_index}.")
+            trained_model = None
             raise e
-
-        return training_result
+        finally:
+            # Store the model for cleanup later
+            self._fold_model = trained_model
     
+    ##########################
+    # Cleanup
+    ##########################
+
+    def _cleanup_after_fold(self) -> None:
+        model_wrapper = getattr(self, "_fold_model", None)
+        if model_wrapper is not None:
+            try:
+                model_wrapper.model_.booster_.free_raw_data()
+            except Exception:
+                logger.debug("Could not free raw data", exc_info=True)
+        self._fold_model = None
+        gc.collect()
+    
+    def _cleanup_after_trial(self) -> None:
+        gc.collect()
+
+    ##########################
+    # Final Training & Evaluation
+    ##########################
+
     def _train_and_evaluate_final_model(
         self, 
         model:              Any,
