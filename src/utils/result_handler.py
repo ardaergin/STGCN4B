@@ -56,6 +56,12 @@ class ResultHandler:
         self._train_metric_name = self.history.train_metric
         logger.info("Using '%s' as primary train metric", self._train_metric_name)
 
+    @property
+    def has_history(self) -> bool:
+        """Check if there is any meaningful training history to plot."""
+        # The history is meaningful if either the train or valid logs are not empty.
+        return bool(self.history.train or self.history.valid)
+    
     # ------------------------------------------------------------------
     # Public dispatcher
     # ------------------------------------------------------------------
@@ -101,44 +107,50 @@ class ResultHandler:
         return (np.array([]), np.array([]))
     
     def _plot_forecasting_main(self) -> None:
-        train_loss = self._get_series("train")
-        val_loss = self._get_series("valid")
         preds, targs = self._preds_targets()
 
-        plt.figure(figsize=(15, 10))
+        # If we have history, create the full 2x2 plot
+        if self.has_history:
+            train_loss = self._get_series("train")
+            val_loss = self._get_series("valid")
+            r2_vals = self._get_series("valid", "r2")
 
-        # Loss curves
-        plt.subplot(2, 2, 1)
-        plt.plot(train_loss, label="Train", lw=2)
-        if val_loss:
-            plt.plot(val_loss, label="Valid", lw=2)
-        plt.xlabel("Epoch")
-        plt.ylabel(self._train_metric_name.upper())
-        plt.title("Loss curves")
-        plt.legend()
-        plt.grid(alpha=0.4)
+            plt.figure(figsize=(15, 10))
+            # Subplot 1: Loss curves
+            plt.subplot(2, 2, 1)
+            plt.plot(train_loss, label="Train", lw=2)
+            if val_loss:
+                plt.plot(val_loss, label="Valid", lw=2)
+            plt.xlabel("Epoch")
+            plt.ylabel(self._train_metric_name.upper())
+            plt.title("Loss curves")
+            plt.legend()
+            plt.grid(alpha=0.4)
 
-        # R² curve
-        plt.subplot(2, 2, 2)
-        r2_vals = self._get_series("valid", "r2")
-        if r2_vals:
-            plt.plot(r2_vals, label="Valid R²", lw=2)
-        if "r2" in self.metrics:
-            plt.axhline(
-                self.metrics["r2"],
-                ls="--",
-                color="red",
-                label=f"Test R² = {self.metrics['r2']:.4f}",
-            )
-        plt.title("R² over time")
-        plt.xlabel("Epoch")
-        plt.ylabel("R²")
-        plt.ylim(0, 1)
-        plt.legend()
-        plt.grid(alpha=0.4)
+            # Subplot 2: R² curve
+            plt.subplot(2, 2, 2)
+            if r2_vals:
+                plt.plot(r2_vals, label="Valid R²", lw=2)
+            if "r2" in self.metrics:
+                plt.axhline(self.metrics["r2"], ls="--", color="red", label=f"Test R² = {self.metrics['r2']:.4f}")
+            plt.title("R² over time")
+            plt.xlabel("Epoch")
+            plt.ylabel("R²")
+            plt.ylim(0, 1)
+            plt.legend()
+            plt.grid(alpha=0.4)
+            
+            # Subplot 3: Scatter actual vs predicted
+            plt.subplot(2, 2, 3)
 
-        # Scatter actual vs predicted
-        plt.subplot(2, 2, 3)
+        # If no history, create a smaller 1x2 plot for just the evaluation results
+        else:
+            logger.info("No training history found. Generating evaluation-only plots.")
+            plt.figure(figsize=(15, 5))
+            # Subplot 1: Scatter actual vs predicted
+            plt.subplot(1, 2, 1)
+            
+        # --- The rest of this code is shared by both layouts ---
         if preds.size and targs.size:
             plt.scatter(targs, preds, alpha=0.5, s=10)
             mn, mx = float(np.min([targs, preds])), float(np.max([targs, preds]))
@@ -148,8 +160,10 @@ class ResultHandler:
         plt.title("Actual vs predicted")
         plt.grid(alpha=0.4)
 
-        # Error distribution
-        plt.subplot(2, 2, 4)
+        # Determine subplot position for the error distribution
+        ax_pos = (2, 2, 4) if self.has_history else (1, 2, 2)
+        plt.subplot(*ax_pos)
+        
         if preds.size and targs.size:
             errors = preds - targs
             plt.hist(errors, bins=25, alpha=0.7)
