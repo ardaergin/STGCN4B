@@ -119,3 +119,6 @@ def main():
     args = parse_args()
     runner = NaiveExperimentRunner(args)
     runner.run()
+
+if __name__ == '__main__':
+    main()
