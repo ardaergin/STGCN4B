@@ -285,7 +285,8 @@ class STGCNExperimentRunner(BaseExperimentRunner):
 
     def _cleanup_after_trial(self):
         torch.cuda.synchronize()
-        before = torch.cuda.memory_reserved()
+        before_r = torch.cuda.memory_reserved()
+        before_a = torch.cuda.memory_allocated()
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
         gc.collect()
@@ -297,8 +298,10 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         except Exception: pass
         try: torch._inductor.utils.free_runtime_memory()
         except Exception: pass
-        after = torch.cuda.memory_reserved()
-        logger.info(f"[trial-cleanup] freed {(before-after)/1024**2:.1f} MiB (reserved {after/1024**2:.1f} MiB)")
+        after_r = torch.cuda.memory_reserved()
+        after_a = torch.cuda.memory_allocated()
+        logger.info(f"[trial-cleanup] reserved freed {(before_r-after_r)/2**20:.1f} MiB; "
+                    f"allocated freed {(before_a-after_a)/2**20:.1f} MiB")
     
     ##########################
     # Final Training & Evaluation
