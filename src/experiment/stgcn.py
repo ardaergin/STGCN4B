@@ -148,8 +148,7 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         trial_args.Kt = trial.suggest_categorical("Kt", [2, 3])
         
         # Suggesting n_his
-        all_n_his_options = [12, 18, 24, 30, 36]
-        trial_args.n_his = trial.suggest_categorical("n_his", all_n_his_options)
+        trial_args.n_his = trial.suggest_int("n_his", 12, 120, step=6)
         
         # Check if the combination is valid. If not, PRUNE.
         min_required_n_his = trial_args.stblock_num * 2 * (trial_args.Kt - 1) + 1
