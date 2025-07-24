@@ -144,7 +144,7 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         
         ########## Preflight pruning ##########
         # Handling the possible invalid architecture
-        trial_args.stblock_num = trial.suggest_categorical("stblock_num", [2, 3, 4, 5])
+        trial_args.stblock_num = trial.suggest_int("stblock_num", 2, 5)
         trial_args.Kt = trial.suggest_categorical("Kt", [2, 3])
         
         # Suggesting n_his
@@ -175,9 +175,9 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         else:
             trial_args.graph_conv_type = trial.suggest_categorical("graph_conv_type", ["gcn", "cheb"])
             trial_args.Ks = trial.suggest_categorical("Ks", [2, 3])
-        trial_args.st_main_channels = trial.suggest_categorical("st_main_channels", [32, 64, 96])
-        trial_args.st_bottleneck_channels = trial.suggest_categorical("st_bottleneck_channels", [8, 16, 24])
-        trial_args.output_channels = trial.suggest_categorical("output_channels", [128, 256, 512])
+        trial_args.st_main_channels       = trial.suggest_int("st_main_channels",       32,  128,  step=32)
+        trial_args.st_bottleneck_channels = trial.suggest_int("st_bottleneck_channels", 8,   32,   step=8)
+        trial_args.output_channels        = trial.suggest_int("output_channels",        128, 1024, step=128)
         
         # We don't tune epochs directly. We set a max value and let early stopping find the best.
         # This is the max number of epochs the model is allowed to run for in each CV fold.
