@@ -101,7 +101,6 @@ cd $PERSISTENT_PROJECT_DIR
 
 srun python -m src.experiment.naive \
     --run_mode single_run \
-    --prediction_type absolute \
     --experiment_id ${SLURM_ARRAY_TASK_ID} \
     --data_dir $SCRATCH_DATA_DIR \
     --output_dir $SCRATCH_RUN_OUTPUT_DIR \
