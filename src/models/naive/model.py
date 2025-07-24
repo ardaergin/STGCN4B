@@ -14,12 +14,6 @@ class NaivePersistenceModel:
     We do not need any delta reconstruction logic here, as the persistence model
     simply predicts the last observed value for each horizon.
     """
-    def __init__(
-            self, 
-            args: Any,
-    ):
-        self.forecast_horizons = args.forecast_horizons
-        
     def evaluate_model(
         self,
         X_test: pd.Series,
@@ -28,11 +22,19 @@ class NaivePersistenceModel:
         """
         Evaluates the persistence model's performance on the test set.
         Ensures evaluation is always done on the final, absolute scale.
+
+        Note: 
+        We don't really need to reconstruct the predictions here. Since our prediction 
+        is delta=0, so our prediction is equal to the source.
         """
-        preds =   X_test.to_numpy()
-        targets = y_test.to_numpy()
-        metrics = regression_results(targets, preds)
+        source          = X_test.to_numpy()
+        preds_abs       = source # just to be explicit
+        targets_delta   = y_test.to_numpy()
+        targets_abs     = preds_abs + targets_delta
         
+        # Calculate metrics
+        metrics = regression_results(y_true=targets_abs, y_pred=preds_abs)
+
         # Log the final metrics
         logger.info(
             f"Persistence Metrics: "
@@ -45,8 +47,8 @@ class NaivePersistenceModel:
         
         # Assemble model outputs
         model_outputs = {
-            "predictions": preds,
-            "targets": targets,
+            "predictions": preds_abs,
+            "targets": targets_abs,
         }
 
         return metrics, model_outputs

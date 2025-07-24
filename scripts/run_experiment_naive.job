@@ -6,7 +6,7 @@
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=32G
 #SBATCH --time=00:30:00
-#SBATCH --array=0-4
+#SBATCH --array=0-2
 #SBATCH --output=logs/experiments/naive/%A_%a.out # %A=job ID, %a=array task ID
 #SBATCH --error=logs/experiments/naive/%A_%a.err
 
@@ -101,7 +101,7 @@ cd $PERSISTENT_PROJECT_DIR
 
 srun python -m src.experiment.naive \
     --run_mode single_run \
-    --prediction_type absolute \
+    --prediction_type delta \
     --experiment_id ${SLURM_ARRAY_TASK_ID} \
     --data_dir $SCRATCH_DATA_DIR \
     --output_dir $SCRATCH_RUN_OUTPUT_DIR \

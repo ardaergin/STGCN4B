@@ -19,7 +19,7 @@ class NaiveExperimentRunner(BaseExperimentRunner):
 
     def __init__(self, args: Any):
         assert args.run_mode == "single_run", "NaiveExperimentRunner is only meant to be used in single_run mode. No CV-HPO allowed." 
-        assert args.prediction_type == "absolute", "For NaiveExperimentRunner, absolute and delta predictions are essentially the same." 
+        assert args.prediction_type == "delta", "For NaiveExperimentRunner, delta prediction is enforced for simplicity." 
         super().__init__(args)
     
     def _prepare_data(self) -> Dict[str, Any]:
@@ -85,7 +85,7 @@ class NaiveExperimentRunner(BaseExperimentRunner):
     ##########################
 
     def _setup_model(self, args: Any) -> NaivePersistenceModel:
-        model = NaivePersistenceModel(args=args)
+        model = NaivePersistenceModel()
         return model
     
     ##########################
