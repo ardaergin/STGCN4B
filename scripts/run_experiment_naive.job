@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #SBATCH --job-name=naive-array
-#SBATCH --partition=genoa
+#SBATCH --partition=rome
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=8G
