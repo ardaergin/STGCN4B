@@ -8,7 +8,6 @@ from .base import BaseExperimentRunner
 from ..preparation.preparer import TabularDataPreparer
 from ..models.naive.model import NaivePersistenceModel
 from ..utils.tracking import TrainingHistory
-from .lgbm import LGBMExperimentRunner
 
 import logging; logger = logging.getLogger(__name__)
 
@@ -20,6 +19,7 @@ class NaiveExperimentRunner(BaseExperimentRunner):
 
     def __init__(self, args: Any):
         assert args.run_mode == "single_run", "NaiveExperimentRunner is only meant to be used in single_run mode. No CV-HPO allowed." 
+        assert args.prediction_type == "absolute", "For NaiveExperimentRunner, absolute and delta predictions are essentially the same." 
         super().__init__(args)
     
     def _prepare_data(self) -> Dict[str, Any]:
@@ -37,13 +37,36 @@ class NaiveExperimentRunner(BaseExperimentRunner):
     
     def _get_split_payload(self, block_ids: List[int]) -> Tuple[pd.Series, pd.DataFrame]:
         """
-        Mostly same as in LGBMExperimentRunner._get_split_payload().
-        
-        Normally LGBMExperimentRunner._get_split_payload return (X, y, reconstruction_t_df).
-        However, for the persistence baseline, the target source column is basically our X.
-        As well as our delta-reconstruction dataframe.
+        Indicing is the same as in LGBMExperimentRunner._get_split_payload().
+
+        But we do not need most of the other logic here.
         """
-        _, y, X = LGBMExperimentRunner._get_split_payload(self, block_ids)
+        indices = []
+        blocks = self.input_dict['blocks']
+        for block_id in block_ids:
+            indices.extend(blocks[block_id]['bucket_indices'])
+        
+        # Filter based on the 'bucket_idx'
+        split_df = self.input_dict['df'][self.input_dict['df']['bucket_idx'].isin(indices)].copy()
+        
+        # Get target (y)
+        y = split_df[self.input_dict['target_colnames']]
+
+        # Get source (X)
+        full_target_source_df = self.input_dict["target_source_df"]
+
+        merge_on_cols = ['bucket_idx']
+        if self.args.task_type == "measurement_forecast":
+            merge_on_cols.append('room_uri_str')
+        merge_keys_df = split_df[merge_on_cols].copy()
+        
+        # Merge
+        merged_df = pd.merge(
+            merge_keys_df, full_target_source_df, 
+            on=merge_on_cols, how='left'
+        )
+        X = merged_df[self.input_dict["source_colname"]]
+        
         return X, y
     
     #########################

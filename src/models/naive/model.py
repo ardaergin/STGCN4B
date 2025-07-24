@@ -19,7 +19,6 @@ class NaivePersistenceModel:
             args: Any,
     ):
         self.forecast_horizons = args.forecast_horizons
-        self.prediction_type = args.prediction_type
     
     def predict(
             self,
@@ -42,12 +41,7 @@ class NaivePersistenceModel:
         """
         preds = self.predict(X_test) # (n, h)
         targets = y_test.to_numpy()  # (n, h)
-
-        # If the task was 'delta', y_test contains deltas. Reconstruct the absolute true values.
-        if self.prediction_type == "delta":
-            source_vals = X_test.to_numpy().reshape(-1, 1)
-            targets = source_vals + targets
-                
+                        
         # Calculate per-horizon metrics
         per_horizon_metrics = {}
         for i, horizon in enumerate(self.forecast_horizons):
