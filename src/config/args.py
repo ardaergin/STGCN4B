@@ -371,7 +371,7 @@ def add_STGCN_args(parser):
     parser.add_argument('--st_main_channels', type=int, 
                         default=64,
                         help='Number of main channels in the ST-Conv blocks (e.g., C in T-G(C,B)-T(B,C)).')
-    parser.add_argument('--st_bottleneck-channels', type=int, 
+    parser.add_argument('--st_bottleneck_channels', type=int, 
                         default=16,
                         help='Number of bottleneck channels in the graph convolution layer within ST-Conv blocks.')
     parser.add_argument('--output_channels', type=int, 
