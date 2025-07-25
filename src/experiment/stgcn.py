@@ -407,9 +407,6 @@ def main():
     if args.compile_model:
         # To help with OOM issues and performance:
         inductor_cfg = torch._inductor.config
-        inductor_cfg.dynamic_shapes = True
-        inductor_cfg.fullgraph = False
-        inductor_cfg.reduce_overhead = False
         inductor_cfg.freezing.enable = False
         inductor_cfg.triton.cudagraph_trees = False
         inductor_cfg.autotune = False
