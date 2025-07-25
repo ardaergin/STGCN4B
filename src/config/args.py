@@ -307,7 +307,7 @@ def add_STGCN_args(parser):
     parser.set_defaults(compile_model=False)
     
     parser.add_argument('--num_dataloader_workers', type=int,
-                        default=8,
+                        default=4,
                         help='Number of worker processes for data loading.')
     
     # Autocast
