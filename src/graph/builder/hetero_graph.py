@@ -31,9 +31,8 @@ class HeteroGraphBuilderMixin:
     - ('time', 'affects', 'property'): Time-to-property connections
     """
     
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Initialize hetero-specific attributes
+    def __init__(self):
+        """Initialize hetero-specific attributes"""
         self.base_hetero_graph = None
         self.hetero_temporal_graphs = None
         self.node_mappings = {}
@@ -429,7 +428,7 @@ class HeteroGraphBuilderMixin:
             if num_nodes == 0:
                 logger.warning(f"No {node_type} nodes to connect from time node")
                 continue
-
+            
             # Create edge index for time to node_type connections
             source_idx = torch.full((num_nodes,), time_node_idx, dtype=torch.long)
             target_idx = torch.arange(num_nodes, dtype=torch.long)

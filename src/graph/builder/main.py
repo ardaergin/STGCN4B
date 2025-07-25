@@ -41,10 +41,13 @@ class OfficeGraphBuilder(
     including spatial relationships and temporal features.
     """
     
-    def __init__(self, 
-                 office_graph: OfficeGraph,
-                 processed_data_dir: str = "data/processed",
-                 plots_dir: str = "output/visualizations"):
+    def __init__(
+            self, 
+            office_graph: OfficeGraph,
+            processed_data_dir: str = "data/processed",
+            plots_dir: str = "output/visualizations"
+    ):
+        super().__init__()
         self.office_graph = office_graph
         
         # Property configuration
