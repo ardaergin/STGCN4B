@@ -1,5 +1,6 @@
 # from https://github.com/hazdzz/stgcn/blob/main/model/layers.py
 
+from typing import List
 import math
 import torch
 import torch.nn as nn
@@ -247,7 +248,7 @@ class STConvBlock(nn.Module):
             Ks:                     int, 
             n_vertex:               int, 
             last_block_channel:     int, 
-            channels:               list[int], 
+            channels:               List[int], 
             act_func:               str, 
             graph_conv_type:        str,
             gso:                    torch.Tensor, 
@@ -301,7 +302,7 @@ class OutputBlock(nn.Module):
             self, 
             Ko:                     int, 
             last_block_channel:     int, 
-            channels:               list[int], 
+            channels:               List[int], 
             end_channel:            int, 
             n_vertex:               int, 
             act_func:               str, 

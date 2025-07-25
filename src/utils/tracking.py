@@ -65,8 +65,8 @@ class TrainingHistory:
 
     @classmethod
     def from_lgbm(
-        cls, 
-        evals_result: dict[str, dict[str, list[float]]], 
+        cls,
+        evals_result: Dict[str, Dict[str, List[float]]],
         *,
         train_metric: str,
         train_objective: str,

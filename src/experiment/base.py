@@ -61,8 +61,8 @@ class BaseExperimentRunner(ABC):
         self.run_mode = args.run_mode
 
         # Initialize records
-        self.cv_records: list[dict[str, Any]] = []
-        self.test_records: list[dict[str, Any]] = []
+        self.cv_records: List[Dict[str, Any]] = []
+        self.test_records: List[Dict[str, Any]] = []
 
     @staticmethod
     def setup_logging(level=logging.INFO):
