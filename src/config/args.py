@@ -301,11 +301,25 @@ def add_STGCN_args(parser):
     parser.add_argument('--drop_spatial_layer', action='store_true',
                         help='Whether to turn off the spatial layer (Default: False).')
     
+    # Compilation arguments
     parser.add_argument('--compile_model', action='store_true',
                         dest='compile_model',
+                        default=False,
                         help='Enable model compilation. (Default: compilation is disabled).')
-    parser.set_defaults(compile_model=False)
     
+    parser.add_argument('--compile_mode', type=str,
+                        default='default',
+                        choices=['default', 'reduce-overhead', 'max-autotune'],
+                        help="The compilation mode for torch.compile. (default: 'default')")
+    parser.add_argument('--compile_fullgraph', action='store_true',
+                        dest='compile_fullgraph',
+                        default=False,
+                        help="If set, uses fullgraph=True in torch.compile. (default: False)")
+    parser.add_argument('--no_dynamic_compile', action='store_false', 
+                        dest='dynamic_compile',
+                        default=True,
+                        help="If set, uses dynamic=False in torch.compile for a static graph. (default: dynamic=True)")
+
     parser.add_argument('--num_dataloader_workers', type=int,
                         default=4,
                         help='Number of worker processes for data loading.')

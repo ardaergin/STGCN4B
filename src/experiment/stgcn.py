@@ -230,10 +230,10 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         if self.args.compile_model:
             logger.info("Compiling model...")
             model = torch.compile(
-                model=model, 
-                mode="default",
-                fullgraph=False,
-                dynamic=True,
+                model       = model, 
+                mode        = args.compile_mode,
+                fullgraph   = args.compile_fullgraph,
+                dynamic     = args.compile_dynamic,
             )
             logger.info("Model compiled.")
                 
