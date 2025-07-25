@@ -233,7 +233,7 @@ class STGCNExperimentRunner(BaseExperimentRunner):
                 model       = model, 
                 mode        = args.compile_mode,
                 fullgraph   = args.compile_fullgraph,
-                dynamic     = args.compile_dynamic,
+                dynamic     = args.dynamic_compile,
             )
             logger.info("Model compiled.")
                 
