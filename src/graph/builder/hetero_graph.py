@@ -1,4 +1,4 @@
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from rdflib import URIRef
 import numpy as np
 import torch
@@ -38,7 +38,8 @@ class HeteroGraphBuilderMixin:
         self.hetero_temporal_graphs = None
         self.node_mappings = {}
         self.reverse_node_mappings = {}
-        
+        self.feature_names: Dict[str, List[str]] = {}
+
     def build_base_hetero_graph(
             self, 
             horizontal_adj_matrix: np.ndarray,
@@ -150,10 +151,14 @@ class HeteroGraphBuilderMixin:
         if not hasattr(self, 'static_room_features_df'):
             raise ValueError("Static room features DataFrame not found. Run build_static_room_features_df() first.")
         static_df = self.static_room_features_df.copy()
+        # Vectorize static features
         static_features_np = static_df.to_numpy(dtype=np.float32)
         hetero_data["room"].x = torch.from_numpy(static_features_np)
         n_r, n_f = static_features_np.shape
         logger.info("Added %d room nodes with %d static features (vectorised)", n_r, n_f)
+        # Save feature names
+        self.feature_names['room'] = static_df.columns.tolist()
+        logger.info(f"Stored {len(self.feature_names['room'])} feature names for 'room' nodes.")
         return None
     
     def _add_device_nodes(self, hetero_data: HeteroData) -> None:
@@ -177,8 +182,14 @@ class HeteroGraphBuilderMixin:
         
         logger.info(f"Found {n_device_types} unique device types: {device_types}")
         
-        # Features: [num_properties] + [device_type_one_hot_encoding]
-        # NOTE: We can zero-impute here, since this info is deduced.
+        ### Static Device Features: [num_properties] + [device_type_one_hot_encoding] ###
+        
+        # Define and store feature names for device nodes
+        device_static_feature_list = ['num_properties'] + [f"device_type_{dtype}" for dtype in device_types]
+        self.feature_names['device'] = device_static_feature_list
+        logger.info(f"Stored {len(self.feature_names['device'])} feature names for 'device' nodes.")
+        
+        # NOTE: We can zero-impute here, since this information is fully-deduced.
         n_features = 1 + n_device_types
         device_features = torch.zeros(n_devices, n_features, dtype=torch.float32)
         
@@ -220,8 +231,15 @@ class HeteroGraphBuilderMixin:
         
         logger.info(f"Found {n_property_types} unique property types: {property_types}")
         
-        # Features: [property_type_one_hot_encoding]
-        # NOTE: We can zero-impute here, since this info is deduced.
+        ### Static Property Features: [property_type_one_hot_encoding] ###
+
+        # Define and store feature names for property nodes
+        static_prop_features = [f"property_type_{ptype}" for ptype in property_types]
+        temporal_prop_features = self.device_level_df_temporal_feature_names
+        self.feature_names['property'] = static_prop_features + temporal_prop_features
+        logger.info(f"Stored {len(self.feature_names['property'])} feature names for 'property' nodes.")
+        
+        # NOTE: We can zero-impute here, since this information is fully-deduced.
         n_features = n_property_types
         property_features = torch.zeros(n_properties, n_features, dtype=torch.float32)
         
@@ -242,12 +260,16 @@ class HeteroGraphBuilderMixin:
         Initializes with placeholder for weather features.
         Will be filled with actual weather data per time bucket.
         """        
+        # Initialize with placeholder zero features
         num_weather_feats = len(self.weather_feature_names)
         hetero_data['outside'].x = torch.full(
             (1, num_weather_feats), 
             float('nan'), dtype=torch.float32)
         logger.info(f"Added 1 outside node with placeholder dim={num_weather_feats} "
                     "(actual features will be filled per time bucket)")
+        # Save feature names
+        self.feature_names['outside'] = self.weather_feature_names
+        logger.info(f"Stored {len(self.feature_names['outside'])} feature names for 'outside' node.")
         return None
     
     def _add_time_node(self, hetero_data: HeteroData) -> None:
@@ -257,11 +279,15 @@ class HeteroGraphBuilderMixin:
         Initializes with placeholder features. 
         Will be filled later per time bucket.
         """
+        # Initialize with placeholder zero features
         num_time_features = len(self.time_feature_names)
         hetero_data['time'].x = torch.full(
             (1, num_time_features), 
             float('nan'), dtype=torch.float32)
         logger.info(f"Added 1 time node with {num_time_features} temporal features")
+        # Save feature names
+        self.feature_names['time'] = self.time_feature_names
+        logger.info(f"Stored {len(self.feature_names['time'])} feature names for 'time' node.")
         return None
     
     #############################
@@ -573,6 +599,7 @@ class HeteroGraphBuilderMixin:
             "temporal_graphs": self.hetero_temporal_graphs,
             "node_mappings": self.node_mappings,
             "reverse_node_mappings": self.reverse_node_mappings,
+            "feature_names": self.feature_names,
         }
         
         logger.info("Heterogeneous STGCN input preparation complete.")
