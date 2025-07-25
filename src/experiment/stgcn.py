@@ -11,7 +11,6 @@ import gc
 import torch._dynamo
 import torch._inductor.codecache
 import torch._inductor.utils
-import torch._inductor.config as inductor_cfg
 
 from ..preparation.preparer import STGCNDataPreparer
 from ..models.STGCN4B.homogeneous.normalizer import STGCNNormalizer
@@ -403,18 +402,7 @@ def main():
         torch.set_float32_matmul_precision('high')
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-    
-    if args.compile_model:
-        # To help with OOM issues and performance:
-        inductor_cfg = torch._inductor.config
-        inductor_cfg.freezing.enable = False
-        inductor_cfg.triton.cudagraph_trees = False
-        inductor_cfg.autotune = False
-        # inductor_cfg.autotune_max_trials = 1000
-        # inductor_cfg.autotune_min_trials = 100
-        # inductor_cfg.autotune_max_repeats = 10
-        # inductor_cfg.autotune_min_repeats = 5
-    
+        
     runner = STGCNExperimentRunner(args)
     runner.run()
 
