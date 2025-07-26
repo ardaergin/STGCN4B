@@ -200,8 +200,7 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         n_nodes = self.input_dict['n_nodes']
         logger.info(f"Number of nodes: {n_nodes}")
         n_features = self.input_dict["n_features"]
-        if args.use_padding:
-            n_features += 1
+        n_features += 1 # Due to padding
         logger.info(f"Number of features: {n_features}")
         
         # Create GSO(s)
