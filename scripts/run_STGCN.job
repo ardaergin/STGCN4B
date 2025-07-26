@@ -109,6 +109,12 @@ srun python -m src.experiment.stgcn \
     --model_family graph \
     --model STGCN \
     --enable_cuda \
+    --compile_model \
+    --compile_mode reduce-overhead \
+    --compile_fullgraph \
+    --amp \
+    --amp_dtype bf16 \
+    --tf32 \
     "$@"
 
 
