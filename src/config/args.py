@@ -220,15 +220,15 @@ def add_base_modelling_args(parser):
     
     parser.add_argument('--do_not_drop_last_train_batch', action='store_false', 
                         dest='drop_last_batch',
+                        default=True,
                         help='If specified, the last batch of the training set will NOT be dropped. '
-                            'By default, the last batch IS dropped.')
-    parser.set_defaults(drop_last_train_batch=True)
-
+                            'By default, the last batch is dropped.')
+    
     parser.add_argument('--epochs', type=int, 
-                        default=25, 
+                        default=50, 
                         help='Number of epochs')
     parser.add_argument('--final_epoch_multiplier', type=float, 
-                        default=1.1, 
+                        default=1.2, 
                         help='Multiply the optimal epochs with this factor for the final training.')
     
     # Stratified data splitting
