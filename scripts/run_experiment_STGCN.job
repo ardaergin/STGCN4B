@@ -4,7 +4,7 @@
 #SBATCH --partition=gpu_h100
 #SBATCH --gpus=1
 #SBATCH --ntasks=1
-#SBATCH --cpus-per-task=10
+#SBATCH --cpus-per-task=5
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
 #SBATCH --array=0-2
@@ -117,6 +117,8 @@ srun python -m src.experiment.stgcn \
     --model STGCN \
     --enable_cuda \
     --compile_model \
+    --compile_mode reduce-overhead \
+    --compile_fullgraph \
     --amp \
     --amp_dtype bf16 \
     --tf32 \
