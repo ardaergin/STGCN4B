@@ -320,9 +320,13 @@ def add_STGCN_args(parser):
                         default=True,
                         help="If set, uses dynamic=False in torch.compile for a static graph. (default: dynamic=True)")
 
+    # Data loader args
     parser.add_argument('--num_dataloader_workers', type=int,
                         default=4,
                         help='Number of worker processes for data loading.')
+    parser.add_argument('--disable_padding', action='store_true',
+                        dest='use_padding',
+                        help='Disable replication-padding for history or adding padding mask as a feature.')
     
     # Autocast
     parser.add_argument('--amp', action='store_true', 

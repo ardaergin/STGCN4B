@@ -51,12 +51,13 @@ class BlockAwareSTGCNDataset(Dataset):
         self.samples: List[tuple] = []
         for b_idx, block in enumerate(self.blocks):
             L = len(block)
-            required_length = n_his + max_horizon
-            if L < required_length:
+            # A sample is valid if its target and max_horizon fit within the block.
+            # The last possible end_pos must be `max_horizon` steps from the end.
+            if L < max_horizon:
                 continue
-            # every start such that [start ... start+n_his-1] fits within block
-            for start in range(L - required_length + 1):
-                self.samples.append((b_idx, start))
+            # Create a sample for every possible end_pos, starting from the very beginning.
+            for end_pos_in_block in range(L - max_horizon + 1):
+                self.samples.append((b_idx, end_pos_in_block))
             
         logger.info(f"Initialized Dataset: {len(self.samples)} valid samples")
     
@@ -64,18 +65,44 @@ class BlockAwareSTGCNDataset(Dataset):
         return len(self.samples)
     
     def __getitem__(self, idx: int):
-        block_idx, start = self.samples[idx]
+        block_idx, end_pos = self.samples[idx]
         block = self.blocks[block_idx]
+        target_idx = block[end_pos]
+        start_pos = end_pos - self.n_his + 1
         
-        # History indices
-        his_idxs = block[start : start + self.n_his]
+        ### Replication-padding logic ###
+
+        # Initialize the padding mask, shape (n_his, 1)
+        padding_mask = torch.zeros((self.n_his, 1))
         
-        # Target index 
-        # NOTE: It is a single target index, and corresponds to the last element of the history window.
-        target_idx = block[start + self.n_his - 1]
+        if start_pos < 0:
+            num_padding = -start_pos
+            actual_his_idxs = block[0 : end_pos + 1]
+            actual_X = self.feature_tensor[actual_his_idxs]
+            
+            # Using replication padding for the features
+            first_feature_vector = actual_X[0, :, :]
+            padding_tensor = first_feature_vector.unsqueeze(0).repeat(num_padding, 1, 1)
+            X_features = torch.cat([padding_tensor, actual_X], dim=0)
+            
+            # Mark the padded steps in the mask (e.g., with a 1)
+            padding_mask[:num_padding, :] = 1.0
         
-        # Indexing operation on the large GPU tensor
-        X = self.feature_tensor[his_idxs]
+        else:
+            # No padding, so the mask remains all zeros.
+            his_idxs = block[start_pos : end_pos + 1]
+            X_features = self.feature_tensor[his_idxs]
+        
+        # Concatenating the padding mask as a new feature
+        # X_features shape: (n_his, R, F)
+        # We need to broadcast the mask to (n_his, R, 1) to concatenate
+        R = X_features.shape[1]
+        padding_mask_feature = padding_mask.unsqueeze(1).repeat(1, R, 1) # Shape: (n_his, R, 1)
+        
+        # X becomes the final input tensor with F+1 features
+        X = torch.cat([X_features, padding_mask_feature], dim=2)
+        
+        ### End of Replication-padding logic ###
         
         # Gather target values
         y = self.target_tensor[target_idx]
@@ -209,7 +236,7 @@ def get_data_loaders(
             n_his=args.n_his)
         
     # 3) Logging related batch size & windows per block
-    windows_per_block = block_size - (args.n_his + max_horizon) + 1
+    windows_per_block = block_size - max_horizon + 1
     logger.info(f"Windows per block: {windows_per_block}")
     logger.info(f"Batch size: {args.batch_size}")
     
