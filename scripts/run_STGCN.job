@@ -105,7 +105,7 @@ srun python -m src.experiment.stgcn \
     --data_dir $SCRATCH_DATA_DIR \
     --output_dir $SCRATCH_RUN_OUTPUT_DIR \
     --processed_data_dir $SCRATCH_PROCESSED_DATA_DIR \
-    --run_mode test \
+    --run_mode single_run \
     --model_family graph \
     --model STGCN \
     --enable_cuda \
