@@ -324,7 +324,7 @@ def add_STGCN_args(parser):
     parser.add_argument('--num_dataloader_workers', type=int,
                         default=4,
                         help='Number of worker processes for data loading.')
-    parser.add_argument('--disable_padding', action='store_true',
+    parser.add_argument('--disable_padding', action='store_false',
                         dest='use_padding',
                         help='Disable replication-padding for history or adding padding mask as a feature.')
     
