@@ -225,7 +225,7 @@ def add_base_modelling_args(parser):
     parser.set_defaults(drop_last_train_batch=True)
 
     parser.add_argument('--epochs', type=int, 
-                        default=100, 
+                        default=25, 
                         help='Number of epochs')
     parser.add_argument('--final_epoch_multiplier', type=float, 
                         default=1.1, 
@@ -277,16 +277,16 @@ def add_base_modelling_args(parser):
     parser.add_argument('--n_startup_trials', type=int, default=5,
                         help='Number of trials to complete before pruning is activated. '
                              'These first trials will always run to completion.')
-    parser.add_argument('--n_warmup_steps', type=int, default=20,
+    parser.add_argument('--n_warmup_steps', type=int, default=10,
                         help="Number of steps (epochs in this case) to complete within a trial "
                              "before it can be pruned. This prevents pruning on initial noisy performance.")
-    parser.add_argument('--interval_steps', type=int, default=3,
+    parser.add_argument('--interval_steps', type=int, default=2,
                         help='Interval (in steps/epochs) at which to check for pruning possibilities '
                              'after the warmup period is over.')
     
     # Pruning slow models
     parser.add_argument("--max_epoch_duration", type=int,
-                        default=30,
+                        default=90,
                         help="Maximum duration for a single epoch in seconds, for pruning slow trials. "
                             "Pruning starts after the first epoch, to accomodate for compiling the model.")
 
