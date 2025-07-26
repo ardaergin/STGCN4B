@@ -1,4 +1,4 @@
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Literal
 import random
 import numpy as np
 import torch
@@ -37,9 +37,11 @@ class BlockAwareSTGCNDataset(Dataset):
         target_source_tensor: torch.Tensor,
         max_horizon: int,
         n_his: int,
+        padding_strategy: Literal["zero", "replication"] = "zero",
     ):
         self.args = args
         self.feature_tensor = feature_tensor
+        self.padding_strategy = padding_strategy
         self.blocks = blocks
         self.target_tensor = target_tensor
         self.n_his = n_his
@@ -70,7 +72,7 @@ class BlockAwareSTGCNDataset(Dataset):
         target_idx = block[end_pos]
         start_pos = end_pos - self.n_his + 1
         
-        ### Replication-padding logic ###
+        ### Padding logic ###
 
         # Initialize the padding mask, shape (n_his, 1)
         padding_mask = torch.zeros((self.n_his, 1))
@@ -79,10 +81,19 @@ class BlockAwareSTGCNDataset(Dataset):
             num_padding = -start_pos
             actual_his_idxs = block[0 : end_pos + 1]
             actual_X = self.feature_tensor[actual_his_idxs]
+            _, num_rooms, num_features = self.feature_tensor.shape
             
-            # Using replication padding for the features
-            first_feature_vector = actual_X[0, :, :]
-            padding_tensor = first_feature_vector.unsqueeze(0).repeat(num_padding, 1, 1)
+            # Padding
+            if self.padding_strategy == "replication":
+                first_feature_vector = actual_X[0, :, :]
+                padding_tensor = first_feature_vector.unsqueeze(0).repeat(num_padding, 1, 1)
+            
+            elif self.padding_strategy == "zero":
+                padding_tensor = torch.zeros(
+                    (num_padding, num_rooms, num_features),
+                    dtype=self.feature_tensor.dtype
+                )
+            
             X_features = torch.cat([padding_tensor, actual_X], dim=0)
             
             # Mark the padded steps in the mask (e.g., with a 1)
@@ -102,7 +113,7 @@ class BlockAwareSTGCNDataset(Dataset):
         # X becomes the final input tensor with F+1 features
         X = torch.cat([X_features, padding_mask_feature], dim=2)
         
-        ### End of Replication-padding logic ###
+        ### End of Padding logic ###
         
         # Gather target values
         y = self.target_tensor[target_idx]
@@ -210,7 +221,8 @@ def get_data_loaders(
         target_mask_tensor=target_mask_tensor,
         target_source_tensor=target_source_tensor,
         max_horizon=max_horizon,
-        n_his=args.n_his)
+        n_his=args.n_his,
+        padding_strategy=args.padding_strategy)
     
     # If no validation set is provided, set it to None
     val_ds = None
@@ -223,7 +235,8 @@ def get_data_loaders(
             target_mask_tensor=target_mask_tensor,
             target_source_tensor=target_source_tensor,
             max_horizon=max_horizon,
-            n_his=args.n_his)
+            n_his=args.n_his,
+            padding_strategy=args.padding_strategy)
         
     test_ds = BlockAwareSTGCNDataset(
             args=args,
@@ -233,7 +246,8 @@ def get_data_loaders(
             target_mask_tensor=target_mask_tensor,
             target_source_tensor=target_source_tensor,
             max_horizon=max_horizon,
-            n_his=args.n_his)
+            n_his=args.n_his,
+            padding_strategy=args.padding_strategy)
         
     # 3) Logging related batch size & windows per block
     windows_per_block = block_size - max_horizon + 1

@@ -324,10 +324,10 @@ def add_STGCN_args(parser):
     parser.add_argument('--num_dataloader_workers', type=int,
                         default=4,
                         help='Number of worker processes for data loading.')
-    parser.add_argument('--disable_padding', action='store_false',
-                        dest='use_padding',
-                        help='Disable replication-padding for history or adding padding mask as a feature.')
-    
+    parser.add_argument('--padding_strategy', type=str,
+                        default='zero',
+                        choices=['zero', 'replication'],
+                        help='Padding strategy for history: "zero" for zero-padding (default), "replication" for replication-padding.')
     # Autocast
     parser.add_argument('--amp', action='store_true', 
                         help='Enable autocast mixed precision')
