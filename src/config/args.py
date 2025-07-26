@@ -315,10 +315,10 @@ def add_STGCN_args(parser):
                         dest='compile_fullgraph',
                         default=False,
                         help="If set, uses fullgraph=True in torch.compile. (default: False)")
-    parser.add_argument('--no_dynamic_compile', action='store_false', 
-                        dest='dynamic_compile',
-                        default=True,
-                        help="If set, uses dynamic=False in torch.compile for a static graph. (default: dynamic=True)")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument('--dynamic_compile', dest='dynamic_compile_mode', action='store_const', const=True)
+    group.add_argument('--static_compile', dest='dynamic_compile_mode', action='store_const', const=False)
+    parser.set_defaults(dynamic_compile_mode=None)
 
     # Data loader args
     parser.add_argument('--num_dataloader_workers', type=int,
