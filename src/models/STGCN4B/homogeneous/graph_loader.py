@@ -250,7 +250,7 @@ def get_data_loaders(
         batch_size=args.batch_size,
         shuffle=True,
         collate_fn=homo_collate,
-        drop_last=args.drop_last_train_batch,
+        drop_last=args.drop_last_batch,
         generator=generator,
         worker_init_fn=seed_worker,
         num_workers=args.num_dataloader_workers,
