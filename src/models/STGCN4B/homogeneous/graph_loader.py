@@ -113,6 +113,10 @@ class BlockAwareSTGCNDataset(Dataset):
         # X becomes the final input tensor with F+1 features
         X = torch.cat([X_features, padding_mask_feature], dim=2)
         
+        # Transpose to the model's expected (F, T, R) format
+        # The collate_fn will stack this to (B, F, T, R)
+        X = X.permute(2, 0, 1)
+        
         ### End of Padding logic ###
         
         # Gather target values

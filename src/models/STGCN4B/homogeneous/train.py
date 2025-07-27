@@ -80,13 +80,10 @@ def train_model(
             
             # Zero the gradients
             optimizer.zero_grad()
-
-            # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
-            x = X_batch.permute(0, 3, 1, 2)
-            
+                        
             # Forward pass (with Automatic Mixed Precision)
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-                outputs = model(x)
+                outputs = model(X_batch)
                 if args.task_type == "workhour_classification":
                     loss_train = criterion(outputs.squeeze(), y_batch.squeeze().float())
                 else: # Forecasting tasks
@@ -126,12 +123,9 @@ def train_model(
                     y_batch = y_batch.to(device, non_blocking=True)
                     mask_batch = mask_batch.to(device, non_blocking=True)
 
-                    # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
-                    x = X_batch.permute(0, 3, 1, 2)
-
                     # Forward pass
                     with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-                        outputs = model(x)
+                        outputs = model(X_batch)
                         if args.task_type == "workhour_classification":
                             if outputs.dim() == 1:
                                 outputs = outputs.unsqueeze(1)  # (B,1)
@@ -242,13 +236,13 @@ def train_model(
             model.eval()
             probs, labels = [], []
             with torch.inference_mode():
-                for X, y, *_ in val_loader:
-                    X = X.to(device, non_blocking=True)
-                    y = y.to(device, non_blocking=True)
+                for X_batch, y_batch, *_ in val_loader:
+                    X_batch = X_batch.to(device, non_blocking=True)
+                    y_batch = y_batch.to(device, non_blocking=True)
                     with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-                        outputs = model(X.permute(0, 3, 1, 2)).squeeze()
+                        outputs = model(X_batch).squeeze()
                     probs.extend(torch.sigmoid(outputs).cpu().numpy())
-                    labels.extend(y.cpu().numpy())
+                    labels.extend(y_batch.cpu().numpy())
             optimal_threshold = find_optimal_f1_threshold(labels, probs)
         
         training_result = TrainingResult(
@@ -269,7 +263,7 @@ def evaluate_model(
         normalizer: "STGCNNormalizer",
         *,
         threshold: float = 0.5,
-        ) -> Dict[str, Any]:
+) -> Tuple[Dict[str, Any], Dict[str, np.ndarray]]:
     """
     Run the trained model on the test set.
     
@@ -301,12 +295,9 @@ def evaluate_model(
                 X_batch = X_batch.to(device, non_blocking=True)
                 y_batch = y_batch.to(device, non_blocking=True)
                 
-                # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
-                x = X_batch.permute(0, 3, 1, 2)
-
                 # Forward pass
                 with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
-                    outputs = model(x)
+                    outputs = model(X_batch)
                 
                 preds = torch.sigmoid(outputs.squeeze())
                 # Add probabilities and labels to lists
@@ -337,15 +328,12 @@ def evaluate_model(
             y_batch = y_batch.to(device, non_blocking=True)
             mask_batch = mask_batch.to(device, non_blocking=True)
             y_source_batch = y_source_batch.to(device, non_blocking=True)
-
-            # Convert X_batch: List[T × (B, R, F)] → (B, T, R, F) → (B, F, T, R)
-            x = X_batch.permute(0, 3, 1, 2)
-
+            
             # Forward pass
             with torch.autocast(device_type=device.type, dtype=(torch.bfloat16 
                   if getattr(args,'amp_dtype','bf16')=='bf16' else torch.float16),
                   enabled=getattr(args,'amp',False)):
-                preds_norm = model(x)
+                preds_norm = model(X_batch)
             
             # Get targets & masks
             targets_norm = y_batch.float()
