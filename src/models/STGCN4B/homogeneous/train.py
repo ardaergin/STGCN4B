@@ -73,6 +73,9 @@ def train_model(
         running_train_loss = 0.0
                 
         for X_batch, y_batch, mask_batch, _ in train_loader:
+            if mask_batch.sum() == 0:
+                logger.warning("Skipping batch with no valid data (mask sum is 0).")
+                continue
             X_batch = X_batch.to(device, non_blocking=True)
             y_batch = y_batch.to(device, non_blocking=True)
             mask_batch = mask_batch.to(device, non_blocking=True)
