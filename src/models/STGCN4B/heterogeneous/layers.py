@@ -17,6 +17,7 @@ class HeteroTemporalBlock(nn.Module):
             static_ntypes:          List[str] = ('room', 'device')
     ):
         super().__init__()
+        self.Kt = Kt
         self.blocks = nn.ModuleDict()
         self.static_ntypes = static_ntypes
         for ntype, Cin in ntype_channels_in.items():
