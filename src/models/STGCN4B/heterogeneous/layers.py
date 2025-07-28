@@ -3,7 +3,7 @@ import torch
 from torch import nn, Tensor
 from typing import Mapping
 from ..homogeneous.layers import TemporalConvLayer, Align
-from torch_geometric.nn import HeteroConv, GCNConv
+from torch_geometric.nn import HeteroConv, GCNConv, SAGEConv
 
 
 class HeteroTemporalBlock(nn.Module):
@@ -77,35 +77,52 @@ class HeteroSTBlock(nn.Module):
         convs = {}
         
         # 1. Spatial relationships between rooms (simple diffusion)
-        convs[('room', 'adjacent_horizontal', 'room')] = GCNConv(
-            ntype_channels_mid['room'], ntype_channels_mid['room'], bias=bias
+        convs[('room', 'adjacent_horizontal', 'room')] = SAGEConv(
+            in_channels=(ntype_channels_mid['room'], ntype_channels_mid['room']),
+            out_channels=ntype_channels_mid['room'],
+            bias=bias
         )
-        convs[('room', 'adjacent_vertical', 'room')] = GCNConv(
-            ntype_channels_mid['room'], ntype_channels_mid['room'], bias=bias
+        convs[('room', 'adjacent_vertical', 'room')] = SAGEConv(
+            in_channels=(ntype_channels_mid['room'], ntype_channels_mid['room']),
+            out_channels=ntype_channels_mid['room'],
+            bias=bias
         )
 
         # 2. Hierarchical/Structural relationships
-        convs[('device', 'contained_in', 'room')] = GCNConv(
-            ntype_channels_mid['device'], ntype_channels_mid['room'], bias=bias, add_self_loops=False
+        convs[('device', 'contained_in', 'room')] = SAGEConv(
+            in_channels=(ntype_channels_mid['device'], ntype_channels_mid['room']),
+            out_channels=ntype_channels_mid['room'],
+            bias=bias
         )
-        convs[('property', 'measured_by', 'device')] = GCNConv(
-            ntype_channels_mid['property'], ntype_channels_mid['device'], bias=bias, add_self_loops=False
+        convs[('property', 'measured_by', 'device')] = SAGEConv(
+            in_channels=(ntype_channels_mid['property'], ntype_channels_mid['device']),
+            out_channels=ntype_channels_mid['device'],
+            bias=bias
         )
 
         # 3. Weather influence relationships
-        convs[('outside', 'influences', 'room')] = GCNConv(
-            ntype_channels_mid['outside'], ntype_channels_mid['room'], bias=bias, add_self_loops=False
+        convs[('outside', 'influences', 'room')] = SAGEConv(
+            in_channels=(ntype_channels_mid['outside'], ntype_channels_mid['room']),
+            out_channels=ntype_channels_mid['room'],
+            bias=bias
         )
 
+
         # 4. Time influence relationships
-        convs[('time', 'affects', 'room')] = GCNConv(
-            ntype_channels_mid['time'], ntype_channels_mid['room'], bias=bias, add_self_loops=False
+        convs[('time', 'affects', 'room')] = SAGEConv(
+            in_channels=(ntype_channels_mid['time'], ntype_channels_mid['room']),
+            out_channels=ntype_channels_mid['room'],
+            bias=bias
         )
-        convs[('time', 'affects', 'device')] = GCNConv(
-            ntype_channels_mid['time'], ntype_channels_mid['device'], bias=bias, add_self_loops=False
+        convs[('time', 'affects', 'device')] = SAGEConv(
+            in_channels=(ntype_channels_mid['time'], ntype_channels_mid['device']),
+            out_channels=ntype_channels_mid['device'],
+            bias=bias
         )
-        convs[('time', 'affects', 'property')] = GCNConv(
-            ntype_channels_mid['time'], ntype_channels_mid['property'], bias=bias, add_self_loops=False
+        convs[('time', 'affects', 'property')] = SAGEConv(
+            in_channels=(ntype_channels_mid['time'], ntype_channels_mid['property']),
+            out_channels=ntype_channels_mid['property'],
+            bias=bias
         )
 
         self.hetero_conv = HeteroConv(convs, aggr=aggr)
