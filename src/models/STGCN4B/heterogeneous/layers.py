@@ -65,6 +65,65 @@ class HeteroTemporalBlock(nn.Module):
         return out_dict
 
 
+class CustomHeteroConv(HeteroConv):
+    """Custom HeteroConv that properly handles edge weights for GCNConv."""
+    
+    def forward(
+        self,
+        x_dict: Dict[str, Tensor],
+        edge_index_dict: Dict[tuple, Any],
+    ) -> Dict[str, Tensor]:
+        
+        out_dict = {}
+        
+        for edge_type, conv in self.convs.items():
+            src, _, dst = edge_type
+            
+            edge_data = edge_index_dict.get(edge_type)
+            if edge_data is None:
+                continue
+                
+            # Handle edge data - could be just edge_index or (edge_index, edge_weight)
+            if isinstance(edge_data, tuple) and len(edge_data) == 2:
+                edge_index, edge_weight = edge_data
+            else:
+                edge_index = edge_data
+                edge_weight = None
+            
+            # Get node features
+            x_src = x_dict.get(src)
+            x_dst = x_dict.get(dst)
+            
+            # For GCNConv, we need to pass edge_weight explicitly
+            if isinstance(conv, GCNConv):
+                # GCNConv with self-loops expects x to be the dst features
+                out = conv(x_dst, edge_index, edge_weight=edge_weight)
+            else:
+                # SAGEConv and others can handle the tuple format
+                if edge_weight is not None:
+                    kwargs = {'edge_index': edge_index, 'edge_attr': edge_weight}
+                else:
+                    kwargs = {'edge_index': edge_index}
+                
+                if x_src is None:
+                    out = conv(x_dst, **kwargs)
+                else:
+                    out = conv((x_src, x_dst), **kwargs)
+            
+            # Aggregate outputs for destination nodes
+            if dst in out_dict:
+                out_dict[dst] = self.aggr_module(out_dict[dst], out)
+            else:
+                out_dict[dst] = out
+        
+        # Add nodes that were not updated
+        for node_type, x in x_dict.items():
+            if node_type not in out_dict:
+                out_dict[node_type] = x
+                
+        return out_dict
+
+
 class HeteroSTBlock(nn.Module):
     """T -> S -> T -> (LayerNorm, Dropout) for heterogeneous graphs."""
     def __init__(
@@ -121,7 +180,6 @@ class HeteroSTBlock(nn.Module):
             bias=bias
         )
 
-
         # 4. Time influence relationships
         convs[('time', 'affects', 'room')] = SAGEConv(
             in_channels=(ntype_channels_mid['time'], ntype_channels_mid['room']),
@@ -139,7 +197,8 @@ class HeteroSTBlock(nn.Module):
             bias=bias
         )
 
-        self.hetero_conv = HeteroConv(convs, aggr=aggr)
+        # Use our custom HeteroConv
+        self.hetero_conv = CustomHeteroConv(convs, aggr=aggr)
         ##### End of spatial layer #####
         
         # Activation function
@@ -158,7 +217,7 @@ class HeteroSTBlock(nn.Module):
     def forward(
             self, 
             x_dict: Dict[str, Tensor], 
-            edge_index_dict: Dict[tuple, Dict[str, Tensor]] # Renamed for clarity
+            edge_index_dict: Dict[tuple, Dict[str, Tensor]]
     ) -> Dict[str, Tensor]:
         # Temporal layer 1
         x_dict_after_temp1 = self.temp1(x_dict) # (B, C_mid, T_mid, N)
@@ -176,7 +235,7 @@ class HeteroSTBlock(nn.Module):
             if wt is None:
                 batched_edges_for_conv[etype] = idx
             else:
-                # THE FIX: Ensure the weight tensor is 1D before passing it on
+                # Ensure the weight tensor is 1D
                 batched_edges_for_conv[etype] = (idx, wt.squeeze())
 
         # We will accumulate the processed slices and stack on the time dim later
@@ -189,21 +248,16 @@ class HeteroSTBlock(nn.Module):
                 for ntype, x in x_dict_after_temp1.items()
             }
 
-            # b. Perform spatial convolution
+            # b. Perform spatial convolution using our custom HeteroConv
             flat_out_t = self.hetero_conv(flat_x_t, batched_edges_for_conv)
 
-            # c. MERGE the GNN output back into the full feature set
-            #    This updates the destination nodes while keeping the source-only nodes.
-            for ntype, out_feat in flat_out_t.items():
-                flat_x_t[ntype] = out_feat
-
-            # d. Un-flatten the now-complete feature set for this time step
+            # c. Un-flatten for this time step
             slice_out_t = {
                 ntype: x_flat.view(x_dict_after_temp1[ntype].shape[0],      # B
                                 x_dict_after_temp1[ntype].shape[3],      # N
                                 -1)                                      # C
                         .permute(0, 2, 1)                               # -> (B, C, N)
-                for ntype, x_flat in flat_x_t.items()
+                for ntype, x_flat in flat_out_t.items()
             }
             out_slices.append(slice_out_t)
 
