@@ -434,6 +434,10 @@ def add_STGCN_args(parser):
                         help='Disable bias in layers.')
     parser.set_defaults(enable_bias=True)
 
+    parser.add_argument('--aggr_type', type=str, 
+                        default='sum', 
+                        choices=['sum', 'mean', 'max'], 
+                        help='Aggregation type for hetero')
 
 
 def add_LightGBM_args(parser):
