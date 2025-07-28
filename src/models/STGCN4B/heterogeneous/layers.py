@@ -77,20 +77,36 @@ class HeteroSTBlock(nn.Module):
         convs = {}
         
         # 1. Spatial relationships between rooms (simple diffusion)
-        convs[('room', 'adjacent_horizontal', 'room')] = GCNConv(-1, ntype_channels_mid['room'], bias=bias)
-        convs[('room', 'adjacent_vertical', 'room')] = GCNConv(-1, ntype_channels_mid['room'], bias=bias)
-        
+        convs[('room', 'adjacent_horizontal', 'room')] = GCNConv(
+            ntype_channels_mid['room'], ntype_channels_mid['room'], bias=bias
+        )
+        convs[('room', 'adjacent_vertical', 'room')] = GCNConv(
+            ntype_channels_mid['room'], ntype_channels_mid['room'], bias=bias
+        )
+
         # 2. Hierarchical/Structural relationships
-        convs[('device', 'contained_in', 'room')] = GCNConv(-1, ntype_channels_mid['room'], bias=bias, add_self_loops=False)
-        convs[('property', 'measured_by', 'device')] = GCNConv(-1, ntype_channels_mid['device'], bias=bias, add_self_loops=False)
-        
+        convs[('device', 'contained_in', 'room')] = GCNConv(
+            ntype_channels_mid['device'], ntype_channels_mid['room'], bias=bias, add_self_loops=False
+        )
+        convs[('property', 'measured_by', 'device')] = GCNConv(
+            ntype_channels_mid['property'], ntype_channels_mid['device'], bias=bias, add_self_loops=False
+        )
+
         # 3. Weather influence relationships
-        convs[('outside', 'influences', 'room')] = GCNConv(-1, ntype_channels_mid['room'], bias=bias, add_self_loops=False)
-        
+        convs[('outside', 'influences', 'room')] = GCNConv(
+            ntype_channels_mid['outside'], ntype_channels_mid['room'], bias=bias, add_self_loops=False
+        )
+
         # 4. Time influence relationships
-        convs[('time', 'affects', 'room')] = GCNConv(-1, ntype_channels_mid['room'], bias=bias, add_self_loops=False)
-        convs[('time', 'affects', 'device')] = GCNConv(-1, ntype_channels_mid['device'], bias=bias, add_self_loops=False)
-        convs[('time', 'affects', 'property')] = GCNConv(-1, ntype_channels_mid['property'], bias=bias, add_self_loops=False)
+        convs[('time', 'affects', 'room')] = GCNConv(
+            ntype_channels_mid['time'], ntype_channels_mid['room'], bias=bias, add_self_loops=False
+        )
+        convs[('time', 'affects', 'device')] = GCNConv(
+            ntype_channels_mid['time'], ntype_channels_mid['device'], bias=bias, add_self_loops=False
+        )
+        convs[('time', 'affects', 'property')] = GCNConv(
+            ntype_channels_mid['time'], ntype_channels_mid['property'], bias=bias, add_self_loops=False
+        )
 
         self.hetero_conv = HeteroConv(convs, aggr=aggr)
         ##### End of spatial layer #####
