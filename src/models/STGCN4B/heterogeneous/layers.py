@@ -70,7 +70,16 @@ class WeightedHeteroConv(nn.Module):
     
     def __init__(self, convs, aggr='sum'):
         super().__init__()
-        self.convs = nn.ModuleDict(convs)
+        # Convert edge type tuples to strings for ModuleDict
+        self.convs = nn.ModuleDict()
+        self.edge_type_map = {}  # Maps string keys back to edge type tuples
+        
+        for edge_type, conv in convs.items():
+            # Create a string key from the edge type tuple
+            key = f"{edge_type[0]}__{edge_type[1]}__{edge_type[2]}"
+            self.convs[key] = conv
+            self.edge_type_map[key] = edge_type
+            
         self.aggr = aggr
     
     def forward(
@@ -81,7 +90,8 @@ class WeightedHeteroConv(nn.Module):
         
         out_dict = {}
         
-        for edge_type, conv in self.convs.items():
+        for key, conv in self.convs.items():
+            edge_type = self.edge_type_map[key]
             src, _, dst = edge_type
             
             edge_data = edge_index_dict.get(edge_type)
