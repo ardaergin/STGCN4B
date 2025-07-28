@@ -153,7 +153,6 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
             args                        = args,
             seed                        = seed,
             blocks                      = self.input_dict["blocks"],
-            block_size                  = self.input_dict["block_size"],
             target_tensor               = tensors["targets"],
             target_mask_tensor          = tensors["target_mask"],
             target_source_tensor        = tensors["target_source"],
