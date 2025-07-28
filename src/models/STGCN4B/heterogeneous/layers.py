@@ -38,10 +38,21 @@ class HeteroTemporalBlock(nn.Module):
             x_dict (Dict[str, Tensor]): Dict of tensors with shape (B, C, T, N)
         """
         out_dict = {}
+        T_in = next(iter(x_dict.values())).shape[2]
+        T_out = T_in - (self.Kt - 1)
+
+        if T_out <= 0:
+            raise ValueError(
+                f"History size {T_in} is too small for temporal kernel size {self.Kt}."
+            )
+
         for ntype, x in x_dict.items():
             if ntype in self.static_ntypes:
                 # Align expects (B, C, T, N), perfect fit
-                out_dict[ntype] = self.blocks[ntype](x)
+                aligned_x = self.blocks[ntype](x)
+                # Align layer changes channels but not the time dimension.
+                # Manually slice the time dimension to match the convolved tensors.
+                out_dict[ntype] = aligned_x[:, :, :T_out, :]
             else:
                 # Reshape for TemporalConvLayer: (B,C,T,N) -> (B*N,C,T,1)
                 B, C, T, N = x.shape
