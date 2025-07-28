@@ -588,9 +588,12 @@ class Heterogeneous(STGCNExperimentRunner):
         metadata = base_graph.metadata() # (node_types, edge_types)
         
         # 2. Get per‑node‑type input‑channel counts
+        # NOTE: We added a padding-mask channel to temporal node types, 
+        #       so we need to account for that in the feature dimensions.
+        temporal_node_types = {'property', 'outside', 'time'}
         feat_names = self.input_dict["feature_names"]
         node_feature_dims = {
-            ntype: len(feat_names[ntype])
+            ntype: len(feat_names[ntype]) + (1 if ntype in temporal_node_types else 0)
             for ntype in feat_names
         }        
         logger.info(f"Model input feature dimensions: {node_feature_dims}")
