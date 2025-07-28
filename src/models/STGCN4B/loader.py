@@ -443,7 +443,7 @@ def get_data_loaders(
         num_workers     = args.num_dataloader_workers,
         pin_memory      = True,
         # Train-specific:
-        drop_last       = args.drop_last_train_batch,
+        drop_last       = args.drop_last_batch,
         generator       = generator,
         worker_init_fn  = seed_worker,
     )
