@@ -168,19 +168,16 @@ class HeteroSTBlock(nn.Module):
         
         # Prepare the edge data for HeteroConv *once* before the loop.
         # The graph structure is static across time steps.
-        
-        batched_edges_for_conv: Dict[tuple, torch.Tensor] = {
-            etype: ew['index']          # <<< WEIGHTS DROPPED HERE
-            for etype, ew in edge_index_dict.items()
-        }
+        batched_edges_for_conv = {}
+        for etype, ew in edge_index_dict.items():
+            idx = ew['index'].long()
+            wt = ew.get('weight')
 
-        # for etype, ew in edge_index_dict.items():
-        #     idx = ew['index']
-        #     wt = ew.get('weight') # Use .get() for safety if weight is sometimes missing
-        #     if wt is None:
-        #         batched_edges_for_conv[etype] = idx
-        #     else:
-        #         batched_edges_for_conv[etype] = (idx, wt)
+            if wt is None:
+                batched_edges_for_conv[etype] = idx
+            else:
+                # THE FIX: Ensure the weight tensor is 1D before passing it on
+                batched_edges_for_conv[etype] = (idx, wt.squeeze())
 
         # We will accumulate the processed slices and stack on the time dim later
         out_slices: List[Dict[str, Tensor]] = []
