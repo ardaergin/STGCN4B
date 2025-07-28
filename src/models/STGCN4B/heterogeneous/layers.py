@@ -144,7 +144,7 @@ class HeteroSTBlock(nn.Module):
 
                 # replicate indices
                 rep_idx = base_idx.unsqueeze(0).repeat(B, 1, 1)
-                offset  = torch.arange(B, device=base_idx.device).view(B, 1, 1)
+                offset  = torch.arange(B, device=base_idx.device).view(B, 1)
                 rep_idx[:, 0, :] += offset * N_src
                 rep_idx[:, 1, :] += offset * N_dst
                 rep_idx = rep_idx.view(2, -1)
