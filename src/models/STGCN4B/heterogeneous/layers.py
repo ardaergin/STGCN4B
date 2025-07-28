@@ -184,7 +184,7 @@ class HeteroSTBlock(nn.Module):
             flat_out_t = self.hetero_conv(
                 x_dict=flat_x_t,
                 edge_index_dict=edge_index_for_conv,
-                edge_weight=edge_weight_for_conv
+                edge_weight_dict=edge_weight_for_conv
             )
 
             # Merge the GNN output back into the full feature set
