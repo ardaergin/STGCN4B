@@ -89,15 +89,17 @@ class HeteroSTBlock(nn.Module):
         convs = {}
         
         # 1. Spatial relationships between rooms (simple diffusion)
-        convs[('room', 'adjacent_horizontal', 'room')] = SAGEConv(
-            in_channels=(ntype_channels_mid['room'], ntype_channels_mid['room']),
+        convs[('room', 'adjacent_horizontal', 'room')] = GCNConv(
+            in_channels=ntype_channels_mid['room'],
             out_channels=ntype_channels_mid['room'],
-            bias=bias
+            bias=bias,
+            add_self_loops=True
         )
-        convs[('room', 'adjacent_vertical', 'room')] = SAGEConv(
-            in_channels=(ntype_channels_mid['room'], ntype_channels_mid['room']),
+        convs[('room', 'adjacent_vertical', 'room')] = GCNConv(
+            in_channels=ntype_channels_mid['room'],
             out_channels=ntype_channels_mid['room'],
-            bias=bias
+            bias=bias,
+            add_self_loops=True
         )
 
         # 2. Hierarchical/Structural relationships
