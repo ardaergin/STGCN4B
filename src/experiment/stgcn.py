@@ -164,61 +164,7 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
             feature_data                = tensors["features"],
         )
         return loaders, normalizer
-    
-    #########################
-    # HPO
-    #########################
-
-    @abstractmethod
-    def _suggest_more_hyperparams(
-            self, 
-            trial: optuna.trial.Trial, 
-            trial_args: Namespace
-    ) -> Tuple[optuna.trial.Trial, Namespace]:
-        """Suggests any further hyperparameters for the trial."""
-        pass
-
-    def _suggest_hyperparams(
-            self, 
-            trial: optuna.trial.Trial
-    ) -> Namespace:
-        """The objective function for Optuna, performing k-fold cross-validation."""
-        trial_args = deepcopy(self.args)
         
-        ########## Preflight pruning ##########
-        # Handling the possible invalid architecture
-        trial_args.stblock_num = trial.suggest_int("stblock_num", 2, 4)
-        trial_args.Kt = trial.suggest_categorical("Kt", [2, 3])
-        
-        # Suggesting n_his
-        trial_args.n_his = trial.suggest_int("n_his", 12, 72, step=6)
-        
-        # Check if the combination is valid. If not, PRUNE.
-        min_required_n_his = trial_args.stblock_num * 2 * (trial_args.Kt - 1) + 1
-        if trial_args.n_his < min_required_n_his:
-            raise optuna.exceptions.TrialPruned("Invalid architecture.")
-        
-        ########## End of Preflight pruning ##########
-        
-        # --- General Training Hyperparameters ---
-        trial_args.lr = trial.suggest_float("lr", 5e-5, 1e-3, log=True)
-        trial_args.weight_decay_rate = trial.suggest_float("weight_decay_rate", 1e-5, 3e-3, log=True)
-        trial_args.optimizer = trial.suggest_categorical("optimizer", ["adam", "adamw"])
-        trial_args.step_size = trial.suggest_int("step_size", 2, 20, step=2)
-        trial_args.gamma = trial.suggest_float("gamma", 0.5, 0.95, log=True)
-        trial_args.droprate = trial.suggest_float("droprate", 0.1, 0.5)
-        trial_args.enable_bias = trial.suggest_categorical("enable_bias", [True, False])
-        trial_args.act_func = trial.suggest_categorical("act_func", ["glu", 'gtu', "relu", "silu"])
-        
-        # We don't tune epochs directly. We set a max value and let early stopping find the best.
-        # This is the max number of epochs the model is allowed to run for in each CV fold.
-        trial_args.epochs = self.args.epochs
-        
-        # More hyperparameters if subclasses want
-        trial, trial_args = self._suggest_more_hyperparams(trial, trial_args)
-
-        return trial_args
-    
     ##########################
     # Experiment execution
     ##########################
@@ -260,7 +206,7 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
             val_loader      = loaders['val_loader'],
             trial           = trial,
             epoch_offset    = fold_index * trial_params.epochs)
-                
+        
         return training_result
     
     ##########################
@@ -429,12 +375,38 @@ class Homogeneous(STGCNExperimentRunner):
     # HPO
     #########################
     
-    def _suggest_more_hyperparams(
+    def _suggest_hyperparams(
             self, 
-            trial: optuna.trial.Trial, 
-            trial_args: Namespace
-    ) -> Tuple[optuna.trial.Trial, Namespace]:
-        """Suggests further homogeneous STGCN hyperparameters for the trial."""
+            trial: optuna.trial.Trial
+    ) -> Namespace:
+        """The objective function for Optuna, performing k-fold cross-validation."""
+        trial_args = deepcopy(self.args)
+        
+        ########## Preflight pruning ##########
+        # Handling the possible invalid architecture
+        trial_args.stblock_num = trial.suggest_int("stblock_num", 2, 4)
+        trial_args.Kt = trial.suggest_categorical("Kt", [2, 3])
+        
+        # Suggesting n_his
+        trial_args.n_his = trial.suggest_int("n_his", 12, 72, step=6)
+        
+        # Check if the combination is valid. If not, PRUNE.
+        min_required_n_his = trial_args.stblock_num * 2 * (trial_args.Kt - 1) + 1
+        if trial_args.n_his < min_required_n_his:
+            raise optuna.exceptions.TrialPruned("Invalid architecture.")
+        
+        ########## End of Preflight pruning ##########
+        
+        # --- General Training Hyperparameters ---
+        trial_args.lr = trial.suggest_float("lr", 5e-5, 1e-3, log=True)
+        trial_args.weight_decay_rate = trial.suggest_float("weight_decay_rate", 1e-5, 3e-3, log=True)
+        trial_args.optimizer = trial.suggest_categorical("optimizer", ["adam", "adamw"])
+        trial_args.step_size = trial.suggest_int("step_size", 2, 20, step=2)
+        trial_args.gamma = trial.suggest_float("gamma", 0.5, 0.95, log=True)
+        trial_args.droprate = trial.suggest_float("droprate", 0.1, 0.5)
+        trial_args.enable_bias = trial.suggest_categorical("enable_bias", [True, False])
+        trial_args.act_func = trial.suggest_categorical("act_func", ["glu", 'gtu', "relu", "silu"])
+                
         if self.args.drop_spatial_layer:
             # Placeholders:
             trial_args.graph_conv_type = "none"
@@ -442,12 +414,17 @@ class Homogeneous(STGCNExperimentRunner):
         else:
             trial_args.graph_conv_type = trial.suggest_categorical("graph_conv_type", ["gcn", "cheb"])
             trial_args.Ks = trial.suggest_categorical("Ks", [2, 3])
+
         trial_args.st_main_channels       = trial.suggest_int("st_main_channels",       16,  96,   step=16)
         trial_args.st_bottleneck_channels = trial.suggest_int("st_bottleneck_channels", 8,   32,   step=8)
         trial_args.output_channels        = trial.suggest_int("output_channels",        64,  256,  step=32)
-        
-        return trial, trial_args
 
+        # We don't tune epochs directly. We set a max value and let early stopping find the best.
+        # This is the max number of epochs the model is allowed to run for in each CV fold.
+        trial_args.epochs = self.args.epochs
+
+        return trial_args
+    
     ##########################
     # Setup model
     ##########################
@@ -564,14 +541,51 @@ class Heterogeneous(STGCNExperimentRunner):
     # HPO
     #########################
     
-    def _suggest_more_hyperparams(
+    def _suggest_hyperparams(
             self, 
-            trial: optuna.trial.Trial, 
-            trial_args: Namespace
-    ) -> Tuple[optuna.trial.Trial, Namespace]:
-        """Currently, we don't have any more hyperparameter suggestions for heterogeneous STGCN."""
-        return trial, trial_args
+            trial: optuna.trial.Trial
+    ) -> Namespace:
+        """The objective function for Optuna, performing k-fold cross-validation."""
+        trial_args = deepcopy(self.args)
+        
+        ########## Preflight pruning ##########
+        # Handling the possible invalid architecture
+        trial_args.stblock_num = trial.suggest_int("stblock_num", 2, 3)
+        trial_args.Kt = 2
+        
+        # Suggesting n_his
+        trial_args.n_his = 24
+        
+        # Check if the combination is valid. If not, PRUNE.
+        min_required_n_his = trial_args.stblock_num * 2 * (trial_args.Kt - 1) + 1
+        if trial_args.n_his < min_required_n_his:
+            raise optuna.exceptions.TrialPruned("Invalid architecture.")
+        
+        ########## End of Preflight pruning ##########
+        
+        # --- General Training Hyperparameters ---
+        trial_args.lr = trial.suggest_float("lr", 5e-5, 1e-3, log=True)
+        trial_args.weight_decay_rate = trial.suggest_float("weight_decay_rate", 1e-5, 3e-3, log=True)
+        trial_args.optimizer = trial.suggest_categorical("optimizer", ["adam", "adamw"])
+        trial_args.step_size = trial.suggest_int("step_size", 2, 6, step=2)
+        trial_args.gamma = trial.suggest_float("gamma", 0.5, 0.7, log=True)
+        trial_args.droprate = trial.suggest_float("droprate", 0.1, 0.2)
+        trial_args.enable_bias = True
+        trial_args.act_func = "glu"
+        
+        trial_args.st_main_channels       = trial.suggest_int("st_main_channels",       16,  48,   step=8)
+        trial_args.output_channels        = trial.suggest_int("output_channels",        32,  64,  step=8)
 
+        # We don't tune epochs directly. We set a max value and let early stopping find the best.
+        # This is the max number of epochs the model is allowed to run for in each CV fold.
+        trial_args.es_patience = 3
+        trial_args.epochs = 10
+        trial_args.n_startup_trials = 3
+        trial_args.n_warmup_steps = 5
+        trial_args.interval_steps = 1
+                
+        return trial_args
+    
     ##########################
     # Setup model
     ##########################
