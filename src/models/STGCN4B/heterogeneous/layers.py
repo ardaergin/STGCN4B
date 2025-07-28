@@ -65,102 +65,6 @@ class HeteroTemporalBlock(nn.Module):
         return out_dict
 
 
-class WeightedHeteroConv(nn.Module):
-    """Custom heterogeneous convolution that properly handles edge weights."""
-    
-    def __init__(self, convs, aggr='sum'):
-        super().__init__()
-        # Convert edge type tuples to strings for ModuleDict
-        self.convs = nn.ModuleDict()
-        self.edge_type_map = {}  # Maps string keys back to edge type tuples
-        
-        for edge_type, conv in convs.items():
-            # Create a string key from the edge type tuple
-            key = f"{edge_type[0]}__{edge_type[1]}__{edge_type[2]}"
-            self.convs[key] = conv
-            self.edge_type_map[key] = edge_type
-            
-        self.aggr = aggr
-    
-    def forward(
-        self,
-        x_dict: Dict[str, Tensor],
-        edge_index_dict: Dict[tuple, Any],
-    ) -> Dict[str, Tensor]:
-        
-        out_dict = {}
-        
-        for key, conv in self.convs.items():
-            edge_type = self.edge_type_map[key]
-            src, _, dst = edge_type
-            
-            edge_data = edge_index_dict.get(edge_type)
-            if edge_data is None:
-                continue
-                
-            # Handle edge data - could be just edge_index or (edge_index, edge_weight)
-            if isinstance(edge_data, tuple) and len(edge_data) == 2:
-                edge_index, edge_weight = edge_data
-            else:
-                edge_index = edge_data
-                edge_weight = None
-            
-            # Get node features
-            x_src = x_dict.get(src)
-            x_dst = x_dict.get(dst)
-            
-            # For GCNConv, we need to pass edge_weight explicitly
-            if isinstance(conv, GCNConv):
-                # GCNConv with self-loops expects x to be the dst features
-                out = conv(x_dst, edge_index, edge_weight=edge_weight)
-            else:
-                # SAGEConv and others can handle the tuple format
-                if edge_weight is not None:
-                    kwargs = {'edge_index': edge_index, 'edge_attr': edge_weight}
-                else:
-                    kwargs = {'edge_index': edge_index}
-                
-                if x_src is None:
-                    out = conv(x_dst, **kwargs)
-                else:
-                    out = conv((x_src, x_dst), **kwargs)
-            
-            # Aggregate outputs for destination nodes
-            if dst in out_dict:
-                # Simple aggregation
-                if self.aggr == 'sum':
-                    out_dict[dst] = out_dict[dst] + out
-                elif self.aggr == 'mean':
-                    # Keep track of count for mean
-                    if not hasattr(self, '_counts'):
-                        self._counts = {}
-                    if dst not in self._counts:
-                        self._counts[dst] = 1
-                        out_dict[dst] = out
-                    else:
-                        self._counts[dst] += 1
-                        out_dict[dst] = out_dict[dst] + out
-                elif self.aggr == 'max':
-                    out_dict[dst] = torch.max(out_dict[dst], out)
-                else:
-                    raise ValueError(f"Unknown aggregation: {self.aggr}")
-            else:
-                out_dict[dst] = out
-        
-        # Apply mean aggregation if needed
-        if self.aggr == 'mean' and hasattr(self, '_counts'):
-            for dst, count in self._counts.items():
-                out_dict[dst] = out_dict[dst] / count
-            self._counts.clear()
-        
-        # Add nodes that were not updated
-        for node_type, x in x_dict.items():
-            if node_type not in out_dict:
-                out_dict[node_type] = x
-                
-        return out_dict
-
-
 class HeteroSTBlock(nn.Module):
     """T -> S -> T -> (LayerNorm, Dropout) for heterogeneous graphs."""
     def __init__(
@@ -217,6 +121,7 @@ class HeteroSTBlock(nn.Module):
             bias=bias
         )
 
+
         # 4. Time influence relationships
         convs[('time', 'affects', 'room')] = SAGEConv(
             in_channels=(ntype_channels_mid['time'], ntype_channels_mid['room']),
@@ -234,8 +139,7 @@ class HeteroSTBlock(nn.Module):
             bias=bias
         )
 
-        # Use our custom heterogeneous convolution
-        self.hetero_conv = WeightedHeteroConv(convs, aggr=aggr)
+        self.hetero_conv = HeteroConv(convs, aggr=aggr)
         ##### End of spatial layer #####
         
         # Activation function
@@ -256,65 +160,64 @@ class HeteroSTBlock(nn.Module):
             x_dict: Dict[str, Tensor], 
             edge_index_dict: Dict[tuple, Dict[str, Tensor]]
     ) -> Dict[str, Tensor]:
-        # Temporal layer 1
-        x_dict_after_temp1 = self.temp1(x_dict) # (B, C_mid, T_mid, N)
-        
-        # We get the shape parameters from the output of the first temporal block
+        # 1. First temporal layer
+        x_dict_after_temp1 = self.temp1(x_dict)
         T_out_temp1 = next(iter(x_dict_after_temp1.values())).shape[2]
         
-        # Prepare the edge data for HeteroConv *once* before the loop.
-        # The graph structure is static across time steps.
-        batched_edges_for_conv = {}
+        # 2. Prepare separate dictionaries for edge_index and edge_weight
+        edge_index_for_conv = {}
+        edge_weight_for_conv = {}
         for etype, ew in edge_index_dict.items():
-            idx = ew['index'].long()
-            wt = ew.get('weight')
+            edge_index_for_conv[etype] = ew['index'].long()
+            if 'weight' in ew and ew['weight'] is not None:
+                edge_weight_for_conv[etype] = ew['weight'].squeeze()
 
-            if wt is None:
-                batched_edges_for_conv[etype] = idx
-            else:
-                # Ensure the weight tensor is 1D
-                batched_edges_for_conv[etype] = (idx, wt.squeeze())
-
-        # We will accumulate the processed slices and stack on the time dim later
-        out_slices: List[Dict[str, Tensor]] = []
-        
+        # 3. Apply spatial layer at each time step
+        out_slices = []
         for t in range(T_out_temp1):
-            # a. Get the full feature set for time t
             flat_x_t = {
                 ntype: x[:, :, t, :].permute(0, 2, 1).reshape(-1, x.shape[1])
                 for ntype, x in x_dict_after_temp1.items()
             }
 
-            # b. Perform spatial convolution using our custom HeteroConv
-            flat_out_t = self.hetero_conv(flat_x_t, batched_edges_for_conv)
+            # This is the canonical way to call HeteroConv with weights
+            flat_out_t = self.hetero_conv(
+                x_dict=flat_x_t,
+                edge_index_dict=edge_index_for_conv,
+                edge_weight=edge_weight_for_conv
+            )
 
-            # c. Un-flatten for this time step
+            # Merge the GNN output back into the full feature set
+            for ntype, out_feat in flat_out_t.items():
+                flat_x_t[ntype] = out_feat
+
+            # Un-flatten the complete feature set for this time step
             slice_out_t = {
                 ntype: x_flat.view(x_dict_after_temp1[ntype].shape[0],      # B
-                                x_dict_after_temp1[ntype].shape[3],      # N
-                                -1)                                      # C
-                        .permute(0, 2, 1)                               # -> (B, C, N)
-                for ntype, x_flat in flat_out_t.items()
+                                  x_dict_after_temp1[ntype].shape[3],      # N
+                                  -1)                                      # C
+                           .permute(0, 2, 1)                               # -> (B, C, N)
+                for ntype, x_flat in flat_x_t.items()
             }
             out_slices.append(slice_out_t)
 
-        # 4. Stack the complete time slices to reconstruct the temporal dimension
+        # 4. Stack time slices
         x_dict_after_spatial = {
             ntype: torch.stack([s[ntype] for s in out_slices], dim=2)
             for ntype in x_dict_after_temp1.keys()
         }
 
-        # 5. ReLU activation
+        # 5. Activation
         x_dict_after_relu = {k: self.relu(v) for k, v in x_dict_after_spatial.items()}
-
+        
         # 6. Second temporal layer
         x_dict_after_temp2 = self.temp2(x_dict_after_relu)
-
+        
         # 7. LayerNorm + Dropout
         final_x_dict = {}
         for ntype, x in x_dict_after_temp2.items():
             x_perm = x.permute(0, 2, 3, 1)
             x_norm = self.norms[ntype](x_perm)
             final_x_dict[ntype] = self.dropout(x_norm).permute(0, 3, 1, 2)
-
+            
         return final_x_dict
