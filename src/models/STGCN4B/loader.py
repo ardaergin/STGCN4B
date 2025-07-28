@@ -200,8 +200,6 @@ class Heterogeneous(STGCNDataset):
         super().__init__(**kwargs)
         self.data = data
         self._zero_graph_cache: HeteroData | None = None
-        self.temporal_node_types = {'property', 'outside', 'time'}
-        # NOTE: room/device nodes stay unchanged, since they have static features
         logger.info("Initialized Heterogeneous STGCNDataset.")
     
     @staticmethod
@@ -217,50 +215,30 @@ class Heterogeneous(STGCNDataset):
             if "edge_attr" in store:
                 z[etype].edge_attr = torch.zeros_like(store["edge_attr"], device=store["edge_attr"].device)
         return z
-
+    
     def _get_history(
-            self,
-            history_indices: List[int],
+            self, 
+            history_indices: List[int], 
             num_padding: int
     ) -> List[HeteroData]:
+        actual_graphs = [self.temporal_graphs[i] for i in history_indices]
         
-        # 1. Assemble graphs (with replication/zero padding)
-        real_graphs = [self.data[i] for i in history_indices]
-        
-        if num_padding:
-            first = real_graphs[0]
-            if self.padding_strategy == "replication":
-                pad_proto = first
-            elif self.padding_strategy == "zero":
-                if self._zero_graph_cache is None:
-                    self._zero_graph_cache = self._make_zero_graph(first)
-                pad_proto = self._zero_graph_cache
-            else:
-                raise ValueError(f"Unknown padding strategy {self.padding_strategy}")
-            graphs = [pad_proto] * num_padding + real_graphs
+        if num_padding == 0:
+            return actual_graphs
+
+        first_graph = actual_graphs[0]
+
+        if self.padding_strategy == "replication":
+            padding_graphs = [first_graph] * num_padding
+        elif self.padding_strategy == "zero":
+            # build once per dataset instance, then reuse
+            if self._zero_graph_cache is None:
+                self._zero_graph_cache = self._make_zero_graph(first_graph)
+            padding_graphs = [self._zero_graph_cache] * num_padding
         else:
-            graphs = real_graphs
+            raise ValueError(f"Unknown padding strategy: {self.padding_strategy}")
 
-        # 2.  Build a (n_his,1) mask vector: 1 for padded, 0 otherwise
-        mask_column = torch.zeros(self.n_his, 1, dtype=torch.float32)
-        if num_padding:
-            mask_column[:num_padding] = 1.0
-
-        # 3. For each snapshot clone once, add the mask to temporal nodes
-        out_graphs: List[HeteroData] = []
-        for t, g in enumerate(graphs):
-            g_new = g.clone()
-            m_t = mask_column[t]
-            for ntype in self.temporal_node_types:
-                if ntype in g_new:
-                    x = g_new[ntype].x
-                    pad_feat = m_t.expand(x.size(0), 1) # (N,1)
-                    pad_feat = pad_feat.to(x.dtype).to(x.device)
-                    g_new[ntype].x = torch.cat([x, pad_feat], dim=1)
-            out_graphs.append(g_new)
-
-        return out_graphs
-
+        return padding_graphs + actual_graphs
 
 # ==================================
 # Collate Functions
