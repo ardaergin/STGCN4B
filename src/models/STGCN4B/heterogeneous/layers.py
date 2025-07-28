@@ -68,6 +68,9 @@ class HeteroTemporalBlock(nn.Module):
 class CustomHeteroConv(HeteroConv):
     """Custom HeteroConv that properly handles edge weights for GCNConv."""
     
+    def __init__(self, convs, aggr='sum'):
+        super().__init__(convs, aggr)
+    
     def forward(
         self,
         x_dict: Dict[str, Tensor],
