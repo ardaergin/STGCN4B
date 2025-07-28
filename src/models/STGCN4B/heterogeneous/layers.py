@@ -159,11 +159,11 @@ class HeteroSTBlock(nn.Module):
             edge_index_dict: Dict[tuple, Dict[str, Tensor]] # Renamed for clarity
     ) -> Dict[str, Tensor]:
         # Temporal layer 1
-        x_dict = self.temp1(x_dict)  # (B, C_mid, T_mid, N)
+        x_dict_after_temp1 = self.temp1(x_dict) # (B, C_mid, T_mid, N)
         
         # We get the shape parameters from the output of the first temporal block
-        T_mid = next(iter(x_dict.values())).shape[2]
-
+        T_out_temp1 = next(iter(x_dict_after_temp1.values())).shape[2]
+        
         # Prepare the edge data for HeteroConv *once* before the loop.
         # The graph structure is static across time steps.
         
@@ -183,40 +183,48 @@ class HeteroSTBlock(nn.Module):
         # We will accumulate the processed slices and stack on the time dim later
         out_slices: List[Dict[str, Tensor]] = []
         
-        for t in range(T_mid):
-            # 1. Build flattened node feature dict for the current time step `t`
-            flat_x_t: Dict[str, Tensor] = {
-                ntype: x[:, :, t, :].permute(0, 2, 1).reshape(-1, x.shape[1]).contiguous()
-                for ntype, x in x_dict.items()
+        for t in range(T_out_temp1):
+            # a. Get the full feature set for time t
+            flat_x_t = {
+                ntype: x[:, :, t, :].permute(0, 2, 1).reshape(-1, x.shape[1])
+                for ntype, x in x_dict_after_temp1.items()
             }
-            
-            # 2. Perform spatial message passing on the time slice `t`
-            #    using the pre-batched edge information.
-            flat_out_t = self.hetero_conv(flat_x_t, batched_edges_for_conv)
-            
-            # 3. Un-flatten the output back to (B, C, N) and append for later stacking
-            slice_out = {}
-            for ntype, out in flat_out_t.items():
-                B, N = x_dict[ntype].shape[0], x_dict[ntype].shape[3]
-                C_out = out.shape[1]
-                slice_out[ntype] = out.view(B, N, C_out).permute(0, 2, 1) # (B, C_out, N)
-            out_slices.append(slice_out)
-        
-        # 4. Stack time slices to reconstruct the temporal dimension
-        x_dict = {
-            ntype: torch.stack([s[ntype] for s in out_slices], dim=2)
-            for ntype in x_dict.keys()
-        }
-        
-        x_dict = {k: self.relu(v) for k, v in x_dict.items()}
-        
-        # Temporal layer 2
-        x_dict = self.temp2(x_dict)
 
-        # 5. LayerNorm + Dropout
-        for ntype, x in x_dict.items():
+            # b. Perform spatial convolution
+            flat_out_t = self.hetero_conv(flat_x_t, batched_edges_for_conv)
+
+            # c. MERGE the GNN output back into the full feature set
+            #    This updates the destination nodes while keeping the source-only nodes.
+            for ntype, out_feat in flat_out_t.items():
+                flat_x_t[ntype] = out_feat
+
+            # d. Un-flatten the now-complete feature set for this time step
+            slice_out_t = {
+                ntype: x_flat.view(x_dict_after_temp1[ntype].shape[0],      # B
+                                x_dict_after_temp1[ntype].shape[3],      # N
+                                -1)                                      # C
+                        .permute(0, 2, 1)                               # -> (B, C, N)
+                for ntype, x_flat in flat_x_t.items()
+            }
+            out_slices.append(slice_out_t)
+
+        # 4. Stack the complete time slices to reconstruct the temporal dimension
+        x_dict_after_spatial = {
+            ntype: torch.stack([s[ntype] for s in out_slices], dim=2)
+            for ntype in x_dict_after_temp1.keys()
+        }
+
+        # 5. ReLU activation
+        x_dict_after_relu = {k: self.relu(v) for k, v in x_dict_after_spatial.items()}
+
+        # 6. Second temporal layer
+        x_dict_after_temp2 = self.temp2(x_dict_after_relu)
+
+        # 7. LayerNorm + Dropout
+        final_x_dict = {}
+        for ntype, x in x_dict_after_temp2.items():
             x_perm = x.permute(0, 2, 3, 1)
             x_norm = self.norms[ntype](x_perm)
-            x_dict[ntype] = self.dropout(x_norm).permute(0, 3, 1, 2)
-            
-        return x_dict
+            final_x_dict[ntype] = self.dropout(x_norm).permute(0, 3, 1, 2)
+
+        return final_x_dict
