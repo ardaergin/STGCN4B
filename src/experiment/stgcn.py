@@ -1,8 +1,9 @@
 #!/usr/bin/env python
 
 from copy import deepcopy
-from typing import Dict, Any, List, Tuple, Union
+from typing import Any, Dict, List, Tuple
 from argparse import Namespace
+from abc import ABC, abstractmethod
 import numpy as np
 import torch
 import torch.nn as nn
@@ -11,88 +12,118 @@ import gc
 import torch._dynamo
 import torch._inductor.codecache
 import torch._inductor.utils
+from torch_geometric.data import HeteroData
 
-from ..preparation.preparer import STGCNDataPreparer
-from ..models.STGCN4B.homogeneous.normalizer import STGCNNormalizer
-from ..models.STGCN4B.homogeneous.graph_loader import get_data_loaders
-from ..models.STGCN4B.homogeneous.train import train_model, evaluate_model
-from ..models.STGCN4B.homogeneous.setup import create_gso, create_optimizer, create_scheduler
-from ..models.STGCN4B.homogeneous.models import HomogeneousSTGCN
-from ..utils.tracking import TrainingResult, TrainingHistory
+# Base runner class
 from .base import BaseExperimentRunner
+# Data Preparation
+from ..preparation.preparer import Homogeneous as HomogeneousSTGCNDataPreparer
+from ..preparation.preparer import Heterogeneous as HeterogeneousSTGCNDataPreparer
+# Normalizers
+from ..models.STGCN4B.normalizer import STGCNNormalizer
+from ..models.STGCN4B.normalizer import Homogeneous as HomogeneousSTGCNNormalizer
+from ..models.STGCN4B.normalizer import Heterogeneous as HeterogeneousSTGCNNormalizer
+# Data Loaders
+from ..models.STGCN4B.loader import get_data_loaders
+# Models
+from ..models.STGCN4B.homogeneous.models import HomogeneousSTGCN
+from ..models.STGCN4B.homogeneous.setup import create_gso # for Homogeneous
+from ..models.STGCN4B.heterogeneous.model import HeterogeneousSTGCN
+from ..models.STGCN4B.homogeneous.setup import create_optimizer, create_scheduler # for both
+# Training
+from ..models.STGCN4B.homogeneous.train import train_model, evaluate_model
+from ..utils.tracking import TrainingResult, TrainingHistory
 
 import logging; logger = logging.getLogger(__name__)
 
 
-class STGCNExperimentRunner(BaseExperimentRunner):
+class STGCNExperimentRunner(BaseExperimentRunner, ABC):
     def __init__(self, args: Any):        
         super().__init__(args)
-        self.data_preparer = STGCNDataPreparer(self.args)
-    
+
+    @abstractmethod
+    def _get_data_preparer_class(self) -> Any:
+        pass
+
+    @abstractmethod
+    def _get_normalizer_class(self) -> Any:
+        pass
+
     def _prepare_data(self) -> Dict[str, Any]:
         logger.info("Handling data preparation for STGCN...")
-        data_preparer = STGCNDataPreparer(self.args)
+        data_preparer_cls = self._get_data_preparer_class()
+        data_preparer = data_preparer_cls(self.args)
         input_dict = data_preparer.get_input_dict()
         return input_dict
     
     #########################
     # Split preparation
     #########################
+
+    @property
+    @abstractmethod
+    def all_X(self) -> Any:
+        """An abstract property that returns the complete feature dataset."""
+        pass
+
+    @abstractmethod
+    def _slice_train_features(self, train_indices: List[int]) -> Any:
+        """Slices the feature data for training."""
+        pass
     
     def _normalize_split(
-            self, args,
+            self, 
+            args: Namespace,
             train_block_ids: List[int],
-            ) -> Tuple[np.ndarray, np.ndarray, STGCNNormalizer]:
-        """Normalizes the feature and target arrays for a given split."""
+    ) -> Tuple[np.ndarray, np.ndarray, STGCNNormalizer]:
+        """
+        Normalizes the feature and target arrays for a given split.
+        
+        VERY IMPORTANT: Must deep copy at this stage, so that the rest of the pipeline
+        does not modify the original data. Since all the other operations (imputation,
+        data loading, etc.) are all in-place operations.
+        """
         # 1. Get train indices and slice arrays to fit the normalizer
         train_indices = self.splitter._get_indices_from_blocks(train_block_ids)
-        train_feature_slice = self.input_dict["feature_array"][train_indices]
-        train_target_slice = self.input_dict["target_array"][train_indices]
-        train_mask_slice = self.input_dict["target_mask"][train_indices] if self.input_dict["target_mask"] is not None else None
+        train_feature_slice = self._slice_train_features(train_indices)
         
-        # 2. Fit normalizer and transform
-        normalizer = STGCNNormalizer()
+        # 3. Fit normalizer and transform
+        normalizer_cls = self._get_normalizer_class()
+        normalizer = normalizer_cls()
         
         # Features
         normalizer.fit_features(
-            train_array=train_feature_slice,
-            feature_names=self.input_dict["feature_names"],
-            method=args.normalization_method,
-            features_to_skip_norm=args.skip_normalization_for
-            )
-        norm_feature_array = normalizer.transform_features(full_array=self.input_dict["feature_array"])
+            train_data              = train_feature_slice,
+            feature_names           = self.input_dict["feature_names"],
+            method                  = args.normalization_method,
+            features_to_skip_norm   = args.skip_normalization_for
+        )
+        norm_features = normalizer.transform_features(all_data=self.all_X)
         
         # Targets
-        if self.args.task_type == "workhour_classification":
-            # No need for normalization in classification tasks
-            norm_target_array = self.input_dict["target_array"]
-        else: # Forecasting tasks
-            normalizer.fit_target(
-                train_targets=train_target_slice, 
-                train_mask=train_mask_slice,
-                method='median'
-                )
-            norm_target_array = normalizer.transform_target(targets=self.input_dict["target_array"])
+        train_target_slice = self.input_dict["target_array"][train_indices]
+        train_mask_slice = self.input_dict["target_mask"][train_indices]
+        normalizer.fit_target(
+            train_targets           = train_target_slice, 
+            train_mask              = train_mask_slice,
+            method                  = 'median'
+        )
+        norm_target = normalizer.transform_target(targets=self.input_dict["target_array"])
         
-        return norm_feature_array, norm_target_array, normalizer
+        return norm_features, norm_target, normalizer
     
-    def _impute_split(self, feature_array, target_array) -> Tuple[np.ndarray, np.ndarray]:
+    @abstractmethod
+    def _load_data_to_tensors(self, features: Any, targets: np.ndarray) -> Dict[str, Any]:
         """
-        Zero-imputes NaN values in the feature and target arrays. In-place operation.
-        
-        Note: For forecast tasks, we impute to target due to NaN values formed during the target creation.
-        This is fine, since we will mask these imputations later. There is no NaN for workhour classification task.
+        Converts features and targets to a dictionary of tensors.
+
+        Subclasses must return a dictionary with keys: 
+        - "features":         Tensor of features
+        - "targets":          Tensor of targets
+        - "target_mask":      Tensor of target masks
+        - "target_source":    Tensor of target sources
         """
-        feature_array[np.isnan(feature_array)] = 0.0
-        target_array[np.isnan(target_array)] = 0.0
-        return feature_array, target_array
-    
-    def _load_data_to_tensors(self, **arrays_to_convert) -> Dict[str, torch.Tensor]:
-        """Converts a dictionary of numpy arrays to a dictionary of tensors."""
-        return {
-            name: torch.from_numpy(arr).float()
-            for name, arr in arrays_to_convert.items()
-        }
+        pass
     
     def _get_split_payload(
             self, 
@@ -102,43 +133,56 @@ class STGCNExperimentRunner(BaseExperimentRunner):
             val_block_ids: List[int], 
             test_block_ids: List[int]
             )-> Tuple[Dict, STGCNNormalizer]:
+        """
+        Normalize -> Impute -> Load to tensors -> Get data loaders.
         
+        **Note**:
+        Normalization must not impact the underlying data. 
+        But, imputation should be in-place to save memory, 
+        since we would have already copied while normalizing.
+        """
         # Normalization & Imputation
-        norm_feature_array, norm_target_array, normalizer = self._normalize_split(args, train_block_ids)
-        feature_array, target_array = self._impute_split(norm_feature_array, norm_target_array)
+        norm_features, norm_target_array, normalizer = self._normalize_split(args, train_block_ids)
+        features, target_array = self._impute_split(norm_features, norm_target_array)
         
         # Load the processed arrays into tensors
-        numpy_payload = {
-            "feature": feature_array,
-            "target": target_array,
-            "target_mask": self.input_dict["target_mask"],
-            "target_source": self.input_dict["target_source_array"]
-        }
-        tensors = self._load_data_to_tensors(**numpy_payload)
+        tensors = self._load_data_to_tensors(features=features, targets=target_array)
         
         # Get DataLoaders
-        max_horizon = 0 if self.args.task_type == "workhour_classification" else max(args.forecast_horizons)
         loaders = get_data_loaders(
-            args=args,
-            seed=seed,
-            blocks=self.input_dict["blocks"],
-            block_size=self.input_dict["block_size"],
-            feature_tensor=tensors["feature"],
-            target_tensor=tensors["target"],
-            target_mask_tensor=tensors["target_mask"],
-            target_source_tensor=tensors["target_source"],
-            max_horizon=max_horizon,
-            train_block_ids=train_block_ids,
-            val_block_ids=val_block_ids,
-            test_block_ids=test_block_ids
+            args                        = args,
+            seed                        = seed,
+            blocks                      = self.input_dict["blocks"],
+            block_size                  = self.input_dict["block_size"],
+            target_tensor               = tensors["targets"],
+            target_mask_tensor          = tensors["target_mask"],
+            target_source_tensor        = tensors["target_source"],
+            max_horizon                 = max(args.forecast_horizons),
+            train_block_ids             = train_block_ids,
+            val_block_ids               = val_block_ids,
+            test_block_ids              = test_block_ids,
+            graph_type                  = self.args.graph_type,
+            feature_data                = tensors["features"],
         )
         return loaders, normalizer
     
     #########################
     # HPO
     #########################
-    
-    def _suggest_hyperparams(self, trial: optuna.trial.Trial) -> Dict[str, Any]:
+
+    @abstractmethod
+    def _suggest_more_hyperparams(
+            self, 
+            trial: optuna.trial.Trial, 
+            trial_args: Namespace
+    ) -> Tuple[optuna.trial.Trial, Namespace]:
+        """Suggests any further hyperparameters for the trial."""
+        pass
+
+    def _suggest_hyperparams(
+            self, 
+            trial: optuna.trial.Trial
+    ) -> Namespace:
         """The objective function for Optuna, performing k-fold cross-validation."""
         trial_args = deepcopy(self.args)
         
@@ -167,93 +211,29 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         trial_args.enable_bias = trial.suggest_categorical("enable_bias", [True, False])
         trial_args.act_func = trial.suggest_categorical("act_func", ["glu", 'gtu', "relu", "silu"])
         
-        # --- STGCN Architecture Hyperparameters ---
-        if self.args.drop_spatial_layer:
-            # Placeholders
-            trial_args.graph_conv_type = "none"
-            trial_args.Ks = 1
-        else:
-            trial_args.graph_conv_type = trial.suggest_categorical("graph_conv_type", ["gcn", "cheb"])
-            trial_args.Ks = trial.suggest_categorical("Ks", [2, 3])
-        trial_args.st_main_channels       = trial.suggest_int("st_main_channels",       16,  96,   step=16)
-        trial_args.st_bottleneck_channels = trial.suggest_int("st_bottleneck_channels", 8,   32,   step=8)
-        trial_args.output_channels        = trial.suggest_int("output_channels",        64,  256,  step=32)
-        
         # We don't tune epochs directly. We set a max value and let early stopping find the best.
         # This is the max number of epochs the model is allowed to run for in each CV fold.
         trial_args.epochs = self.args.epochs
         
-        return trial_args
-    
-    ##########################
-    # Setup model
-    ##########################
-    
-    def _setup_model(
-            self, 
-            args: Any
-        ) -> nn.Module:
-        """Set up the STGCN model and training components."""
-        logger.info(f"Setting up model for the task type '{args.task_type}'...")
-        device   = self.input_dict['device']
-        logger.info(f"Device: {device}")
-        n_nodes = self.input_dict['n_nodes']
-        logger.info(f"Number of nodes: {n_nodes}")
-        n_features = self.input_dict["n_features"]
-        n_features += 1 # Due to padding
-        logger.info(f"Number of features: {n_features}")
-        
-        # Create GSO(s)
-        if args.drop_spatial_layer:
-            gso = None
-        else:
-            A = self.input_dict["f_adj_mat_tensor"]
-            M = self.input_dict["m_adj_mat_tensors"]
-            gso = create_gso(
-                args                = args,
-                device              = device,
-                n_nodes             = n_nodes,
-                adj_matrix          = A,
-                masked_adj_matrices = M if args.gso_mode == "dynamic" else None,
-            )
-        
-        # Initialize model
-        model = HomogeneousSTGCN(
-            args        = args,
-            n_vertex    = n_nodes,
-            n_features  = n_features,
-            gso         = gso,
-            conv_type   = args.graph_conv_type,
-            task_type   = args.task_type,
-        ).to(device)
+        # More hyperparameters if subclasses want
+        trial, trial_args = self._suggest_more_hyperparams(trial, trial_args)
 
-        # Compile model if requested
-        if self.args.compile_model:
-            logger.info("Compiling model...")
-            model = torch.compile(
-                model       = model, 
-                mode        = args.compile_mode,
-                fullgraph   = args.compile_fullgraph,
-                dynamic     = args.dynamic_compile_mode,
-            )
-            logger.info("Model compiled.")
-                
-        return model
+        return trial_args
     
     ##########################
     # Experiment execution
     ##########################
     
     def _train_one_fold(
-        self,
-        model:              Any,
-        trial:              optuna.trial.Trial,
-        trial_params:       Dict[str, Any],
-        fold_index:         int = None,
-        *,
-        train_block_ids:    List[int],
-        val_block_ids:      List[int],
-        ) -> TrainingResult:
+            self,
+            model:              Any,
+            trial:              optuna.trial.Trial,
+            trial_params:       Dict[str, Any],
+            fold_index:         int = None,
+            *,
+            train_block_ids:    List[int],
+            val_block_ids:      List[int],
+    ) -> TrainingResult:
         """Trains and evaluates a single fold in cross-validation for HPO."""
         
         # 1. Reset model weights, re-initialize optimizer and scheduler for the new fold
@@ -287,6 +267,16 @@ class STGCNExperimentRunner(BaseExperimentRunner):
     ##########################
     # Cleanup
     ##########################
+    
+    def _compile_model(self, args: Namespace, model: nn.Module):
+        logger.info(">>> Compiling model. <<<")
+        compiled_model = torch.compile(
+            model       = model, 
+            mode        = args.compile_mode,
+            fullgraph   = args.compile_fullgraph,
+            dynamic     = args.dynamic_compile_mode,
+        )
+        return compiled_model
     
     def _cleanup_after_fold(self):
         before = torch.cuda.memory_reserved()
@@ -325,7 +315,7 @@ class STGCNExperimentRunner(BaseExperimentRunner):
         model:              Any,
         final_params:       Namespace,
         epochs:             int = None,
-        threshold:          float = None,
+        threshold:          float = None, # legacy
         *,
         train_block_ids:    List[int],
         val_block_ids:      List[int], # For run_mode="test", we do have a validation set
@@ -371,13 +361,7 @@ class STGCNExperimentRunner(BaseExperimentRunner):
             trial           = None,
             epoch_offset    = 0
         )
-        
-        # Determining the threshold if not already given (from HPO)
-        if self.args.task_type == "workhour_classification":
-            if threshold is None:
-                threshold = training_result.optimal_threshold
-            logger.info(f"Using optimal classification threshold for evaluation: {threshold:.4f}")
-        
+                
         # Evaluation
         metrics, model_outputs = evaluate_model(
             args        = final_params, 
@@ -385,11 +369,249 @@ class STGCNExperimentRunner(BaseExperimentRunner):
             model       = trained_model, 
             test_loader = loaders['test_loader'], 
             normalizer  = normalizer, 
-            threshold   = threshold
         )
         
         return trained_model, history, metrics, model_outputs
+
+
+
+class Homogeneous(STGCNExperimentRunner):
+    def __init__(self, args: Any):        
+        super().__init__(args)
+        
+    def _get_data_preparer_class(self):
+        return HomogeneousSTGCNDataPreparer
+
+    def _get_normalizer_class(self):
+        return HomogeneousSTGCNNormalizer
+
+    #########################
+    # Split preparation
+    #########################
+
+    @property
+    def all_X(self) -> np.ndarray:
+        """Returns the homogeneous feature array."""
+        return self.input_dict["feature_array"]
     
+    def _slice_train_features(self, train_indices: List[int]) -> np.ndarray:
+        """Slices the homogeneous feature array using the 'all_X' property."""
+        return self.all_X[train_indices]
+        
+    def _impute_split(
+            self, 
+            feature_array: np.ndarray, 
+            target_array: np.ndarray,
+    ) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Zero-imputes NaN values in the feature and target arrays. In-place operation.
+        
+        Note: For forecast tasks, we impute to target due to NaN values formed during the target creation.
+        This is fine, since we will mask these imputations later.
+        """
+        clean_feature_array = np.nan_to_num(feature_array, nan=0.0).astype(np.float32, copy=False)
+        clean_target_array = np.nan_to_num(target_array, nan=0.0).astype(np.float32, copy=False)
+        return clean_feature_array, clean_target_array
+
+    def _load_data_to_tensors(self, features: np.ndarray, targets: np.ndarray) -> Dict[str, torch.Tensor]:
+        """Converts a dictionary of numpy arrays to a dictionary of tensors."""
+        numpy_payload = {
+            "features":          features,
+            "targets":           targets,
+            "target_mask":      self.input_dict["target_mask"],
+            "target_source":    self.input_dict["target_source_array"]
+        }
+        return {
+            name: torch.from_numpy(arr).float()
+            for name, arr in numpy_payload.items()
+        }
+    
+    #########################
+    # HPO
+    #########################
+    
+    def _suggest_more_hyperparams(
+            self, 
+            trial: optuna.trial.Trial, 
+            trial_args: Namespace
+    ) -> Tuple[optuna.trial.Trial, Namespace]:
+        """Suggests further homogeneous STGCN hyperparameters for the trial."""
+        if self.args.drop_spatial_layer:
+            # Placeholders:
+            trial_args.graph_conv_type = "none"
+            trial_args.Ks = 1
+        else:
+            trial_args.graph_conv_type = trial.suggest_categorical("graph_conv_type", ["gcn", "cheb"])
+            trial_args.Ks = trial.suggest_categorical("Ks", [2, 3])
+        trial_args.st_main_channels       = trial.suggest_int("st_main_channels",       16,  96,   step=16)
+        trial_args.st_bottleneck_channels = trial.suggest_int("st_bottleneck_channels", 8,   32,   step=8)
+        trial_args.output_channels        = trial.suggest_int("output_channels",        64,  256,  step=32)
+        
+        return trial, trial_args
+
+    ##########################
+    # Setup model
+    ##########################
+    
+    def _setup_model(
+            self, 
+            args: Any
+        ) -> nn.Module:
+        """Set up the STGCN model and training components."""
+        logger.info(f"Setting up model for the task type '{args.task_type}'...")
+        device   = self.input_dict['device']
+        logger.info(f"Device: {device}")
+        n_nodes = self.input_dict['n_nodes']
+        logger.info(f"Number of nodes: {n_nodes}")
+        n_features = self.input_dict["n_features"]
+        n_features += 1 # Due to padding
+        logger.info(f"Number of features: {n_features}")
+        
+        # Create GSO(s)
+        if args.drop_spatial_layer:
+            gso = None
+        else:
+            A = self.input_dict["f_adj_mat_tensor"]
+            M = self.input_dict["m_adj_mat_tensors"]
+            gso = create_gso(
+                args                = args,
+                device              = device,
+                n_nodes             = n_nodes,
+                adj_matrix          = A,
+                masked_adj_matrices = M if args.gso_mode == "dynamic" else None,
+            )
+        
+        # Initialize model
+        model = HomogeneousSTGCN(
+            args        = args,
+            n_vertex    = n_nodes,
+            n_features  = n_features,
+            gso         = gso,
+            conv_type   = args.graph_conv_type,
+            task_type   = args.task_type,
+        ).to(device)
+        if self.args.compile_model: 
+            model = self._compile_model(args, model)
+        
+        return model
+
+
+
+class Heterogeneous(STGCNExperimentRunner):
+    def __init__(self, args: Any):        
+        super().__init__(args)
+    
+    def _get_data_preparer_class(self):
+        return HeterogeneousSTGCNDataPreparer
+    
+    def _get_normalizer_class(self):
+        return HeterogeneousSTGCNNormalizer
+    
+    #########################
+    # Split preparation
+    #########################
+
+    @property
+    def all_X(self) -> Dict[int, HeteroData]:
+        """
+        Returns the complete feature dataset, which is a dictionary mapping
+        a time index to a HeteroData graph snapshot.
+        """
+        return self.input_dict["temporal_graphs"]
+
+    def _slice_train_features(self, train_indices: List[int]) -> Dict[int, HeteroData]:
+        """
+        Slices the dictionary of graphs by creating a new dictionary containing
+        only the keys (time indices) present in the training split.
+        """
+        return {idx: self.all_X[idx] for idx in train_indices}
+    
+    def _impute_split(
+            self,
+            feature_graphs: Dict[int, HeteroData],
+            target_array: np.ndarray
+    ) -> Tuple[Dict[int, HeteroData], np.ndarray]:
+        """
+        Imputes NaNs in heterogeneous features (in-place) and the target array.
+        """
+        # Impute PyTorch feature tensors in-place
+        for snapshot in feature_graphs.values():
+            for node_type in snapshot.node_types:
+                if 'x' in snapshot[node_type]:
+                    torch.nan_to_num_(snapshot[node_type].x, nan=0.0)
+
+        # Impute NumPy target array
+        clean_target_array = np.nan_to_num(target_array, nan=0.0)
+        
+        return feature_graphs, clean_target_array
+
+    def _load_data_to_tensors(self, features: Dict[int, HeteroData], targets: np.ndarray) -> Dict[str, Any]:
+        """Converts a dictionary of numpy arrays to a dictionary of tensors."""
+        numpy_payload = {
+            "targets":           targets,
+            "target_mask":      self.input_dict["target_mask"],
+            "target_source":    self.input_dict["target_source_array"]
+        }
+        tensors_dict = {
+            name: torch.from_numpy(arr).float()
+            for name, arr in numpy_payload.items()
+        }
+        # Merge HeteroData graphs back, they are already tensorized
+        tensors_dict["features"] = features
+        
+        return tensors_dict
+
+    #########################
+    # HPO
+    #########################
+    
+    def _suggest_more_hyperparams(
+            self, 
+            trial: optuna.trial.Trial, 
+            trial_args: Namespace
+    ) -> Tuple[optuna.trial.Trial, Namespace]:
+        """Currently, we don't have any more hyperparameter suggestions for heterogeneous STGCN."""
+        return trial, trial_args
+
+    ##########################
+    # Setup model
+    ##########################
+    
+    def _setup_model(
+            self, 
+            args: Any
+        ) -> nn.Module:
+        """Set up the Heterogeneous STGCN model and training components."""
+        device = self.input_dict["device"]
+
+        # 1.  Metadata & feature dimensions
+        base_graph: HeteroData = self.input_dict["base_graph"] # single, static snapshot
+        metadata = base_graph.metadata() # (node_types, edge_types)
+        
+        # 2. Get per‑node‑type input‑channel counts
+        # NOTE: We added a padding-mask channel to temporal node types, 
+        #       so we need to account for that in the feature dimensions.
+        temporal_node_types = {'property', 'outside', 'time'}
+        feat_names = self.input_dict["feature_names"]
+        node_feature_dims = {
+            ntype: len(feat_names[ntype]) + (1 if ntype in temporal_node_types else 0)
+            for ntype in feat_names
+        }        
+        logger.info(f"Model input feature dimensions: {node_feature_dims}")
+        
+        # 3. Instantiate the model
+        model = HeterogeneousSTGCN(
+            args                = args,
+            metadata            = metadata,
+            node_feature_dims   = node_feature_dims,
+            task_type           = args.task_type,
+        ).to(device)
+        if self.args.compile_model: 
+            model = self._compile_model(args, model)
+        
+        return model
+
+
 def main():
     """
     Main entry point to run a single experiment.
@@ -399,12 +621,23 @@ def main():
     from ..config.args import parse_args
     args = parse_args()
     
+    # tf32 settings:
     if args.tf32:
         torch.set_float32_matmul_precision('high')
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
-        
-    runner = STGCNExperimentRunner(args)
+    
+    # Homogeneous or Heterogeneous
+    if args.graph_type == "homogeneous":
+        runner = Homogeneous(args)
+        logger.info("Running Homogeneous STGCN experiment.")
+    elif args.graph_type == "heterogeneous":
+        runner = Heterogeneous(args)
+        logger.info("Running Heterogeneous STGCN experiment.")
+    else:
+        raise ValueError(f"Unknown graph type: {args.graph_type}.")
+    
+    # Run the experiment
     runner.run()
 
 if __name__ == '__main__':

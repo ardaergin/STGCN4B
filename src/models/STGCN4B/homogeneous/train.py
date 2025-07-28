@@ -1,5 +1,5 @@
 import time
-from typing import Tuple, Dict, Any
+from typing import Tuple, Dict, Any, Union
 import torch
 import torch.nn as nn
 import numpy as np
@@ -76,7 +76,7 @@ def train_model(
             if mask_batch.sum() == 0:
                 logger.warning("Skipping batch with no valid data (mask sum is 0).")
                 continue
-            X_batch = X_batch.to(device, non_blocking=True)
+            X_batch = to_device(X_batch, device)
             y_batch = y_batch.to(device, non_blocking=True)
             mask_batch = mask_batch.to(device, non_blocking=True)
             # NOTE: we are not using the reconstruction_batch here, so left it as "_"
@@ -122,7 +122,7 @@ def train_model(
             
             with torch.inference_mode():
                 for X_batch, y_batch, mask_batch, _ in val_loader:
-                    X_batch = X_batch.to(device, non_blocking=True)
+                    X_batch = to_device(X_batch, device)
                     y_batch = y_batch.to(device, non_blocking=True)
                     mask_batch = mask_batch.to(device, non_blocking=True)
 
@@ -240,7 +240,7 @@ def train_model(
             probs, labels = [], []
             with torch.inference_mode():
                 for X_batch, y_batch, *_ in val_loader:
-                    X_batch = X_batch.to(device, non_blocking=True)
+                    X_batch = to_device(X_batch, device)
                     y_batch = y_batch.to(device, non_blocking=True)
                     with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
                         outputs = model(X_batch).squeeze()
@@ -295,7 +295,7 @@ def evaluate_model(
         all_probs, all_labels = [], []
         with torch.inference_mode():
             for X_batch, y_batch, *_ in test_loader:
-                X_batch = X_batch.to(device, non_blocking=True)
+                X_batch = to_device(X_batch, device)
                 y_batch = y_batch.to(device, non_blocking=True)
                 
                 # Forward pass
@@ -327,7 +327,7 @@ def evaluate_model(
     
     with torch.inference_mode():
         for X_batch, y_batch, mask_batch, y_source_batch in test_loader:
-            X_batch = X_batch.to(device, non_blocking=True)
+            X_batch = to_device(X_batch, device)
             y_batch = y_batch.to(device, non_blocking=True)
             mask_batch = mask_batch.to(device, non_blocking=True)
             y_source_batch = y_source_batch.to(device, non_blocking=True)
@@ -440,6 +440,35 @@ def evaluate_model(
         "targets": all_t,
     }
     return metrics, model_output
+
+# to_device utility based on graph type
+def to_device(
+            data: Union[torch.Tensor, Dict[str, Any]], 
+            device: torch.device
+    ) -> Union[torch.Tensor, Dict[str, Any]]:
+    """
+    Moves a batch of data (either a tensor or a dictionary for hetero graphs)
+    to the specified device.
+    
+    Args:
+        data: The data to move. Can be a torch.Tensor or a dictionary containing tensors.
+        device: The target torch.device.
+    
+    Returns:
+        The data, with all internal tensors moved to the specified device.
+    """
+    # Heterogeneous
+    if isinstance(data, dict):
+        return {
+            'features': {ntype: t.to(device, non_blocking=True) for ntype, t in data['features'].items()},
+            'edges': {etype: t.to(device, non_blocking=True) for etype, t in data['edges'].items()}
+        }
+    # Homogeneous
+    elif isinstance(data, torch.Tensor):
+        return data.to(device, non_blocking=True)
+    # Unknown
+    else:
+        raise TypeError(f"Unsupported data type: {type(data)}. Expected torch.Tensor or dict.")
 
 
 # Criterion helpers

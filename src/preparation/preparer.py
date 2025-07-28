@@ -330,7 +330,7 @@ class STGCNDataPreparer(BaseDataPreparer):
     def __init__(self, args: Any):
         super().__init__(args)
         assert args.model_family == "graph", "STGCNDataPreparer only supports 'graph' model_family."
-        assert args.model == "STGCN", "STGCNDataPreparer only supports STGCN model."
+        assert args.model == "STGCN", "STGCNDataPreparer only supports 'STGCN' model."
         self.device: torch.device = torch.device(
             "cuda" if args.enable_cuda and torch.cuda.is_available() else "cpu")
         self.graph_dict: Dict[str, Any] = {}
@@ -343,8 +343,56 @@ class STGCNDataPreparer(BaseDataPreparer):
         super()._load_data_from_disk()
         self.graph_dict = self._get_requested_adjacency_tensors(device=self.device)
     
+    def _get_requested_adjacency_tensors(
+            self, 
+            device: torch.device
+    ) -> Dict[str, Any]:
+        """
+        The loaded metadata includes both "binary" and "weighted" adjacency dictionaries.
+        
+        Both of the dictionaries have:
+        1. "room_URIs_str":             List[str] (N)
+        2. "n_nodes":                   int (N)
+        3. "horizontal_adj_matrix":     np.ndarray (NxN)
+        4. "vertical_adj_matrix":       np.ndarray (NxN)
+        5. "full_adj_matrix":           np.ndarray (NxN)
+        6. "masked_adj_matrices":       Dict[int, np.ndarray (NxN)]
+        7. "outside_adj_vector":        np.ndarray (N)
+        
+        We get the requested "binary" or "weighted" adjacency dictionary.
+        Then, we convert them into tensors and return them.
+        """
+        requested_adjacency = self.args.adjacency_type
+        adjacency_data = self.metadata[requested_adjacency]
+        
+        # Single matrix tensors
+        h_adj_mat_tensor = torch.from_numpy(adjacency_data["horizontal_adj_matrix"]).float().to(device)
+        v_adj_mat_tensor = torch.from_numpy(adjacency_data["vertical_adj_matrix"]).float().to(device)
+        f_adj_mat_tensor = torch.from_numpy(adjacency_data["full_adj_matrix"]).float().to(device)
+        o_adj_vec_tensor = torch.from_numpy(adjacency_data["outside_adj_vector"]).float().to(device)
+        
+        # List of masked adjacency matrices as tensors
+        m_adj_mat_tensors = {
+            k: torch.from_numpy(v).float().to(device)
+            for k, v in adjacency_data["masked_adj_matrices"].items()
+            }
+        
+        # Non-tensor
+        room_URIs_str = adjacency_data["room_URIs_str"]
+        n_nodes = adjacency_data["n_nodes"]
+        
+        return {
+            "room_URIs_str":        room_URIs_str,
+            "n_nodes":              n_nodes,
+            "h_adj_mat_tensor":     h_adj_mat_tensor,
+            "v_adj_mat_tensor":     v_adj_mat_tensor,
+            "f_adj_mat_tensor":     f_adj_mat_tensor,
+            "m_adj_mat_tensors":    m_adj_mat_tensors,
+            "o_adj_vec_tensor":     o_adj_vec_tensor,
+        }
+    
     def _post_prepare_target(self) -> None:
-        """        
+        """
         For STGCN, we mainly use the _pivot_df_to_numpy helper 
         to create the target array, mask array, and source array (if delta prediction).
         """
@@ -362,34 +410,38 @@ class STGCNDataPreparer(BaseDataPreparer):
                 columns_to_pivot    = [self.source_colname],
                 has_room_dimension  = self.target_has_room_dimension,
             )
-
+    
     def _handle_nan_targets(self) -> None:
         """
+        Note: any imputation must be done later after normalization, this is essentially pre-handling.
+
         Handling NaN targets for the STGCN model. 
         
-        Method: Create a mask to be fed to the STGCN model, and fill the NaNs at the target with 0s.
+        Method: Create a mask to be fed to the STGCN model.
         
         **Note**: 
-        We impute NaNs to the source array (used in delta forecast) as well.
+        We impute NaNs to the source array (in delta forecast)!
         Since the target_mask is created based on the NaNs in the target array, 
         and that same mask will be used during evaluation to filter which points are compared, 
-        the corresponding NaNs in the raw_target_source_array would be ignored. 
-        But it does not hurt to impute NaNs just in case.
+        the corresponding zero-imputed values in the target_source_array will be ignored anyways. 
         """
-        target_mask = ~np.isnan(self.target_data["raw_target_array"])
-        self.target_data['target_mask'] = target_mask.astype(np.float32, copy=False)
+        target_nan_mask = ~np.isnan(self.target_data["raw_target_array"])
+        self.target_data['target_mask'] = target_nan_mask.astype(np.float32, copy=False)
         
-        # Impute the NaNs to get the final, clean target array
-        self.target_data["target_array"] = np.nan_to_num(
-            self.target_data["raw_target_array"], nan=0.0
-        ).astype(np.float32, copy=False)
+        # Leave the NaNs in the target array, we will impute later
+        self.target_data["target_array"] = self.target_data["raw_target_array"].astype(np.float32, copy=False)
         
-        # Impute the NaNs for the source values as well
+        # Impute the NaNs for the source values
         if self.args.prediction_type == "delta":
             self.target_data["target_source_array"] = np.nan_to_num(
                 self.target_data["raw_target_source_array"], nan=0.0
             ).astype(np.float32, copy=False)
-    
+        else:
+            # For the downstream code, ensuring we always have an ndarray, never None:
+            self.target_data["target_source_array"] = np.zeros_like(
+                self.target_data["target_array"]
+            ).astype(np.float32, copy=False)
+        
     def _mask_workhours(self) -> None:
         """Multiplying the existing mask array with the workhour mask array."""
         # Get the workhour mask by pivoting the workhour mask DataFrame
@@ -401,28 +453,6 @@ class STGCNDataPreparer(BaseDataPreparer):
         
         # Apply the mask to the target array
         self.target_data["target_mask"] *= workhour_mask
-    
-    def _prepare_features(self) -> None:
-        """
-        Prepares features for the STGCN model.
-        
-        Note: The features are always 3D (T, R, F) for STGCN.
-        """
-        # Identify feature columns (all numeric cols except identifiers and targets)
-        identifier_cols = ['bucket_idx', 'block_id', 'room_uri_str']
-        feature_cols = sorted([c for c in self.df.columns if c not in identifier_cols])
-        
-        # Save
-        self.feature_data["feature_names"] = feature_cols
-        self.feature_data["n_features"] = len(feature_cols)
-        
-        # Use the generic helper to create the feature array and a feature mask (which we might ignore)
-        feature_array = self._pivot_df_to_numpy(
-            df                  = self.df, 
-            columns_to_pivot    = feature_cols,
-            has_room_dimension  = True,
-        )
-        self.feature_data["feature_array"] = feature_array
     
     def _pivot_df_to_numpy(
             self,
@@ -480,14 +510,9 @@ class STGCNDataPreparer(BaseDataPreparer):
             np_array = values_df.reindex(range(total_timesteps))[columns_to_pivot].values
             logger.info(f"Created 2D NumPy array of shape {np_array.shape}")
             return np_array.astype(np.float32, copy=False)
-    
-    def _prepare_input_dict(self):                
-        # For the downstream code, ensuring we always have an ndarray, never None:
-        target_source_array = self.target_data.get("target_source_array")
-        if target_source_array is None: 
-            target_source_array = np.zeros_like(self.target_data["target_array"])
-          
-        # Creatign the input dict
+
+    def _prepare_input_dict(self):
+        """Common ground for all STGCNDataPreparer subclasses. Subclasses add feature data."""
         self.input_dict = {
             "device":               self.device,
             # Data indices in block format
@@ -502,60 +527,87 @@ class STGCNDataPreparer(BaseDataPreparer):
             "f_adj_mat_tensor":     self.graph_dict["f_adj_mat_tensor"],
             "m_adj_mat_tensors":    self.graph_dict["m_adj_mat_tensors"],
             "o_adj_vec_tensor":     self.graph_dict["o_adj_vec_tensor"],
-            # Feature data
-            "feature_array":        self.feature_data["feature_array"],
-            "feature_names":        self.feature_data["feature_names"],
-            "n_features":           self.feature_data["n_features"],
             # Target
             "target_array":         self.target_data["target_array"],
             "target_mask":          self.target_data["target_mask"],
-            "target_source_array":  target_source_array, # for delta prediction
+            "target_source_array":  self.target_data["target_source_array"],
         }
+
+
+
+
+class Homogeneous(STGCNDataPreparer):
     
-    def _get_requested_adjacency_tensors(
-            self, 
-            device: torch.device
-    ) -> Dict[str, Any]:
+    def __init__(self, args: Any):
+        super().__init__(args)
+        assert args.graph_type == "homogeneous", "Homogeneous-STGCNDataPreparer only supports homogeneous graph type."
+    
+    def _prepare_features(self) -> None:
         """
-        The loaded metadata includes both "binary" and "weighted" adjacency dictionaries.
+        Prepares features for the STGCN model.
         
-        Both of the dictionaries have:
-        1. "room_URIs_str":             List[str] (N)
-        2. "n_nodes":                   int (N)
-        3. "horizontal_adj_matrix":     np.ndarray (NxN)
-        4. "vertical_adj_matrix":       np.ndarray (NxN)
-        5. "full_adj_matrix":           np.ndarray (NxN)
-        6. "masked_adj_matrices":       Dict[int, np.ndarray (NxN)]
-        7. "outside_adj_vector":        np.ndarray (N)
-        
-        We get the requested "binary" or "weighted" adjacency dictionary.
-        Then, we convert them into tensors and return them.
+        Note: The features are always 3D (T, R, F) for STGCN.
         """
-        requested_adjacency = self.args.adjacency_type
-        adjacency_data = self.metadata[requested_adjacency]
+        # Identify feature columns (all numeric cols except identifiers and targets)
+        identifier_cols = ['bucket_idx', 'block_id', 'room_uri_str']
+        feature_cols = sorted([c for c in self.df.columns if c not in identifier_cols])
         
-        # Single matrix tensors
-        h_adj_mat_tensor = torch.from_numpy(adjacency_data["horizontal_adj_matrix"]).float().to(device)
-        v_adj_mat_tensor = torch.from_numpy(adjacency_data["vertical_adj_matrix"]).float().to(device)
-        f_adj_mat_tensor = torch.from_numpy(adjacency_data["full_adj_matrix"]).float().to(device)
-        o_adj_vec_tensor = torch.from_numpy(adjacency_data["outside_adj_vector"]).float().to(device)
+        # Save
+        self.feature_data["feature_names"] = feature_cols
+        self.feature_data["n_features"] = len(feature_cols)
         
-        # List of masked adjacency matrices as tensors
-        m_adj_mat_tensors = {
-            k: torch.from_numpy(v).float().to(device)
-            for k, v in adjacency_data["masked_adj_matrices"].items()
-            }
-        
-        # Non-tensor
-        room_URIs_str = adjacency_data["room_URIs_str"]
-        n_nodes = adjacency_data["n_nodes"]
-        
-        return {
-            "room_URIs_str":        room_URIs_str,
-            "n_nodes":              n_nodes,
-            "h_adj_mat_tensor":     h_adj_mat_tensor,
-            "v_adj_mat_tensor":     v_adj_mat_tensor,
-            "f_adj_mat_tensor":     f_adj_mat_tensor,
-            "m_adj_mat_tensors":    m_adj_mat_tensors,
-            "o_adj_vec_tensor":     o_adj_vec_tensor,
+        # Use the generic helper to create the feature array and a feature mask (which we might ignore)
+        feature_array = self._pivot_df_to_numpy(
+            df                  = self.df, 
+            columns_to_pivot    = feature_cols,
+            has_room_dimension  = True,
+        )
+        self.feature_data["feature_array"] = feature_array
+    
+    def _prepare_input_dict(self):
+        super()._prepare_input_dict()
+        feature_dict = {
+            # Feature data
+            "feature_array":        self.feature_data["feature_array"], # np.ndarray (T, R, F)
+            "feature_names":        self.feature_data["feature_names"], # List[str]
+            "n_features":           self.feature_data["n_features"],    # int
         }
+        self.input_dict |= feature_dict
+
+class Heterogeneous(STGCNDataPreparer):
+
+    def __init__(self, args: Any):
+        super().__init__(args)
+        assert args.graph_type == "heterogeneous", "Heterogeneous-STGCNDataPreparer only supports heterogeneous graph type."
+        self.hetero_input: Dict[str, Any] = {}
+
+    def _load_data_from_disk(self) -> None:
+        """Extends STGCNDataPreparer._load_data_from_disk() to load the HeteroData snapshots."""
+        super()._load_data_from_disk()
+
+        # MetaData
+        hetero_fname_base = get_data_filename(
+            file_type       = "hetero_input", 
+            interval        = self.args.interval, 
+        )
+        hetero_file_path = os.path.join(self.args.processed_data_dir, f"{hetero_fname_base}.joblib")
+        logger.info(f"Loading heterogeneous graph data from {hetero_file_path}")
+        # Loading to CPU. carrying them to GPU after DataLoader and at training:
+        self.hetero_input = torch.load(hetero_file_path, map_location='cpu') 
+
+    def _prepare_features(self) -> None:
+        """HeteroData snapshot already has the features prepared. They are already nicely tensorized."""
+        pass
+    
+    def _prepare_input_dict(self):
+        super()._prepare_input_dict()
+        hetero_feature_data = {
+            "base_graph":               self.hetero_input["base_graph"],                # HeteroData
+            "temporal_graphs":          self.hetero_input["temporal_graphs"],           # Dict[int, HeteroData]
+            "node_mappings":            self.hetero_input["node_mappings"],             # Dict[str, Dict[Union[str, Tuple[str, str]], int]]
+            "reverse_node_mappings":    self.hetero_input["reverse_node_mappings"],     # Dict[str, Dict[int, Union[str, Tuple[str, str]]]]
+                                                                                        # NOTE: Tuple[str, str] is used for device-property pairs, 
+                                                                                        #       the rest of the node types are single strings. 
+            "feature_names":            self.hetero_input["feature_names"],             # Dict[str, List[str]]
+        }
+        self.input_dict |= hetero_feature_data
