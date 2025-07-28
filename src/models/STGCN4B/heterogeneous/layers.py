@@ -1,3 +1,4 @@
+import inspect
 from typing import Mapping, Any, Dict, List
 import torch
 from torch import nn, Tensor
@@ -165,12 +166,19 @@ class HeteroSTBlock(nn.Module):
         T_out_temp1 = next(iter(x_dict_after_temp1.values())).shape[2]
         
         # 2. Prepare separate dictionaries for edge_index and edge_weight
-        edge_index_for_conv = {}
-        edge_weight_for_conv = {}
-        for etype, ew in edge_index_dict.items():
-            edge_index_for_conv[etype] = ew['index'].long()
-            if 'weight' in ew and ew['weight'] is not None:
-                edge_weight_for_conv[etype] = ew['weight'].squeeze()
+        edge_index_for_conv = {
+            etype: ew["index"].long()
+            for etype, ew in edge_index_dict.items()
+        }
+
+        edge_weight_for_conv = {
+            etype: ew["weight"].squeeze()        # (num_edges,)
+            for etype, ew in edge_index_dict.items()
+            if ew["weight"] is not None          # 1. really weighted
+            and "edge_weight" in inspect.signature(      # 2. layer can take it
+                    self.hetero_conv.convs[etype].forward
+                ).parameters
+        }
 
         # 3. Apply spatial layer at each time step
         out_slices = []
@@ -184,7 +192,7 @@ class HeteroSTBlock(nn.Module):
             flat_out_t = self.hetero_conv(
                 x_dict=flat_x_t,
                 edge_index_dict=edge_index_for_conv,
-                edge_weight_dict=edge_weight_for_conv
+                **({"edge_weight_dict": edge_weight_for_conv} if edge_weight_for_conv else {})
             )
 
             # Merge the GNN output back into the full feature set
