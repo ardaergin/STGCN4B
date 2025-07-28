@@ -127,78 +127,62 @@ class HeteroSTBlock(nn.Module):
     def forward(
             self, 
             x_dict: Dict[str, Tensor], 
-            edge_dict: Dict[tuple, Dict[str, Tensor]]
+            edge_index_dict: Dict[tuple, Dict[str, Tensor]] # Renamed for clarity
     ) -> Dict[str, Tensor]:
         # Temporal layer 1
         x_dict = self.temp1(x_dict)  # (B, C_mid, T_mid, N)
         
-        B, T_mid = next(iter(x_dict.values())).shape[:2]
-        node_count = {nt: x.shape[3] for nt, x in x_dict.items()}   # N per type
-        
-        # We will accumulate the processed slices and stack on time dim later
+        # We get the shape parameters from the output of the first temporal block
+        T_mid = next(iter(x_dict.values())).shape[2]
+
+        # Prepare the edge data for HeteroConv *once* before the loop.
+        # The graph structure is static across time steps.
+        batched_edges_for_conv = {}
+        for etype, ew in edge_index_dict.items():
+            idx = ew['index']
+            wt = ew.get('weight') # Use .get() for safety if weight is sometimes missing
+            if wt is None:
+                batched_edges_for_conv[etype] = idx
+            else:
+                batched_edges_for_conv[etype] = (idx, wt)
+
+        # We will accumulate the processed slices and stack on the time dim later
         out_slices: List[Dict[str, Tensor]] = []
         
         for t in range(T_mid):
-            # 1a. Build flattened node feature dict
-            flat_x: Dict[str, Tensor] = {}
-            for ntype, x in x_dict.items():       # x: (B, C, T, N)
-                B_, C_, N_ = x.shape[0], x.shape[1], x.shape[3]
-                flat_x[ntype] = (
-                    x[:, :, t, :]                 # (B, C, N)
-                    .permute(0, 2, 1)             # (B, N, C)
-                    .reshape(B_ * N_, C_)         # (B·N, C)
-                    .contiguous()
-                )
-
-            # 1b.  Repeat edges for B graphs
-            batched_edges: Dict[tuple, Any] = {}
-            for etype, ew in edge_dict.items():
-                base_idx  = ew["index"]           # (2, E)
-                base_wt   = ew["weight"]          # (E) or None
-                src, _, dst = etype
-                N_src, N_dst = node_count[src], node_count[dst]
-
-                # replicate indices
-                rep_idx = base_idx.unsqueeze(0).repeat(B, 1, 1)
-                offset  = torch.arange(B, device=base_idx.device).view(B, 1)
-                rep_idx[:, 0, :] += offset * N_src
-                rep_idx[:, 1, :] += offset * N_dst
-                rep_idx = rep_idx.view(2, -1)
-
-                if base_wt is None:                           # un‑weighted edge
-                    batched_edges[etype] = rep_idx
-                else:                                         # weighted edge
-                    rep_wt = base_wt.repeat(B, 1).view(-1)
-                    batched_edges[etype] = (rep_idx, rep_wt)
+            # 1. Build flattened node feature dict for the current time step `t`
+            flat_x_t: Dict[str, Tensor] = {
+                ntype: x[:, :, t, :].permute(0, 2, 1).reshape(-1, x.shape[1]).contiguous()
+                for ntype, x in x_dict.items()
+            }
             
-            # 1c.  Spatial message passing
-            flat_out = self.hetero_conv(flat_x, batched_edges)  # each (B·N, C_out)
+            # 2. Perform spatial message passing on the time slice `t`
+            #    using the pre-batched edge information.
+            flat_out_t = self.hetero_conv(flat_x_t, batched_edges_for_conv)
             
-            # 1d.  Un‑flatten back to (B, C_out, N)
+            # 3. Un-flatten the output back to (B, C, N) and append for later stacking
             slice_out = {}
-            for ntype, out in flat_out.items():
-                N_ = node_count[ntype]
+            for ntype, out in flat_out_t.items():
+                B, N = x_dict[ntype].shape[0], x_dict[ntype].shape[3]
                 C_out = out.shape[1]
-                slice_out[ntype] = (
-                    out.view(B, N_, C_out)
-                    .permute(0, 2, 1)  # (B, C_out, N)
-                )
-            
+                slice_out[ntype] = out.view(B, N, C_out).permute(0, 2, 1) # (B, C_out, N)
             out_slices.append(slice_out)
         
-        # 2.  Stack along time dim & T step 2
-        x_dict = {ntype: torch.stack([s[ntype] for s in out_slices], dim=2)
-                for ntype in x_dict}
+        # 4. Stack time slices to reconstruct the temporal dimension
+        x_dict = {
+            ntype: torch.stack([s[ntype] for s in out_slices], dim=2)
+            for ntype in x_dict.keys()
+        }
         
         x_dict = {k: self.relu(v) for k, v in x_dict.items()}
         
         # Temporal layer 2
         x_dict = self.temp2(x_dict)
 
-        # 3.  LayerNorm + Dropout
-        for ntype, x in x_dict.items():           # (B, C_out, T_out, N)
-            x_perm = x.permute(0, 2, 3, 1)        # (B, T, N, C)
+        # 5. LayerNorm + Dropout
+        for ntype, x in x_dict.items():
+            x_perm = x.permute(0, 2, 3, 1)
             x_norm = self.norms[ntype](x_perm)
             x_dict[ntype] = self.dropout(x_norm).permute(0, 3, 1, 2)
-
+            
         return x_dict
