@@ -65,11 +65,13 @@ class HeteroTemporalBlock(nn.Module):
         return out_dict
 
 
-class CustomHeteroConv(HeteroConv):
-    """Custom HeteroConv that properly handles edge weights for GCNConv."""
+class WeightedHeteroConv(nn.Module):
+    """Custom heterogeneous convolution that properly handles edge weights."""
     
     def __init__(self, convs, aggr='sum'):
-        super().__init__(convs, aggr)
+        super().__init__()
+        self.convs = nn.ModuleDict(convs)
+        self.aggr = aggr
     
     def forward(
         self,
@@ -115,9 +117,31 @@ class CustomHeteroConv(HeteroConv):
             
             # Aggregate outputs for destination nodes
             if dst in out_dict:
-                out_dict[dst] = self.aggr_module(out_dict[dst], out)
+                # Simple aggregation
+                if self.aggr == 'sum':
+                    out_dict[dst] = out_dict[dst] + out
+                elif self.aggr == 'mean':
+                    # Keep track of count for mean
+                    if not hasattr(self, '_counts'):
+                        self._counts = {}
+                    if dst not in self._counts:
+                        self._counts[dst] = 1
+                        out_dict[dst] = out
+                    else:
+                        self._counts[dst] += 1
+                        out_dict[dst] = out_dict[dst] + out
+                elif self.aggr == 'max':
+                    out_dict[dst] = torch.max(out_dict[dst], out)
+                else:
+                    raise ValueError(f"Unknown aggregation: {self.aggr}")
             else:
                 out_dict[dst] = out
+        
+        # Apply mean aggregation if needed
+        if self.aggr == 'mean' and hasattr(self, '_counts'):
+            for dst, count in self._counts.items():
+                out_dict[dst] = out_dict[dst] / count
+            self._counts.clear()
         
         # Add nodes that were not updated
         for node_type, x in x_dict.items():
@@ -200,8 +224,8 @@ class HeteroSTBlock(nn.Module):
             bias=bias
         )
 
-        # Use our custom HeteroConv
-        self.hetero_conv = CustomHeteroConv(convs, aggr=aggr)
+        # Use our custom heterogeneous convolution
+        self.hetero_conv = WeightedHeteroConv(convs, aggr=aggr)
         ##### End of spatial layer #####
         
         # Activation function
