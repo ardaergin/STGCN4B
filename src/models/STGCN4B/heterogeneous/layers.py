@@ -152,7 +152,7 @@ class HeteroSTBlock(nn.Module):
                 if base_wt is None:                           # un‑weighted edge
                     batched_edges[etype] = rep_idx
                 else:                                         # weighted edge
-                    rep_wt = base_wt.unsqueeze(0).repeat(B, 1).view(-1)
+                    rep_wt = base_wt.repeat(B, 1).view(-1)
                     batched_edges[etype] = (rep_idx, rep_wt)
             
             # 1c.  Spatial message passing
