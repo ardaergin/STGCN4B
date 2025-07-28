@@ -198,7 +198,7 @@ class Heterogeneous(STGCNDataset):
             **kwargs
     ):
         super().__init__(**kwargs)
-        self.data = data
+        self.temporal_graphs = data
         self._zero_graph_cache: HeteroData | None = None
         logger.info("Initialized Heterogeneous STGCNDataset.")
     
