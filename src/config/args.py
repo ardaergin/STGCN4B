@@ -462,7 +462,16 @@ def add_STGCN_args(parser):
                         default='sage', 
                         choices=['sage', 'gat'], 
                         help='Graph convolution type for device to room')
-
+    parser.add_argument('--bidir_p2d', action='store_true',
+                        dest='bidir_p2d',
+                        help='Enable bidirectional property to device graph convolution')
+    parser.add_argument('--bidir_d2r', action='store_true',
+                        dest='bidir_d2r',
+                        help='Enable bidirectional device to room graph convolution')
+    parser.add_argument('--gate_mode', type=str,
+                        default='scalar',
+                        choices=['scalar', 'channel'],
+                        help='Gate mode for blending features.')
 
 def add_LightGBM_args(parser):
     """
