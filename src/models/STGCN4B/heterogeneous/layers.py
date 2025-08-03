@@ -70,8 +70,8 @@ class HeteroSTBlock(nn.Module):
             droprate:               float = 0.0,
             aggr:                   str = "sum",
             heads:                  int = 4,
-            gconv_type_p2d:          str = "sage",
-            gconv_type_d2r:          str = "sage",
+            gconv_type_p2d:         str = "sage",
+            gconv_type_d2r:         str = "sage",
     ):
         super().__init__()
         
