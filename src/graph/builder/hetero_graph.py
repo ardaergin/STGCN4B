@@ -161,56 +161,72 @@ class HeteroGraphBuilderMixin:
         return None
     
     def _add_device_nodes(self, hetero_data: HeteroData) -> None:
-        """Add device nodes with features including one-hot device type encoding."""
+        """
+        Add device nodes with features including:
+        - multi-hot encoding for measured properties
+        - one-hot encoding for the device type.
+        """
         n_devices = len(self.node_mappings['device'])
         
-        # First pass: collect all unique device types
+        # 1. Discover all unique property types to define feature dimensions
+        # This ensures consistency for the multi-hot encoding.
+        all_property_types = sorted(self.device_level_df['property_type'].unique())
+        property_type_to_idx = {ptype: i for i, ptype in enumerate(all_property_types)}
+        n_property_types = len(all_property_types)
+        
+        # 2. Discover all unique device types for one-hot encoding
         device_types = set()
         for device_uri_str in self.node_mappings['device'].keys():
             device = self.office_graph.devices[URIRef(device_uri_str)]
             if hasattr(device, 'device_type') and device.device_type:
                 device_types.add(device.device_type)
         
-        # Sort for consistent ordering
-        device_types = sorted(list(device_types))
-        n_device_types = len(device_types)
+        sorted_device_types = sorted(list(device_types))
+        device_type_to_idx = {dtype: i for i, dtype in enumerate(sorted_device_types)}
+        n_device_types = len(sorted_device_types)
         
-        # Create device type to index mapping
-        self.device_type_to_idx = {dtype: idx for idx, dtype in enumerate(device_types)}
-        self.idx_to_device_type = {idx: dtype for dtype, idx in self.device_type_to_idx.items()}
+        logger.info(f"Found {n_property_types} unique property types for device features: {all_property_types}")
+        logger.info(f"Found {n_device_types} unique device types: {sorted_device_types}")
         
-        logger.info(f"Found {n_device_types} unique device types: {device_types}")
+        # 3. Define the new feature structure and names
+        # Features = [multi-hot for measured properties] + [one-hot for device type]
+        prop_feature_names = [f"measures_{ptype}" for ptype in all_property_types]
+        type_feature_names = [f"is_type_{dtype}" for dtype in sorted_device_types]
+        self.feature_names['device'] = prop_feature_names + type_feature_names
         
-        ### Static Device Features: [num_properties] + [device_type_one_hot_encoding] ###
-        
-        # Define and store feature names for device nodes
-        device_static_feature_list = ['num_properties'] + [f"device_type_{dtype}" for dtype in device_types]
-        self.feature_names['device'] = device_static_feature_list
-        logger.info(f"Stored {len(self.feature_names['device'])} feature names for 'device' nodes.")
-        
-        # NOTE: We can zero-impute here, since this information is fully-deduced.
-        n_features = 1 + n_device_types
+        n_features = n_property_types + n_device_types
         device_features = torch.zeros(n_devices, n_features, dtype=torch.float32)
         
+        # Helper mapping from property URI to its simple string type (e.g., "Temperature")
+        prop_uri_to_type = {
+            str(uri): p_type
+            for p_type, uris in self.office_graph.property_type_mappings.items()
+            for uri in uris
+        }
+        
+        # 4. Populate the feature tensor for each device
         for device_uri_str, device_idx in self.node_mappings['device'].items():
             device = self.office_graph.devices[URIRef(device_uri_str)]
             
-            # Feature 0: Number of properties this device measures
-            device_features[device_idx, 0] = len(device.properties)
+            # Part 1: Multi-hot encode the properties this device measures
+            for prop_uri in device.properties:
+                prop_type_str = prop_uri_to_type.get(str(prop_uri))
+                if prop_type_str in property_type_to_idx:
+                    p_idx = property_type_to_idx[prop_type_str]
+                    device_features[device_idx, p_idx] = 1.0
             
-            # Features 1 to n_device_types: One-hot encoding of device type
+            # Part 2: One-hot encode the device type
             if hasattr(device, 'device_type') and device.device_type:
-                device_type = device.device_type
-                if device_type in self.device_type_to_idx:
-                    type_idx = self.device_type_to_idx[device_type]
-                    device_features[device_idx, 1 + type_idx] = 1.0
-                else:
-                    logger.warning(f"Unknown device type: {device_type}")
+                if device.device_type in device_type_to_idx:
+                    d_idx = device_type_to_idx[device.device_type]
+                    # Offset by the number of property features
+                    device_features[device_idx, n_property_types + d_idx] = 1.0
         
         hetero_data['device'].x = device_features
         
-        logger.info(f"Added {n_devices} device nodes with {n_features} features")
-        logger.info(f"Device features: [num_properties] + one-hot[{', '.join(device_types)}]")
+        logger.info(f"Added {n_devices} device nodes with {n_features} features.")
+        logger.info(f"Device features structure: [multi-hot-properties] + [one-hot-type]")
+        
         return None
     
     def _add_property_nodes(self, hetero_data: HeteroData) -> None:
