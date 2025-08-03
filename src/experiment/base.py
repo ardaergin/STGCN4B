@@ -41,7 +41,7 @@ class BaseExperimentRunner(ABC):
                     - `seed`: A base random seed.
                     - `n_optuna_trials`: The number of HPO trials to run.
         """
-        self.setup_logging()
+        self.setup_logging(level=args.log_level)
         
         # Args
         self.args = args
@@ -65,19 +65,24 @@ class BaseExperimentRunner(ABC):
         self.test_records: List[Dict[str, Any]] = []
 
     @staticmethod
-    def setup_logging(level=logging.INFO):
+    def setup_logging(level: str='INFO'):
         """
         Sets up the root logger for the experiment.
         This is a static method so it can be called without an instance.
         """
+        # Convert string level to logging constant (e.g., 'INFO' -> logging.INFO)
+        numeric_level = getattr(logging, level.upper(), None)
+        if not isinstance(numeric_level, int):
+            raise ValueError(f'Invalid log level: {level}')
+        
         logging.basicConfig(
-            level=level,
-            format='%(asctime)s - PID:%(process)d - %(name)s - %(levelname)s - %(message)s',
-            handlers=[logging.StreamHandler(sys.stdout)]
+            level    = numeric_level,
+            format   = '%(asctime)s - PID:%(process)d - %(name)s - %(levelname)s - %(message)s',
+            handlers = [logging.StreamHandler(sys.stdout)]
         )
         # Suppress Optuna's INFO messages to keep the logs cleaner
         optuna.logging.set_verbosity(optuna.logging.WARNING)
-        logger.info("Logging configured.")
+        logger.info(f"Logging configured at level: {level.upper()}")
 
     #########################
     # Main Orchestrators

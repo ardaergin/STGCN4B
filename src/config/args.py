@@ -179,6 +179,13 @@ def add_OfficeGraph_args(parser):
 def add_base_modelling_args(parser):
     """Parse common data and training arguments."""
     
+    parser.add_argument(
+        '--log_level', type=str,
+        default='INFO',
+        choices=['INFO', 'DEBUG', 'WARNING', 'ERROR'],
+        help='Set the logging level for the experiment.'
+    )
+
     # Run mode for experimenter
     parser.add_argument('--run_mode', type=str, default='single_run',
                         choices=['single_run', 'experiment'],
