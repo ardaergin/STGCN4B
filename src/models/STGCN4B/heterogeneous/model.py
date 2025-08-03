@@ -32,7 +32,6 @@ class HeterogeneousSTGCN(nn.Module):
                 ntype_channels_in       = current_dims,
                 ntype_channels_mid      = mid_dims,
                 ntype_channels_out      = out_dims,
-                metadata                = metadata,
                 act_func                = args.act_func,
                 bias                    = args.enable_bias,
                 droprate                = args.droprate,
@@ -40,6 +39,8 @@ class HeterogeneousSTGCN(nn.Module):
                 heads                   = args.att_heads,
                 gconv_type_p2d          = args.gconv_type_p2d,
                 gconv_type_d2r          = args.gconv_type_d2r,
+                bidir_p2d               = args.bidir_p2d,
+                bidir_d2r               = args.bidir_d2r,
             ))
             current_dims = out_dims
         

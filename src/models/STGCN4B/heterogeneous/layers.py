@@ -1,7 +1,6 @@
 from typing import Mapping, Dict
 import torch
 from torch import nn, Tensor
-from typing import Mapping
 from ..homogeneous.layers import TemporalConvLayer
 from torch_geometric.nn import HeteroConv, GCNConv, GATConv, SAGEConv
 
@@ -64,7 +63,6 @@ class HeteroSTBlock(nn.Module):
             ntype_channels_in:      Mapping[str, int],
             ntype_channels_mid:     Mapping[str, int],
             ntype_channels_out:     Mapping[str, int],
-            metadata:               tuple,
             act_func:               str = "glu",
             bias:                   bool = True,
             droprate:               float = 0.0,
@@ -72,8 +70,13 @@ class HeteroSTBlock(nn.Module):
             heads:                  int = 4,
             gconv_type_p2d:         str = "sage",
             gconv_type_d2r:         str = "sage",
+            bidir_p2d:              bool = False,
+            bidir_d2r:              bool = False,
+            gate_mode:              str = "scalar",
     ):
         super().__init__()
+        self.bidir_p2d = bidir_p2d
+        self.bidir_d2r = bidir_d2r
         
         # Temporal layer 1
         self.temp1 = HeteroTemporalBlock(ntype_channels_in, ntype_channels_mid, Kt, act_func)
@@ -82,51 +85,73 @@ class HeteroSTBlock(nn.Module):
            
         # Stage 1: property (measurement) -> device
         ## No edge weight, just binary
+        convs_1: Dict[tuple, nn.Module] = {}
         if gconv_type_p2d == 'gat':
-            self.hetero_conv_1 = HeteroConv({
-                ('property', 'measured_by', 'device'): GATConv(
-                    in_channels     = (ntype_channels_mid['property'], ntype_channels_mid['device']),
+            convs_1[('property', 'measured_by', 'device')] = GATConv(
+                in_channels     = (ntype_channels_mid['property'], ntype_channels_mid['device']),
+                out_channels    = ntype_channels_mid['device'] // heads,
+                heads           = heads,
+                concat          = True,
+                bias            = bias,
+                add_self_loops  = False,
+            )
+            if self.bidir_p2d:
+                convs_1[('device', 'measures', 'property')] = GATConv(
+                    in_channels     = (ntype_channels_mid['device'], ntype_channels_mid['property']),
+                    out_channels    = ntype_channels_mid['property'] // heads,
+                    heads           = heads,
+                    concat          = True,
+                    bias            = bias,
+                    add_self_loops  = False,
+                )
+        elif gconv_type_p2d == 'sage':
+            convs_1[('property', 'measured_by', 'device')] = SAGEConv(
+                in_channels     = (ntype_channels_mid['property'], ntype_channels_mid['device']),
+                out_channels    = ntype_channels_mid['device'],
+                bias            = bias
+            )
+            if self.bidir_p2d:
+                convs_1[('device', 'measures', 'property')] = SAGEConv(
+                    in_channels     = (ntype_channels_mid['device'], ntype_channels_mid['property']),
+                    out_channels    = ntype_channels_mid['property'],
+                    bias            = bias
+                )
+        self.hetero_conv_1 = HeteroConv(convs_1, aggr=aggr)
+                
+        # Stage 2: device -> room
+        ## No edge weight, just binary
+        convs_2: Dict[tuple, nn.Module] = {}
+        if gconv_type_d2r == 'gat':
+            convs_2[('device', 'contained_in', 'room')] = GATConv(
+                in_channels     = (ntype_channels_mid['device'], ntype_channels_mid['room']),
+                out_channels    = ntype_channels_mid['room'] // heads,
+                heads           = heads,
+                concat          = True,
+                bias            = bias,
+                add_self_loops  = False,
+            )
+            if self.bidir_d2r:
+                convs_2[('room', 'contains', 'device')] = GATConv(
+                    in_channels     = (ntype_channels_mid['room'], ntype_channels_mid['device']),
                     out_channels    = ntype_channels_mid['device'] // heads,
                     heads           = heads,
                     concat          = True,
                     bias            = bias,
-                    add_self_loops = False,
+                    add_self_loops  = False,
                 )
-                }, aggr=aggr
+        elif gconv_type_d2r == 'sage':
+            convs_2[('device', 'contained_in', 'room')] = SAGEConv(
+                in_channels     = (ntype_channels_mid['device'], ntype_channels_mid['room']),
+                out_channels    = ntype_channels_mid['room'],
+                bias            = bias
             )
-        elif gconv_type_p2d == 'sage':
-            self.hetero_conv_1 = HeteroConv({
-                ('property', 'measured_by', 'device'): SAGEConv(
-                    in_channels     = (ntype_channels_mid['property'], ntype_channels_mid['device']),
+            if self.bidir_d2r:
+                convs_2[('room', 'contains', 'device')] = SAGEConv(
+                    in_channels     = (ntype_channels_mid['room'], ntype_channels_mid['device']),
                     out_channels    = ntype_channels_mid['device'],
                     bias            = bias
                 )
-                }, aggr=aggr
-            )
-        
-        # Stage 2: device -> room
-        ## No edge weight, just binary
-        if gconv_type_d2r == 'gat':
-            self.hetero_conv_2 = HeteroConv({
-                ('device', 'contained_in', 'room'): GATConv(
-                    in_channels     = (ntype_channels_mid['device'], ntype_channels_mid['room']),
-                    out_channels    = ntype_channels_mid['room'] // heads,
-                    heads           = heads,
-                    concat          = True,
-                    bias            = bias,
-                    add_self_loops = False,
-                )
-                }, aggr=aggr
-            )
-        elif gconv_type_d2r == 'sage':
-            self.hetero_conv_2 = HeteroConv({
-                ('device', 'contained_in', 'room'): SAGEConv(
-                    in_channels     = (ntype_channels_mid['device'], ntype_channels_mid['room']),
-                    out_channels    = ntype_channels_mid['room'],
-                    bias            = bias
-                )
-                }, aggr=aggr
-            )
+        self.hetero_conv_2 = HeteroConv(convs_2, aggr=aggr)
         
         # Stage 3: broadcast time node and outside node to room nodes
         ## time: no weights
@@ -174,6 +199,39 @@ class HeteroSTBlock(nn.Module):
             ntype: nn.LayerNorm(C_out) for ntype, C_out in ntype_channels_out.items()
         })
         self.dropout = nn.Dropout(droprate)
+
+        # Learnable gates
+        self.gate_mode = gate_mode
+
+        def make_gate(size):  # scalar or per-channel vector
+            if gate_mode == "scalar":
+                return nn.Parameter(torch.tensor(-2.0))          # ~0.12 after sigmoid
+            elif gate_mode == "channel":
+                return nn.Parameter(torch.full((size,), -2.0))   # one gate per channel
+            else:
+                raise ValueError("gate_mode must be 'scalar' or 'channel'")
+        
+        # After p<->d block:
+        self.g_p2d_dev = make_gate(ntype_channels_mid['device'])       # device gets p->d always
+        if self.bidir_p2d:
+            self.g_d2p_prop = make_gate(ntype_channels_mid['property'])# property gets d->p only if enabled
+
+        # After d<->r block:
+        self.g_d2r_room = make_gate(ntype_channels_mid['room'])        # room gets d->r always
+        if self.bidir_d2r:
+            self.g_r2d_dev = make_gate(ntype_channels_mid['device'])   # device gets r->d only if enabled
+    
+    @staticmethod
+    def _blend_with_gate(theta: torch.Tensor, x_old: torch.Tensor, x_new: torch.Tensor) -> torch.Tensor:
+        """
+        x_old/x_new: (B*T*N, C). theta: scalar or (C,)
+        returns: (B*T*N, C)
+        """
+        alpha = torch.sigmoid(theta)               # in (0,1)
+        if alpha.dim() == 0:                       # scalar
+            return (1 - alpha) * x_old + alpha * x_new
+        # per-channel: reshape to (1,C) to broadcast over batch
+        return (1 - alpha.view(1, -1)) * x_old + alpha.view(1, -1) * x_new
     
     @staticmethod
     def _tile_edge_index_over_time(
@@ -239,28 +297,45 @@ class HeteroSTBlock(nn.Module):
         }  # shapes: (B*T1*N_type, C_mid_type)
         
         # ---- Stage 1: property -> device (binary) ----
-        ei_p2d_B = edge_index_dict[('property', 'measured_by', 'device')]['index'].to(device)
-        ei_p2d_BT = self._tile_edge_index_over_time(
-            ei_p2d_B, B=B, T=T1, N_src=N_prop, N_dst=N_dev, device=device
-        )
-        out_p2d = self.hetero_conv_1(
+        ei_p2d_B  = edge_index_dict[('property', 'measured_by', 'device')]['index'].to(device)
+        ei_p2d_BT = self._tile_edge_index_over_time(ei_p2d_B, B=B, T=T1, N_src=N_prop, N_dst=N_dev, device=device)
+
+        edge_idx_1 = {('property', 'measured_by', 'device'): ei_p2d_BT}
+        if self.bidir_p2d:
+            ei_d2p_B  = edge_index_dict[('device', 'measures', 'property')]['index'].to(device)
+            ei_d2p_BT = self._tile_edge_index_over_time(ei_d2p_B, B=B, T=T1, N_src=N_dev, N_dst=N_prop, device=device)
+            edge_idx_1[('device', 'measures', 'property')] = ei_d2p_BT
+
+        out_bi_1 = self.hetero_conv_1(
             x_dict={'property': x_flat['property'], 'device': x_flat['device']},
-            edge_index_dict={('property', 'measured_by', 'device'): ei_p2d_BT}
+            edge_index_dict=edge_idx_1
         )
-        # Merge result
-        x_flat['device'] = out_p2d['device']
+        # Always update device (forward p->d)
+        x_flat['device'] = self._blend_with_gate(self.g_p2d_dev, x_flat['device'], out_bi_1['device'])
+        # Update property only if reverse relation is enabled
+        if self.bidir_p2d and 'property' in out_bi_1:
+            x_flat['property'] = self._blend_with_gate(self.g_d2p_prop, x_flat['property'], out_bi_1['property'])
 
         # ---- Stage 2: device -> room (binary) ----
-        ei_d2r_B = edge_index_dict[('device', 'contained_in', 'room')]['index'].to(device)
-        ei_d2r_BT = self._tile_edge_index_over_time(
-            ei_d2r_B, B=B, T=T1, N_src=N_dev, N_dst=N_room, device=device
-        )
-        out_d2r = self.hetero_conv_2(
+        ei_d2r_B  = edge_index_dict[('device', 'contained_in', 'room')]['index'].to(device)
+        ei_d2r_BT = self._tile_edge_index_over_time(ei_d2r_B, B=B, T=T1, N_src=N_dev, N_dst=N_room, device=device)
+        
+        edge_idx_2 = {('device', 'contained_in', 'room'): ei_d2r_BT}
+        if self.bidir_d2r:
+            ei_r2d_B  = edge_index_dict[('room', 'contains', 'device')]['index'].to(device)
+            ei_r2d_BT = self._tile_edge_index_over_time(ei_r2d_B, B=B, T=T1, N_src=N_room, N_dst=N_dev, device=device)
+            edge_idx_2[('room', 'contains', 'device')] = ei_r2d_BT
+        
+        out_bi_2 = self.hetero_conv_2(
             x_dict={'device': x_flat['device'], 'room': x_flat['room']},
-            edge_index_dict={('device', 'contained_in', 'room'): ei_d2r_BT}
+            edge_index_dict=edge_idx_2
         )
-        x_flat['room'] = out_d2r['room']
-
+        # Always update room (forward d->r)
+        x_flat['room'] = self._blend_with_gate(self.g_d2r_room, x_flat['room'], out_bi_2['room'])
+        # Update device only if reverse relation is enabled
+        if self.bidir_d2r and 'device' in out_bi_2:
+            x_flat['device'] = self._blend_with_gate(self.g_r2d_dev, x_flat['device'], out_bi_2['device'])
+        
         # Reshape room/device back to (B, C_mid, T1, N)
         C_room_mid = x_mid['room'].shape[1]
         C_dev_mid  = x_mid['device'].shape[1]
