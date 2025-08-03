@@ -228,7 +228,7 @@ class HeteroSTBlock(nn.Module):
             edge_index_dict={('property', 'measured_by', 'device'): ei_p2d_BT}
         )
         # Merge result
-        x_flat['device'] = out_p2d[('property', 'measured_by', 'device')]
+        x_flat['device'] = out_p2d['device']
 
         # ---- Stage 2: device -> room (binary) ----
         ei_d2r_B = edge_index_dict[('device', 'contained_in', 'room')]['index'].to(device)
@@ -239,7 +239,7 @@ class HeteroSTBlock(nn.Module):
             x_dict={'device': x_flat['device'], 'room': x_flat['room']},
             edge_index_dict={('device', 'contained_in', 'room'): ei_d2r_BT}
         )
-        x_flat['room'] = out_d2r[('device', 'contained_in', 'room')]
+        x_flat['room'] = out_d2r['room']
 
         # Reshape room/device back to (B, C_mid, T1, N)
         C_room_mid = x_mid['room'].shape[1]
@@ -319,9 +319,7 @@ class HeteroSTBlock(nn.Module):
                 }.items() if v is not None
             }
         )
-        room_flat = out_room_dict[('room', 'adjacent_vertical', 'room')] \
-            if ('room', 'adjacent_vertical', 'room') in out_room_dict \
-            else out_room_dict[('room', 'adjacent_horizontal', 'room')]
+        room_flat = out_room_dict['room']
 
         # Back to (B, C_mid, T1, N_room)
         x_room = self._unflat_bt(room_flat, B, T1, N_room, C_room_mid)
