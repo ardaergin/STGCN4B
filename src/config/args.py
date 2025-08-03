@@ -449,6 +449,10 @@ def add_STGCN_args(parser):
                         default='sum', 
                         choices=['sum', 'mean', 'max'], 
                         help='Aggregation type for hetero')
+    
+    parser.add_argument('--att_heads', type=int, 
+                        default=4, 
+                        help='Number of attention heads for GATConv')
 
 
 def add_LightGBM_args(parser):

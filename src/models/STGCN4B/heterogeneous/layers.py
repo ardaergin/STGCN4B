@@ -3,7 +3,7 @@ import torch
 from torch import nn, Tensor
 from typing import Mapping
 from ..homogeneous.layers import TemporalConvLayer
-from torch_geometric.nn import HeteroConv, GCNConv, SAGEConv
+from torch_geometric.nn import HeteroConv, GCNConv, GATConv
 
 
 class HeteroTemporalBlock(nn.Module):
@@ -68,7 +68,8 @@ class HeteroSTBlock(nn.Module):
             act_func:               str = "glu",
             bias:                   bool = True,
             droprate:               float = 0.0,
-            aggr:                   str = "sum"
+            aggr:                   str = "sum",
+            heads:                  int = 4,
     ):
         super().__init__()
         
@@ -80,10 +81,13 @@ class HeteroSTBlock(nn.Module):
         # Stage 1: property (measurement) -> device
         ## No edge weight, just binary
         self.hetero_conv_1 = HeteroConv({
-            ('property', 'measured_by', 'device'): SAGEConv(
+            ('property', 'measured_by', 'device'): GATConv(
                 in_channels     = (ntype_channels_mid['property'], ntype_channels_mid['device']),
-                out_channels    = ntype_channels_mid['device'],
-                bias            = bias
+                out_channels    = ntype_channels_mid['device'] // heads,
+                heads           = heads,
+                concat          = True,
+                bias            = bias,
+                add_self_loops = False,
             )
             }, aggr=aggr
         )
@@ -91,10 +95,13 @@ class HeteroSTBlock(nn.Module):
         # Stage 2: device -> room
         ## No edge weight, just binary
         self.hetero_conv_2 = HeteroConv({
-            ('device', 'contained_in', 'room'): SAGEConv(
+            ('device', 'contained_in', 'room'): GATConv(
                 in_channels     = (ntype_channels_mid['device'], ntype_channels_mid['room']),
-                out_channels    = ntype_channels_mid['room'],
-                bias            = bias
+                out_channels    = ntype_channels_mid['room'] // heads,
+                heads           = heads,
+                concat          = True,
+                bias            = bias,
+                add_self_loops = False,
             )
             }, aggr=aggr
         )

@@ -37,6 +37,7 @@ class HeterogeneousSTGCN(nn.Module):
                 bias                    = args.enable_bias,
                 droprate                = args.droprate,
                 aggr                    = args.aggr_type,
+                heads                   = args.att_heads,
             ))
             current_dims = out_dims
         
