@@ -31,7 +31,7 @@ def create_gso(
     """
     # Adjacency type check
     if args.adjacency_type == "weighted" and args.gso_type not in ("rw_norm_adj", "rw_renorm_adj"):
-        raise ValueError("For weighted adjacency, gso_type must be 'rw_norm_adj' or 'rw_renorm_adj'.")
+        logger.warning("For weighted adjacency, the recommended gso_type is 'rw_norm_adj' or 'rw_renorm_adj'.")
     
     # Create the base static GSO from the main adjacency matrix
     static_A = adj_matrix
