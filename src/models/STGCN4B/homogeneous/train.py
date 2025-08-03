@@ -30,6 +30,7 @@ def train_model(
     amp_dtype = (torch.bfloat16 
                 if getattr(args, 'amp_dtype', 'bf16') == 'bf16' 
                 else torch.float16)
+    # To prevent gradients becoming zero (i.e., underflow) when using low-precision float16 numbers:
     scaler = torch.cuda.amp.GradScaler(
         enabled = use_amp and amp_dtype == torch.float16
     )
@@ -82,7 +83,7 @@ def train_model(
             # NOTE: we are not using the reconstruction_batch here, so left it as "_"
             
             # Zero the gradients
-            optimizer.zero_grad()
+            optimizer.zero_grad(set_to_none=True)
                         
             # Forward pass (with Automatic Mixed Precision)
             with torch.autocast(device_type=device.type, dtype=amp_dtype, enabled=use_amp):
@@ -94,14 +95,34 @@ def train_model(
 
             # Running loss (calculated outside the autocast context)
             running_train_loss += loss_train.item()
-
+            
             # Backward pass (with GradScaler)
             if scaler.is_enabled():
                 scaler.scale(loss_train).backward()
+            else:
+                loss_train.backward()
+            
+            # Clip (once per optimizer step)
+            if args.max_grad_norm > 0:
+                if scaler.is_enabled():
+                    # Unscale the gradients before clipping
+                    scaler.unscale_(optimizer)
+                
+                # Clip the gradients
+                total_norm = torch.nn.utils.clip_grad_norm_(
+                    parameters          = model.parameters(),
+                    max_norm            = args.max_grad_norm,
+                    norm_type           = 2.0,
+                    error_if_nonfinite  = False
+                )
+                if torch.isfinite(total_norm):
+                    logger.debug(f"grad_norm: {float(total_norm):.3f}")
+            
+            # Optimizer step
+            if scaler.is_enabled():
                 scaler.step(optimizer)
                 scaler.update()
             else:
-                loss_train.backward()
                 optimizer.step()
         
         # Average training loss for the epoch

@@ -344,6 +344,10 @@ def add_STGCN_args(parser):
     parser.add_argument('--tf32', action='store_true', 
                         help='Enable TF32 matmul speedups for FP32 ops')
     
+    parser.add_argument('--max_grad_norm', type=float, 
+                        default=2.0, 
+                        help='Max norm for gradient clipping. Set to 0 to disable.')
+    
     ########## GSO ##########
 
     parser.add_argument('--gso_mode', type=str, default='dynamic',
