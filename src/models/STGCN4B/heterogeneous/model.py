@@ -38,6 +38,8 @@ class HeterogeneousSTGCN(nn.Module):
                 droprate                = args.droprate,
                 aggr                    = args.aggr_type,
                 heads                   = args.att_heads,
+                gconv_type_p2d          = args.gconv_type_p2d,
+                gconv_type_d2r          = args.gconv_type_d2r,
             ))
             current_dims = out_dims
         

@@ -3,7 +3,7 @@ import torch
 from torch import nn, Tensor
 from typing import Mapping
 from ..homogeneous.layers import TemporalConvLayer
-from torch_geometric.nn import HeteroConv, GCNConv, GATConv
+from torch_geometric.nn import HeteroConv, GCNConv, GATConv, SAGEConv
 
 
 class HeteroTemporalBlock(nn.Module):
@@ -70,6 +70,8 @@ class HeteroSTBlock(nn.Module):
             droprate:               float = 0.0,
             aggr:                   str = "sum",
             heads:                  int = 4,
+            gconv_type_p2d:          str = "sage",
+            gconv_type_d2r:          str = "sage",
     ):
         super().__init__()
         
@@ -80,32 +82,52 @@ class HeteroSTBlock(nn.Module):
            
         # Stage 1: property (measurement) -> device
         ## No edge weight, just binary
-        self.hetero_conv_1 = HeteroConv({
-            ('property', 'measured_by', 'device'): GATConv(
-                in_channels     = (ntype_channels_mid['property'], ntype_channels_mid['device']),
-                out_channels    = ntype_channels_mid['device'] // heads,
-                heads           = heads,
-                concat          = True,
-                bias            = bias,
-                add_self_loops = False,
+        if gconv_type_p2d == 'gat':
+            self.hetero_conv_1 = HeteroConv({
+                ('property', 'measured_by', 'device'): GATConv(
+                    in_channels     = (ntype_channels_mid['property'], ntype_channels_mid['device']),
+                    out_channels    = ntype_channels_mid['device'] // heads,
+                    heads           = heads,
+                    concat          = True,
+                    bias            = bias,
+                    add_self_loops = False,
+                )
+                }, aggr=aggr
             )
-            }, aggr=aggr
-        )
-
+        elif gconv_type_p2d == 'sage':
+            self.hetero_conv_1 = HeteroConv({
+                ('property', 'measured_by', 'device'): SAGEConv(
+                    in_channels     = (ntype_channels_mid['property'], ntype_channels_mid['device']),
+                    out_channels    = ntype_channels_mid['device'],
+                    bias            = bias
+                )
+                }, aggr=aggr
+            )
+        
         # Stage 2: device -> room
         ## No edge weight, just binary
-        self.hetero_conv_2 = HeteroConv({
-            ('device', 'contained_in', 'room'): GATConv(
-                in_channels     = (ntype_channels_mid['device'], ntype_channels_mid['room']),
-                out_channels    = ntype_channels_mid['room'] // heads,
-                heads           = heads,
-                concat          = True,
-                bias            = bias,
-                add_self_loops = False,
+        if gconv_type_d2r == 'gat':
+            self.hetero_conv_2 = HeteroConv({
+                ('device', 'contained_in', 'room'): GATConv(
+                    in_channels     = (ntype_channels_mid['device'], ntype_channels_mid['room']),
+                    out_channels    = ntype_channels_mid['room'] // heads,
+                    heads           = heads,
+                    concat          = True,
+                    bias            = bias,
+                    add_self_loops = False,
+                )
+                }, aggr=aggr
             )
-            }, aggr=aggr
-        )
-
+        elif gconv_type_d2r == 'sage':
+            self.hetero_conv_2 = HeteroConv({
+                ('device', 'contained_in', 'room'): SAGEConv(
+                    in_channels     = (ntype_channels_mid['device'], ntype_channels_mid['room']),
+                    out_channels    = ntype_channels_mid['room'],
+                    bias            = bias
+                )
+                }, aggr=aggr
+            )
+        
         # Stage 3: broadcast time node and outside node to room nodes
         ## time: no weights
         self.time_proj_room = nn.Linear(

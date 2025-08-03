@@ -453,6 +453,15 @@ def add_STGCN_args(parser):
     parser.add_argument('--att_heads', type=int, 
                         default=4, 
                         help='Number of attention heads for GATConv')
+    
+    parser.add_argument('--gconv_type_p2d', type=str, 
+                        default='sage', 
+                        choices=['sage', 'gat'], 
+                        help='Graph convolution type for property to device')
+    parser.add_argument('--gconv_type_d2r', type=str, 
+                        default='sage', 
+                        choices=['sage', 'gat'], 
+                        help='Graph convolution type for device to room')
 
 
 def add_LightGBM_args(parser):
