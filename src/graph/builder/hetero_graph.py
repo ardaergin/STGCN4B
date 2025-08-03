@@ -361,7 +361,8 @@ class HeteroGraphBuilderMixin:
         for room_uri_str, room_idx in self.node_mappings['room'].items():
             room = self.office_graph.rooms[URIRef(room_uri_str)]
             
-            for device_uri_str in room.devices:
+            for device_uri_ref in room.devices: # room.devices store URIRef instances!
+                device_uri_str = str(device_uri_ref)
                 if device_uri_str in self.node_mappings['device']:
                     device_idx = self.node_mappings['device'][device_uri_str]
                     room_to_device_edges.append([room_idx, device_idx])
@@ -371,8 +372,10 @@ class HeteroGraphBuilderMixin:
             hetero_data['room', 'contains', 'device'].edge_index = edge_index
             hetero_data['device', 'contained_in', 'room'].edge_index = edge_index.flip([0])
             logger.info(f"Added {len(room_to_device_edges)} bidirectional room-device edges")
+        else:
+            logger.warning("No room-device connections were found after processing all rooms.")
         return None
-
+    
     def _add_device_property_edges(self, hetero_data: HeteroData) -> None:
         """Add bidirectional edges between devices and properties."""
         device_to_property_edges = []
