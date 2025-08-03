@@ -1,67 +1,58 @@
-from typing import Mapping, Dict, List
+from typing import Mapping, Dict
 import torch
 from torch import nn, Tensor
 from typing import Mapping
-from ..homogeneous.layers import TemporalConvLayer, Align
+from ..homogeneous.layers import TemporalConvLayer
 from torch_geometric.nn import HeteroConv, GCNConv, SAGEConv
 
 
 class HeteroTemporalBlock(nn.Module):
-    """Applies TemporalConvLayer to temporal nodes and a simple projection to static nodes."""
+    """
+    Applies a TemporalConvLayer to all node types in the graph, processing
+    each node's features for temporal patterns.
+    """
     def __init__(
             self,
             ntype_channels_in:      Mapping[str, int],
             ntype_channels_out:     Mapping[str, int],
             Kt:                     int,
             act_func:               str = "glu",
-            static_ntypes:          List[str] = ('room', 'device')
     ):
         super().__init__()
         self.Kt = Kt
         self.blocks = nn.ModuleDict()
-        self.static_ntypes = static_ntypes
+        
+        # Create a TemporalConvLayer for every node type
         for ntype, Cin in ntype_channels_in.items():
             Cout = ntype_channels_out[ntype]
-            if ntype in self.static_ntypes:
-                self.blocks[ntype] = Align(Cin, Cout)
-            else:
-                self.blocks[ntype] = TemporalConvLayer(
-                    Kt                  = Kt,
-                    c_in                = Cin,
-                    c_out               = Cout,
-                    n_vertex            = 1, # n_vertex is not used in the calculation, can be 1
-                    act_func            = act_func
-                )
-
+            self.blocks[ntype] = TemporalConvLayer(
+                Kt=Kt,
+                c_in=Cin,
+                c_out=Cout,
+                n_vertex=1,  # n_vertex is not used in the calculation, can be 1
+                act_func=act_func
+            )
+    
     def forward(self, x_dict: Dict[str, Tensor]) -> Dict[str, Tensor]:
         """
         Args:
             x_dict (Dict[str, Tensor]): Dict of tensors with shape (B, C, T, N)
         """
         out_dict = {}
-        T_in = next(iter(x_dict.values())).shape[2]
-        T_out = T_in - (self.Kt - 1)
-
-        if T_out <= 0:
-            raise ValueError(
-                f"History size {T_in} is too small for temporal kernel size {self.Kt}."
-            )
-
+        
+        # Apply the temporal convolution to each node type's feature tensor
         for ntype, x in x_dict.items():
-            if ntype in self.static_ntypes:
-                # Align expects (B, C, T, N), perfect fit
-                aligned_x = self.blocks[ntype](x)
-                # Align layer changes channels but not the time dimension.
-                # Manually slice the time dimension to match the convolved tensors.
-                out_dict[ntype] = aligned_x[:, :, :T_out, :]
-            else:
-                # Reshape for TemporalConvLayer: (B,C,T,N) -> (B*N,C,T,1)
-                B, C, T, N = x.shape
-                x_reshaped = x.permute(0, 3, 1, 2).reshape(B * N, C, T, 1)
-                output_reshaped = self.blocks[ntype](x_reshaped) # (B*N, Cout, Tout, 1)
-                _, Cout, Tout, _ = output_reshaped.shape
-                # Reshape back: (B*N,Cout,Tout,1) -> (B,N,Cout,Tout) -> (B,Cout,Tout,N)
-                out_dict[ntype] = output_reshaped.view(B, N, Cout, Tout).permute(0, 2, 3, 1)
+            # Reshape for TemporalConvLayer: (B, C, T, N) -> (B*N, C, T, 1)
+            B, C, T, N = x.shape
+            x_reshaped = x.permute(0, 3, 1, 2).reshape(B * N, C, T, 1)
+            
+            # Apply the temporal convolution
+            output_reshaped = self.blocks[ntype](x_reshaped)  # (B*N, Cout, Tout, 1)
+            
+            # Reshape back: (B*N, Cout, Tout, 1) -> (B, N, Cout, Tout) -> (B, Cout, Tout, N)
+            _, Cout, Tout, _ = output_reshaped.shape
+            out_dict[ntype] = output_reshaped.view(B, N, Cout, Tout).permute(0, 2, 3, 1)
+        
         return out_dict
 
 
