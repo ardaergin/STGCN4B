@@ -1,5 +1,4 @@
-import inspect
-from typing import Mapping, Any, Dict, List
+from typing import Mapping, Dict, List
 import torch
 from torch import nn, Tensor
 from typing import Mapping
@@ -86,61 +85,61 @@ class HeteroSTBlock(nn.Module):
         self.temp1 = HeteroTemporalBlock(ntype_channels_in, ntype_channels_mid, Kt, act_func)
 
         ##### Spatial layer #####
-        # Build one GNN layer per edge-type that should perform message passing
-        convs = {}
+           
+        # Stage 1: property (measurement) -> device
+        ## No edge weight, just binary
+        self.hetero_conv_1 = HeteroConv({
+            ('property', 'measured_by', 'device'): SAGEConv(
+                in_channels     = (ntype_channels_mid['property'], ntype_channels_mid['device']),
+                out_channels    = ntype_channels_mid['device'],
+                bias            = bias
+            )
+            }, aggr=aggr
+        )
+
+        # Stage 2: device -> room
+        ## No edge weight, just binary
+        self.hetero_conv_2 = HeteroConv({
+            ('device', 'contained_in', 'room'): SAGEConv(
+                in_channels     = (ntype_channels_mid['device'], ntype_channels_mid['room']),
+                out_channels    = ntype_channels_mid['room'],
+                bias            = bias
+            )
+            }, aggr=aggr
+        )
+
+        # Stage 3: broadcast time node and outside node to room nodes
+        ## time: no weights
+        self.time_proj_room = nn.Linear(
+            in_features         = ntype_channels_mid['time'],
+            out_features        = ntype_channels_mid['room'], 
+            bias                = bias
+        )
+        ## outside: has outside-room weights!
+        self.outside_proj = nn.Linear(
+            in_features         = ntype_channels_mid['outside'],
+            out_features        = ntype_channels_mid['room'], 
+            bias                = bias
+        )
+
+        # Stage 4: Spatial relationships between rooms
+        ## There are edge weights for these!
+        self.hetero_conv_3 = HeteroConv({
+            ('room', 'adjacent_horizontal', 'room'): GCNConv(
+                in_channels     = ntype_channels_mid['room'],
+                out_channels    = ntype_channels_mid['room'],
+                bias            = bias,
+                add_self_loops  = True
+            ),
+            ('room', 'adjacent_vertical', 'room'): GCNConv(
+                in_channels     = ntype_channels_mid['room'],
+                out_channels    = ntype_channels_mid['room'],
+                bias            = bias,
+                add_self_loops  = True
+            ),
+            }, aggr=aggr
+        )
         
-        # 1. Spatial relationships between rooms (simple diffusion)
-        convs[('room', 'adjacent_horizontal', 'room')] = GCNConv(
-            in_channels=ntype_channels_mid['room'],
-            out_channels=ntype_channels_mid['room'],
-            bias=bias,
-            add_self_loops=True
-        )
-        convs[('room', 'adjacent_vertical', 'room')] = GCNConv(
-            in_channels=ntype_channels_mid['room'],
-            out_channels=ntype_channels_mid['room'],
-            bias=bias,
-            add_self_loops=True
-        )
-
-        # 2. Hierarchical/Structural relationships
-        convs[('device', 'contained_in', 'room')] = SAGEConv(
-            in_channels=(ntype_channels_mid['device'], ntype_channels_mid['room']),
-            out_channels=ntype_channels_mid['room'],
-            bias=bias
-        )
-        convs[('property', 'measured_by', 'device')] = SAGEConv(
-            in_channels=(ntype_channels_mid['property'], ntype_channels_mid['device']),
-            out_channels=ntype_channels_mid['device'],
-            bias=bias
-        )
-
-        # 3. Weather influence relationships
-        convs[('outside', 'influences', 'room')] = SAGEConv(
-            in_channels=(ntype_channels_mid['outside'], ntype_channels_mid['room']),
-            out_channels=ntype_channels_mid['room'],
-            bias=bias
-        )
-
-
-        # 4. Time influence relationships
-        convs[('time', 'affects', 'room')] = SAGEConv(
-            in_channels=(ntype_channels_mid['time'], ntype_channels_mid['room']),
-            out_channels=ntype_channels_mid['room'],
-            bias=bias
-        )
-        convs[('time', 'affects', 'device')] = SAGEConv(
-            in_channels=(ntype_channels_mid['time'], ntype_channels_mid['device']),
-            out_channels=ntype_channels_mid['device'],
-            bias=bias
-        )
-        convs[('time', 'affects', 'property')] = SAGEConv(
-            in_channels=(ntype_channels_mid['time'], ntype_channels_mid['property']),
-            out_channels=ntype_channels_mid['property'],
-            bias=bias
-        )
-
-        self.hetero_conv = HeteroConv(convs, aggr=aggr)
         ##### End of spatial layer #####
         
         # Activation function
@@ -155,77 +154,196 @@ class HeteroSTBlock(nn.Module):
             ntype: nn.LayerNorm(C_out) for ntype, C_out in ntype_channels_out.items()
         })
         self.dropout = nn.Dropout(droprate)
+    
+    @staticmethod
+    def _tile_edge_index_over_time(
+        edge_index_B: Tensor,
+        B: int,
+        T: int,
+        N_src: int,
+        N_dst: int,
+        device: torch.device
+    ) -> Tensor:
+        """
+        Given batched-over-B edge_index (2, E_B), tile it over T time steps so indices
+        address features flattened over (B * T) graphs per node type.
+        """
+        # Offsets per time slice for src/dst types
+        # shape: (T, 1)
+        off_src = (torch.arange(T, device=device) * (B * N_src)).view(T, 1)
+        off_dst = (torch.arange(T, device=device) * (B * N_dst)).view(T, 1)
 
+        # Broadcast-add offsets, then reshape back to (2, T*E_B)
+        src = edge_index_B[0].unsqueeze(0) + off_src  # (T, E_B)
+        dst = edge_index_B[1].unsqueeze(0) + off_dst  # (T, E_B)
+        edge_index_BT = torch.stack([src.reshape(-1), dst.reshape(-1)], dim=0)
+        return edge_index_BT.long()
+    
+    @staticmethod
+    def _flat_bt(x: Tensor) -> Tensor:
+        """
+        (B, C, T, N) -> (B*T*N, C)
+        """
+        B, C, T, N = x.shape
+        return x.permute(0, 2, 3, 1).reshape(B * T * N, C)
+    
+    @staticmethod
+    def _unflat_bt(x_flat: Tensor, B: int, T: int, N: int, C: int) -> Tensor:
+        """
+        (B*T*N, C) -> (B, C, T, N)
+        """
+        return x_flat.view(B, T, N, C).permute(0, 3, 1, 2)
+    
     def forward(
-            self, 
-            x_dict: Dict[str, Tensor], 
-            edge_index_dict: Dict[tuple, Dict[str, Tensor]]
+        self,
+        x_dict: Dict[str, Tensor],          # each: (B, C, T, N)
+        edge_index_dict: Dict[tuple, Dict[str, Tensor]]  # {"index": Long[2,E_B], "weight": Optional[...]}
     ) -> Dict[str, Tensor]:
-        # 1. First temporal layer
-        x_dict_after_temp1 = self.temp1(x_dict)
-        T_out_temp1 = next(iter(x_dict_after_temp1.values())).shape[2]
+        # ---- Temporal 1 ----
+        x_mid = self.temp1(x_dict)  # dict: (B, C_mid, T1, N)
+        # Shapes / counts
+        B = next(iter(x_mid.values())).shape[0]
+        T1 = next(iter(x_mid.values())).shape[2]
+        N_room = x_mid['room'].shape[3]
+        N_dev  = x_mid['device'].shape[3]
+        N_prop = x_mid['property'].shape[3]
+        device = x_mid['room'].device
+
+        # -------- Vectorized spatial pipeline --------
+        # Flatten (B, T1) into one big "batch" for PyG
+        x_flat = {
+            'room':     self._flat_bt(x_mid['room']),
+            'device':   self._flat_bt(x_mid['device']),
+            'property': self._flat_bt(x_mid['property']),
+            # time/outside are single-node types; not used in HeteroConv, keep as is.
+        }  # shapes: (B*T1*N_type, C_mid_type)
         
-        # 2. Prepare separate dictionaries for edge_index and edge_weight
-        edge_index_for_conv = {
-            etype: ew["index"].long()
-            for etype, ew in edge_index_dict.items()
-        }
+        # ---- Stage 1: property -> device (binary) ----
+        ei_p2d_B = edge_index_dict[('property', 'measured_by', 'device')]['index'].to(device)
+        ei_p2d_BT = self._tile_edge_index_over_time(
+            ei_p2d_B, B=B, T=T1, N_src=N_prop, N_dst=N_dev, device=device
+        )
+        out_p2d = self.hetero_conv_1(
+            x_dict={'property': x_flat['property'], 'device': x_flat['device']},
+            edge_index_dict={('property', 'measured_by', 'device'): ei_p2d_BT}
+        )
+        # Merge result
+        x_flat['device'] = out_p2d[('property', 'measured_by', 'device')]
 
-        edge_weight_for_conv = {
-            etype: ew["weight"].squeeze()        # (num_edges,)
-            for etype, ew in edge_index_dict.items()
-            if ew["weight"] is not None          # 1. really weighted
-            and "edge_weight" in inspect.signature(      # 2. layer can take it
-                    self.hetero_conv.convs[etype].forward
-                ).parameters
-        }
+        # ---- Stage 2: device -> room (binary) ----
+        ei_d2r_B = edge_index_dict[('device', 'contained_in', 'room')]['index'].to(device)
+        ei_d2r_BT = self._tile_edge_index_over_time(
+            ei_d2r_B, B=B, T=T1, N_src=N_dev, N_dst=N_room, device=device
+        )
+        out_d2r = self.hetero_conv_2(
+            x_dict={'device': x_flat['device'], 'room': x_flat['room']},
+            edge_index_dict={('device', 'contained_in', 'room'): ei_d2r_BT}
+        )
+        x_flat['room'] = out_d2r[('device', 'contained_in', 'room')]
 
-        # 3. Apply spatial layer at each time step
-        out_slices = []
-        for t in range(T_out_temp1):
-            flat_x_t = {
-                ntype: x[:, :, t, :].permute(0, 2, 1).reshape(-1, x.shape[1])
-                for ntype, x in x_dict_after_temp1.items()
+        # Reshape room/device back to (B, C_mid, T1, N)
+        C_room_mid = x_mid['room'].shape[1]
+        C_dev_mid  = x_mid['device'].shape[1]
+        x_room = self._unflat_bt(x_flat['room'],   B, T1, N_room, C_room_mid)
+        x_dev  = self._unflat_bt(x_flat['device'], B, T1, N_dev,  C_dev_mid)
+
+        # ---- Stage 3: broadcast time/outside -> room ----
+        # time: (B, C_t, T1, 1) -> project -> (B, C_room, T1, 1) -> broadcast to rooms
+        t_proj = self.time_proj_room(x_mid['time'].squeeze(-1).permute(0, 2, 1))  # (B, T1, C_room)
+        t_proj = t_proj.permute(0, 2, 1).unsqueeze(-1)                             # (B, C_room, T1, 1)
+        t_proj = t_proj.expand(-1, -1, -1, N_room)                                 # (B, C_room, T1, N_room)
+
+        # outside: (B, C_out, T1, 1) -> project -> (B, C_room, T1) then weight per room
+        o_proj = self.outside_proj(x_mid['outside'].squeeze(-1).permute(0, 2, 1))  # (B, T1, C_room)
+        o_proj = o_proj.permute(0, 2, 1).unsqueeze(-1)                              # (B, C_room, T1, 1)
+
+        # Build per-batch room weights from ('outside','influences','room') edges
+        out_edge = edge_index_dict[('outside', 'influences', 'room')]
+        dst_idx_B = out_edge['index'][1].to(device)                 # (E_B,)
+        w_B = out_edge['weight']
+        if w_B is None:
+            w_B = torch.ones_like(dst_idx_B, dtype=o_proj.dtype, device=device)
+        else:
+            w_B = w_B.to(device).view(-1).to(dtype=o_proj.dtype)    # (E_B,)
+
+        # Convert global batched indices -> (batch_id, local_room_id)
+        batch_id = dst_idx_B // N_room                               # (E_B,)
+        room_loc = dst_idx_B %  N_room                               # (E_B,)
+
+        # Dense weight matrix W_out->room: (B, N_room)
+        W = torch.zeros(B, N_room, dtype=o_proj.dtype, device=device)
+        W.index_put_((batch_id, room_loc), w_B, accumulate=True)
+
+        # Broadcast outside using weights: (B, 1, 1, N_room)
+        W = W.unsqueeze(1).unsqueeze(1)                              # (B, 1, 1, N_room)
+        o_proj = o_proj * W                                          # (B, C_room, T1, N_room)
+
+        # Add broadcasts to room
+        x_room = x_room + t_proj + o_proj                            # (B, C_room, T1, N_room)
+
+        # ---- Stage 4: room-room diffusion (weighted) ----
+        # Flatten room features and tile room-room edges over time
+        room_flat = self._flat_bt(x_room)                            # (B*T1*N_room, C_room)
+
+        # Horizontal
+        ei_rh_B = edge_index_dict[('room', 'adjacent_horizontal', 'room')]['index'].to(device)
+        ew_rh_B = edge_index_dict[('room', 'adjacent_horizontal', 'room')]['weight']
+        ei_rh_BT = self._tile_edge_index_over_time(
+            ei_rh_B, B=B, T=T1, N_src=N_room, N_dst=N_room, device=device
+        )
+        ew_rh_BT = None
+        if ew_rh_B is not None:
+            ew_rh_BT = ew_rh_B.to(device).view(-1).repeat(T1)        # (T1 * E_B,)
+
+        # Vertical
+        ei_rv_B = edge_index_dict[('room', 'adjacent_vertical', 'room')]['index'].to(device)
+        ew_rv_B = edge_index_dict[('room', 'adjacent_vertical', 'room')]['weight']
+        ei_rv_BT = self._tile_edge_index_over_time(
+            ei_rv_B, B=B, T=T1, N_src=N_room, N_dst=N_room, device=device
+        )
+        ew_rv_BT = None
+        if ew_rv_B is not None:
+            ew_rv_BT = ew_rv_B.to(device).view(-1).repeat(T1)
+
+        # Run GCNs (weighted where provided)
+        out_room_dict = self.hetero_conv_3(
+            x_dict={'room': room_flat},
+            edge_index_dict={
+                ('room', 'adjacent_horizontal', 'room'): ei_rh_BT,
+                ('room', 'adjacent_vertical', 'room'):   ei_rv_BT,
+            },
+            edge_weight_dict={
+                k: v for k, v in {
+                    ('room', 'adjacent_horizontal', 'room'): ew_rh_BT,
+                    ('room', 'adjacent_vertical', 'room'):   ew_rv_BT
+                }.items() if v is not None
             }
+        )
+        room_flat = out_room_dict[('room', 'adjacent_vertical', 'room')] \
+            if ('room', 'adjacent_vertical', 'room') in out_room_dict \
+            else out_room_dict[('room', 'adjacent_horizontal', 'room')]
 
-            # This is the canonical way to call HeteroConv with weights
-            flat_out_t = self.hetero_conv(
-                x_dict=flat_x_t,
-                edge_index_dict=edge_index_for_conv,
-                **({"edge_weight_dict": edge_weight_for_conv} if edge_weight_for_conv else {})
-            )
+        # Back to (B, C_mid, T1, N_room)
+        x_room = self._unflat_bt(room_flat, B, T1, N_room, C_room_mid)
 
-            # Merge the GNN output back into the full feature set
-            for ntype, out_feat in flat_out_t.items():
-                flat_x_t[ntype] = out_feat
-
-            # Un-flatten the complete feature set for this time step
-            slice_out_t = {
-                ntype: x_flat.view(x_dict_after_temp1[ntype].shape[0],      # B
-                                  x_dict_after_temp1[ntype].shape[3],      # N
-                                  -1)                                      # C
-                           .permute(0, 2, 1)                               # -> (B, C, N)
-                for ntype, x_flat in flat_x_t.items()
-            }
-            out_slices.append(slice_out_t)
-
-        # 4. Stack time slices
-        x_dict_after_spatial = {
-            ntype: torch.stack([s[ntype] for s in out_slices], dim=2)
-            for ntype in x_dict_after_temp1.keys()
+        # ---- ReLU then Temporal 2 ----
+        x_after_spatial = {
+            'room':     x_room,
+            'device':   x_dev,
+            'property': x_mid['property'],
+            'outside':  x_mid['outside'],
+            'time':     x_mid['time'],
         }
+        x_relu = {k: self.relu(v) for k, v in x_after_spatial.items()}
 
-        # 5. Activation
-        x_dict_after_relu = {k: self.relu(v) for k, v in x_dict_after_spatial.items()}
-        
-        # 6. Second temporal layer
-        x_dict_after_temp2 = self.temp2(x_dict_after_relu)
-        
-        # 7. LayerNorm + Dropout
-        final_x_dict = {}
-        for ntype, x in x_dict_after_temp2.items():
+        x_out = self.temp2(x_relu)  # dict: (B, C_out, T2, N)
+
+        # ---- LayerNorm + Dropout ----
+        final_x = {}
+        for ntype, x in x_out.items():
+            # (B, C, T, N) -> (B, T, N, C) -> LN(C) -> back
             x_perm = x.permute(0, 2, 3, 1)
             x_norm = self.norms[ntype](x_perm)
-            final_x_dict[ntype] = self.dropout(x_norm).permute(0, 3, 1, 2)
-            
-        return final_x_dict
+            final_x[ntype] = self.dropout(x_norm).permute(0, 3, 1, 2)
+
+        return final_x
