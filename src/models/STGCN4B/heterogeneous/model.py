@@ -41,6 +41,7 @@ class HeterogeneousSTGCN(nn.Module):
                 gconv_type_d2r          = args.gconv_type_d2r,
                 bidir_p2d               = args.bidir_p2d,
                 bidir_d2r               = args.bidir_d2r,
+                gate_mode               = args.gate_mode,
             ))
             current_dims = out_dims
         
