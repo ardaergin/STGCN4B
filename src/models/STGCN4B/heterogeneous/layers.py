@@ -203,24 +203,27 @@ class HeteroSTBlock(nn.Module):
         # Learnable gates
         self.gate_mode = gate_mode
 
-        def make_gate(size):  # scalar or per-channel vector
+        def make_gate(size, init=-2.0):  # scalar or per-channel vector
             if gate_mode == "scalar":
-                return nn.Parameter(torch.tensor(-2.0))          # ~0.12 after sigmoid
+                return nn.Parameter(torch.tensor(init))          # ~0.12 after sigmoid
             elif gate_mode == "channel":
-                return nn.Parameter(torch.full((size,), -2.0))   # one gate per channel
+                return nn.Parameter(torch.full((size,), init))   # one gate per channel
             else:
                 raise ValueError("gate_mode must be 'scalar' or 'channel'")
         
         # After p<->d block:
-        self.g_p2d_dev = make_gate(ntype_channels_mid['device'])       # device gets p->d always
+        self.g_p2d_dev  = make_gate(ntype_channels_mid['device'], init=+2.0)
         if self.bidir_p2d:
-            self.g_d2p_prop = make_gate(ntype_channels_mid['property'])# property gets d->p only if enabled
+            self.g_d2p_prop = make_gate(ntype_channels_mid['property'], init=-2.0)
 
-        # After d<->r block:
-        self.g_d2r_room = make_gate(ntype_channels_mid['room'])        # room gets d->r always
+        self.g_d2r_room = make_gate(ntype_channels_mid['room'],   init=+2.0)
         if self.bidir_d2r:
-            self.g_r2d_dev = make_gate(ntype_channels_mid['device'])   # device gets r->d only if enabled
-    
+            self.g_r2d_dev  = make_gate(ntype_channels_mid['device'], init=-2.0)
+
+        # broadcast gates (slightly on by default)
+        self.g_time2room    = make_gate(ntype_channels_mid['room'], init=+1.0)
+        self.g_outside2room = make_gate(ntype_channels_mid['room'], init=+1.0)
+
     @staticmethod
     def _blend_with_gate(theta: torch.Tensor, x_old: torch.Tensor, x_new: torch.Tensor) -> torch.Tensor:
         """
@@ -339,8 +342,10 @@ class HeteroSTBlock(nn.Module):
         # Reshape room/device back to (B, C_mid, T1, N)
         C_room_mid = x_mid['room'].shape[1]
         C_dev_mid  = x_mid['device'].shape[1]
+        C_prop_mid = x_mid['property'].shape[1]
         x_room = self._unflat_bt(x_flat['room'],   B, T1, N_room, C_room_mid)
         x_dev  = self._unflat_bt(x_flat['device'], B, T1, N_dev,  C_dev_mid)
+        x_prop = self._unflat_bt(x_flat['property'], B, T1, N_prop, C_prop_mid)
 
         # ---- Stage 3: broadcast time/outside -> room ----
         # time: (B, C_t, T1, 1) -> project -> (B, C_room, T1, 1) -> broadcast to rooms
@@ -373,9 +378,13 @@ class HeteroSTBlock(nn.Module):
         W = W.unsqueeze(1).unsqueeze(1)                              # (B, 1, 1, N_room)
         o_proj = o_proj * W                                          # (B, C_room, T1, N_room)
 
-        # Add broadcasts to room
-        x_room = x_room + t_proj + o_proj                            # (B, C_room, T1, N_room)
-
+        # Gated mixing of broadcasts
+        t_mix = self._blend_with_gate(self.g_time2room,    torch.zeros_like(x_room), t_proj)
+        o_mix = self._blend_with_gate(self.g_outside2room, torch.zeros_like(x_room), o_proj)
+        
+        # Add broadcasts to room with learnable strength
+        x_room = x_room + t_mix + o_mix
+        
         # ---- Stage 4: room-room diffusion (weighted) ----
         # Flatten room features and tile room-room edges over time
         room_flat = self._flat_bt(x_room)                            # (B*T1*N_room, C_room)
@@ -423,7 +432,7 @@ class HeteroSTBlock(nn.Module):
         x_after_spatial = {
             'room':     x_room,
             'device':   x_dev,
-            'property': x_mid['property'],
+            'property': x_prop,
             'outside':  x_mid['outside'],
             'time':     x_mid['time'],
         }
