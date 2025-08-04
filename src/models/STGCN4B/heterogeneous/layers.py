@@ -176,12 +176,12 @@ class HeteroSTBlock(nn.Module):
                 bias            = bias,
                 add_self_loops  = True
             ),
-            ('room', 'adjacent_vertical', 'room'): GCNConv(
-                in_channels     = ntype_channels_mid['room'],
-                out_channels    = ntype_channels_mid['room'],
-                bias            = bias,
-                add_self_loops  = True
-            ),
+            # ('room', 'adjacent_vertical', 'room'): GCNConv(
+            #     in_channels     = ntype_channels_mid['room'],
+            #     out_channels    = ntype_channels_mid['room'],
+            #     bias            = bias,
+            #     add_self_loops  = True
+            # ),
             }, aggr=aggr
         )
         
@@ -409,27 +409,27 @@ class HeteroSTBlock(nn.Module):
         if ew_rh_B is not None:
             ew_rh_BT = ew_rh_B.to(device).view(-1).repeat(T1)        # (T1 * E_B,)
 
-        # Vertical
-        ei_rv_B = edge_index_dict[('room', 'adjacent_vertical', 'room')]['index'].to(device)
-        ew_rv_B = edge_index_dict[('room', 'adjacent_vertical', 'room')]['weight']
-        ei_rv_BT = self._tile_edge_index_over_time(
-            ei_rv_B, B=B, T=T1, N_src=N_room, N_dst=N_room, device=device
-        )
-        ew_rv_BT = None
-        if ew_rv_B is not None:
-            ew_rv_BT = ew_rv_B.to(device).view(-1).repeat(T1)
+        # # Vertical
+        # ei_rv_B = edge_index_dict[('room', 'adjacent_vertical', 'room')]['index'].to(device)
+        # ew_rv_B = edge_index_dict[('room', 'adjacent_vertical', 'room')]['weight']
+        # ei_rv_BT = self._tile_edge_index_over_time(
+        #     ei_rv_B, B=B, T=T1, N_src=N_room, N_dst=N_room, device=device
+        # )
+        # ew_rv_BT = None
+        # if ew_rv_B is not None:
+        #     ew_rv_BT = ew_rv_B.to(device).view(-1).repeat(T1)
 
         # Run GCNs (weighted where provided)
         out_room_dict = self.hetero_conv_3(
             x_dict={'room': room_flat},
             edge_index_dict={
                 ('room', 'adjacent_horizontal', 'room'): ei_rh_BT,
-                ('room', 'adjacent_vertical', 'room'):   ei_rv_BT,
+                # ('room', 'adjacent_vertical', 'room'):   ei_rv_BT,
             },
             edge_weight_dict={
                 k: v for k, v in {
                     ('room', 'adjacent_horizontal', 'room'): ew_rh_BT,
-                    ('room', 'adjacent_vertical', 'room'):   ew_rv_BT
+                    # ('room', 'adjacent_vertical', 'room'):   ew_rv_BT
                 }.items() if v is not None
             }
         )
