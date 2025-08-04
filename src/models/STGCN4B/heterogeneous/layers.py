@@ -227,14 +227,24 @@ class HeteroSTBlock(nn.Module):
     @staticmethod
     def _blend_with_gate(theta: torch.Tensor, x_old: torch.Tensor, x_new: torch.Tensor) -> torch.Tensor:
         """
-        x_old/x_new: (B*T*N, C). theta: scalar or (C,)
-        returns: (B*T*N, C)
+        Blends tensors with a learnable gate. Handles both 2D (..., C) and 
+        4D (B, C, T, N) tensors.
         """
-        alpha = torch.sigmoid(theta)               # in (0,1)
-        if alpha.dim() == 0:                       # scalar
+        alpha = torch.sigmoid(theta)
+        if alpha.dim() == 0:  # Scalar gate
             return (1 - alpha) * x_old + alpha * x_new
-        # per-channel: reshape to (1,C) to broadcast over batch
-        return (1 - alpha.view(1, -1)) * x_old + alpha.view(1, -1) * x_new
+
+        # Per-channel gate
+        if x_new.dim() == 2:
+            # Reshape for (..., C) tensor
+            alpha_reshaped = alpha.view(1, -1)
+        elif x_new.dim() == 4:
+            # Reshape for (B, C, T, N) tensor
+            alpha_reshaped = alpha.view(1, -1, 1, 1)
+        else:
+            raise ValueError(f"Unsupported tensor dimension {x_new.dim()} in _blend_with_gate")
+            
+        return (1 - alpha_reshaped) * x_old + alpha_reshaped * x_new
     
     @staticmethod
     def _tile_edge_index_over_time(
