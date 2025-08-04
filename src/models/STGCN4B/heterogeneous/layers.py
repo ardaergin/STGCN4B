@@ -221,8 +221,8 @@ class HeteroSTBlock(nn.Module):
             self.g_r2d_dev  = make_gate(ntype_channels_mid['device'], init=-2.0)
 
         # broadcast gates (slightly on by default)
-        self.g_time2room    = make_gate(ntype_channels_mid['room'], init=+1.0)
-        self.g_outside2room = make_gate(ntype_channels_mid['room'], init=+1.0)
+        self.g_time2room    = make_gate(ntype_channels_mid['room'], init=0.0)
+        self.g_outside2room = make_gate(ntype_channels_mid['room'], init=-2.0)
 
     @staticmethod
     def _blend_with_gate(theta: torch.Tensor, x_old: torch.Tensor, x_new: torch.Tensor) -> torch.Tensor:
@@ -273,17 +273,17 @@ class HeteroSTBlock(nn.Module):
     @staticmethod
     def _flat_bt(x: Tensor) -> Tensor:
         """
-        (B, C, T, N) -> (B*T*N, C)
+        (B, C, T, N) -> (T*B*N, C)  time-major flatten
         """
         B, C, T, N = x.shape
-        return x.permute(0, 2, 3, 1).reshape(B * T * N, C)
+        return x.permute(2, 0, 3, 1).reshape(T * B * N, C)
     
     @staticmethod
     def _unflat_bt(x_flat: Tensor, B: int, T: int, N: int, C: int) -> Tensor:
         """
-        (B*T*N, C) -> (B, C, T, N)
+        (T*B*N, C) -> (B, C, T, N)
         """
-        return x_flat.view(B, T, N, C).permute(0, 3, 1, 2)
+        return x_flat.view(T, B, N, C).permute(1, 3, 0, 2)
     
     def forward(
         self,
