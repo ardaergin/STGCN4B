@@ -3,7 +3,9 @@ from typing import Union, List, Dict
 import numpy as np
 import torch
 from torch_geometric.data import HeteroData
+
 import logging; logger = logging.getLogger(__name__)
+
 
 class STGCNNormalizer(ABC):
     """
@@ -144,10 +146,11 @@ class Homogeneous(STGCNNormalizer):
         if features_to_skip_norm:
             skip_indices = [i for i, name in enumerate(feature_names) if any(s in name for s in features_to_skip_norm)]
             if skip_indices:
+                skipped_feature_names = [feature_names[i] for i in skip_indices]
+                logger.info(f"Skipping normalization for {len(skip_indices)} features: {skipped_feature_names}")
                 self.feature_center[skip_indices] = 0.0
                 self.feature_scale[skip_indices] = 1.0
-                logger.info(f"Skipping normalization for {len(skip_indices)} features.")
-
+        
         # Avoid division by zero for constant features
         self.feature_scale[self.feature_scale == 0] = 1.0
         
@@ -225,11 +228,13 @@ class Heterogeneous(STGCNNormalizer):
             # 3. skip‑normalisation handling
             if features_to_skip_norm:
                 names = feature_names.get(nt, [])
-                skip = [i for i, n in enumerate(names)
+                skip_indices = [i for i, n in enumerate(names)
                         if any(s in n for s in features_to_skip_norm)]
-                if skip:
-                    self.feature_center[nt][skip] = 0.0
-                    self.feature_scale[nt][skip] = 1.0
+                if skip_indices:
+                    skipped_feature_names = [names[i] for i in skip_indices]
+                    logger.info(f"Node type '{nt}': Skipping normalization for {len(skip_indices)} features: {skipped_feature_names}")
+                    self.feature_center[nt][skip_indices] = 0.0
+                    self.feature_scale[nt][skip_indices] = 1.0
 
             # 4. avoid divide‑by‑zero
             self.feature_scale[nt][self.feature_scale[nt] == 0] = 1.0
