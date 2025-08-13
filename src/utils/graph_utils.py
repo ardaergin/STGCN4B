@@ -1,19 +1,33 @@
+from typing import Tuple, Union, Literal
 import torch
 from torch_geometric.utils import add_self_loops, degree, get_laplacian
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
 
-def calc_gso_edge(edge_index: torch.LongTensor,
-                  edge_weight: torch.Tensor,
-                  num_nodes: int,
-                  gso_type: str,
-                  device: torch.device):
-    """
-    Replace calc_gso + calc_chebynet_gso + cnv_sparse_mat_to_coo_tensor.
+# Return types
+GSODense  = torch.Tensor
+GSOCoo    = Tuple[torch.LongTensor, torch.Tensor]
+GSOSparse = torch.Tensor  # torch.sparse_coo_tensor
 
-    gso_type ∈ {
+def calc_gso_edge(
+        edge_index: torch.LongTensor,
+        edge_weight: torch.Tensor,
+        num_nodes: int,
+        gso_type: str,
+        device: torch.device,
+        return_format: Literal["dense", "coo", "sparse"] = "dense",
+) -> Union[GSODense, GSOCoo, GSOSparse]:
+    """
+    Compute a Graph Shift Operator (GSO).
+
+    Provides various normalization options, with gso_type ∈ {
       'sym_norm_adj', 'sym_renorm_adj', 'sym_norm_lap', 'sym_renorm_lap',
       'rw_norm_adj',  'rw_renorm_adj',  'rw_norm_lap',  'rw_renorm_lap'
     }
+
+    return_format:
+      - "dense"  -> returns a dense (num_nodes x num_nodes) tensor [default]
+      - "coo"    -> returns (edge_index: LongTensor [2, E], edge_weight: Tensor [E])
+      - "sparse" -> returns a torch.sparse_coo_tensor (num_nodes x num_nodes)
     """
     # 1) Handle adjacency vs Laplacian
     is_lap = gso_type.endswith('_lap')
@@ -61,9 +75,18 @@ def calc_gso_edge(edge_index: torch.LongTensor,
             num_nodes=num_nodes
         )
 
-    # Now return a dense GSO (so that your Cheb / GraphConv layers see a Tensor)
-    return torch.sparse_coo_tensor(
+    # Return in the requested format
+    if return_format == "coo":
+        return edge_index.to(device), edge_weight.to(device)
+
+    sparse = torch.sparse_coo_tensor(
         edge_index, edge_weight,
         (num_nodes, num_nodes),
         device=device
-    ).to_dense()
+    )
+
+    if return_format == "sparse":
+        return sparse
+
+    # default: dense
+    return sparse.to_dense()

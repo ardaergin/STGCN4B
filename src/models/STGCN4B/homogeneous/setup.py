@@ -1,4 +1,4 @@
-from typing import Any, Dict
+from typing import Any, Dict, Literal, Tuple, List, Union
 import torch
 import torch.nn as nn
 from torch_geometric.utils import dense_to_sparse
@@ -8,13 +8,22 @@ from ....utils.graph_utils import calc_gso_edge
 import logging; logger = logging.getLogger(__name__)
 
 
+# Return types
+GSODense  = torch.Tensor
+GSOCoo    = Tuple[torch.LongTensor, torch.Tensor]
+GSOSparse = torch.Tensor  # torch.sparse_coo_tensor
+
+GSOType = Union[GSODense, GSOCoo, GSOSparse]
+GSOList = List[GSOType]
+
 def create_gso(
         args: Any, 
         device: torch.device,
         n_nodes: int,
         adj_matrix: torch.Tensor,
         masked_adj_matrices: Dict[str, torch.Tensor] = None,
-) -> Any:
+        return_format: Literal["dense", "coo", "sparse"] = "dense",
+) -> Union[GSOType, GSOList]:
     """
     Creates the Graph Shift Operator (GSO) for the model.
     
@@ -28,6 +37,14 @@ def create_gso(
         n_nodes (int): The number of nodes in the graph.
         adj_matrix (torch.Tensor): The main adjacency matrix for the graph.
         masked_adj_matrices (Dict[str, torch.Tensor], optional): Additional masked adjacency matrices for dynamic GSOs.    
+        return_format: 
+            - "dense"  -> returns a dense (N x N) tensor [default]
+            - "coo"    -> returns (edge_index [2,E], edge_weight [E])
+            - "sparse" -> returns torch.sparse_coo_tensor (N x N)
+    
+    Returns:
+        If gso_mode == "static": a single GSO in `return_format`.
+        If gso_mode == "dynamic": a list of GSOs in `return_format` with length == stblock_num.
     """
     # Adjacency type check
     if args.adjacency_type == "weighted" and args.gso_type not in ("rw_norm_adj", "rw_renorm_adj"):
@@ -44,6 +61,7 @@ def create_gso(
         num_nodes           = n_nodes,
         gso_type            = args.gso_type,
         device              = device,
+        return_format       = return_format
     )
     if args.gso_mode == "static":
         return static_gso
@@ -56,9 +74,10 @@ def create_gso(
             edge_index, edge_weight = dense_to_sparse(mat)
             gso = calc_gso_edge(
                 edge_index, edge_weight, 
-                num_nodes   = n_nodes,
-                gso_type    = args.gso_type, 
-                device      = device
+                num_nodes       = n_nodes,
+                gso_type        = args.gso_type, 
+                device          = device,
+                return_format   = return_format
             )
             masked_gsos.append(gso)
         # Pad with the static GSO if not enough dynamic ones are available

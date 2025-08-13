@@ -1,17 +1,20 @@
+from typing import Dict, Any, List
 import torch
-from torch import nn
+from torch import nn, Tensor
+
 from .layers import HeteroSTBlock
-from typing import Dict, Any
 from ..homogeneous.layers import OutputBlock
+
 
 class HeterogeneousSTGCN(nn.Module):
     """The final, recommended Heterogeneous STGCN model."""
     def __init__(
         self,
-        args: Any,
-        metadata: tuple,
-        node_feature_dims: Dict[str, int],
-        task_type: str = "measurement_forecast",
+        args:               Any,
+        metadata:           tuple,
+        all_edges_by_block: List[Dict[tuple, Dict[str, Tensor]]],
+        node_feature_dims:  Dict[str, int],
+        task_type:          str = "measurement_forecast",
     ):
         super().__init__()
         self.task_type = task_type
@@ -24,7 +27,7 @@ class HeterogeneousSTGCN(nn.Module):
         # ST-Conv Blocks
         self.st_blocks = nn.ModuleList()
         current_dims = node_feature_dims
-        for _ in range(args.stblock_num):
+        for i in range(args.stblock_num):
             mid_dims = {nt: st_main for nt in node_types}
             out_dims = {nt: st_main for nt in node_types}
             self.st_blocks.append(HeteroSTBlock(
@@ -32,6 +35,7 @@ class HeterogeneousSTGCN(nn.Module):
                 ntype_channels_in       = current_dims,
                 ntype_channels_mid      = mid_dims,
                 ntype_channels_out      = out_dims,
+                static_edge_dict        = all_edges_by_block[i],
                 act_func                = args.act_func,
                 bias                    = args.enable_bias,
                 droprate                = args.droprate,
@@ -66,10 +70,9 @@ class HeterogeneousSTGCN(nn.Module):
         Forward pass assumes x_pack["features"] contains tensors of shape (B, C, T, N).
         """
         x_dict = x_pack["features"]
-        edge_index_dict = x_pack["edges"]
-        
+                
         for blk in self.st_blocks:
-            x_dict = blk(x_dict, edge_index_dict)
+            x_dict = blk(x_dict)
 
         # We only care about 'room' nodes for the final forecast, as that's our target
         x_room = x_dict['room'] # Shape: (B, C, T_out, N_room)

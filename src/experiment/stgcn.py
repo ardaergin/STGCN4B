@@ -448,13 +448,14 @@ class Homogeneous(STGCNExperimentRunner):
             gso = None
         else:
             A = self.input_dict["f_adj_mat_tensor"]
-            M = self.input_dict["m_adj_mat_tensors"]
+            M = self.input_dict["f_masked_adj_mat_tensors"]
             gso = create_gso(
                 args                = args,
                 device              = device,
                 n_nodes             = n_nodes,
                 adj_matrix          = A,
                 masked_adj_matrices = M if args.gso_mode == "dynamic" else None,
+                return_format       = "dense"
             )
         
         # Initialize model
@@ -590,13 +591,70 @@ class Heterogeneous(STGCNExperimentRunner):
     # Setup model
     ##########################
     
+    def _get_gsos(self, args: Any):
+        """Small helper for neatness."""
+        device = self.input_dict["device"]
+        n_room_nodes = self.input_dict['n_nodes']
+        logger.info(f"Number of room nodes: {n_room_nodes}")
+        
+        # Horizontal
+        A_h = self.input_dict["h_adj_mat_tensor"]
+        M_h = self.input_dict["h_masked_adj_mat_tensors"]
+        
+        gso_h = create_gso(
+            args                = args,
+            device              = device,
+            n_nodes             = n_room_nodes,
+            adj_matrix          = A_h,
+            masked_adj_matrices = M_h if args.gso_mode == "dynamic" else None,
+            return_format       = "coo"
+        )
+        if args.gso_mode == "static":
+            gso_h = [gso_h] * args.stblock_num
+
+        # Vertical
+        A_v = self.input_dict["v_adj_mat_tensor"]
+        M_v = self.input_dict["v_masked_adj_mat_tensors"]
+        
+        gso_v = create_gso(
+            args                = args,
+            device              = device,
+            n_nodes             = n_room_nodes,
+            adj_matrix          = A_v,
+            masked_adj_matrices = M_v if args.gso_mode == "dynamic" else None,
+            return_format       = "coo"
+        )
+        if args.gso_mode == "static":
+            gso_v = [gso_v] * args.stblock_num
+
+        return gso_h, gso_v
+    
+    def _get_outside_ei_and_ew(self):
+        outside_adj_vector = self.input_dict["o_adj_vec_tensor"]
+        outside_idx = 0
+        
+        # Find the indices of all rooms that have a connection from the outside
+        room_idx = np.nonzero(outside_adj_vector > 0)[0]
+                
+        # Get the corresponding weights for those connections
+        edge_weights = outside_adj_vector[room_idx].astype(np.float32)
+        edge_weights = torch.from_numpy(edge_weights).unsqueeze(1)
+        
+        # Convert to PyTorch tensors and assign to the hetero_data object
+        edge_index = torch.vstack((
+            torch.full_like(torch.as_tensor(room_idx), outside_idx, dtype=torch.long),
+            torch.as_tensor(room_idx, dtype=torch.long),
+        ))  # shape (2, E)
+        logger.info(f"Added {len(room_idx)} weighted outside-to-room edges")
+        return edge_index, edge_weights
+    
     def _setup_model(
             self, 
             args: Any
         ) -> nn.Module:
         """Set up the Heterogeneous STGCN model and training components."""
         device = self.input_dict["device"]
-
+        
         # 1.  Metadata & feature dimensions
         base_graph: HeteroData = self.input_dict["base_graph"] # single, static snapshot
         metadata = base_graph.metadata() # (node_types, edge_types)
@@ -609,12 +667,59 @@ class Heterogeneous(STGCNExperimentRunner):
         }        
         logger.info(f"Model input feature dimensions: {node_feature_dims}")
         
-        # 3. Instantiate the model
+        # 3. Prepare Edge Information for ALL ST-Blocks
+        
+        # 3A. Edges that stay the same throughout ST-blocks
+        
+        # Get outside edge
+        outside_edge_index, outside_edge_weight = self._get_outside_ei_and_ew()
+        
+        # Build the static base dictionary
+        static_edges_base = {}
+        for edge_type in base_graph.edge_types:
+            # Room to Room edges
+            if edge_type == ('room', 'adjacent_horizontal', 'room'):
+                continue
+            if edge_type == ('room', 'adjacent_vertical', 'room'):
+                continue
+            # Outside to Room edges
+            elif edge_type == ('outside', 'influences', 'room'):
+                static_edges_base[edge_type] = {
+                    'index': outside_edge_index.to(device),
+                    'weight': outside_edge_weight.to(device)
+                }
+            # All other edges (all of them are non-weighted)
+            else:
+                edge_store = base_graph[edge_type]
+                static_edges_base[edge_type] = {
+                    'index': edge_store.edge_index.to(device),
+                    'weight': None
+                }
+        
+        # 3B. Room to room edges that change throughout ST-blocks
+        gso_h, gso_v = self._get_gsos(args)
+        
+        # 3C. Combine base edges with per-block room edges
+        all_edges_by_block = []
+        for i in range(args.stblock_num):
+            # Non-room edges
+            edges_for_this_block = deepcopy(static_edges_base)
+            # Room edges: Horizontal
+            ei_h, ew_h = gso_h[i]
+            edges_for_this_block[('room', 'adjacent_horizontal', 'room')] = {'index': ei_h, 'weight': ew_h}
+            # Room edges: Vertical
+            ei_v, ew_v = gso_v[i]
+            edges_for_this_block[('room', 'adjacent_vertical', 'room')] = {'index': ei_v, 'weight': ew_v}
+            
+            all_edges_by_block.append(edges_for_this_block)
+        
+        # 4. Instantiate the model
         model = HeterogeneousSTGCN(
             args                = args,
             metadata            = metadata,
             node_feature_dims   = node_feature_dims,
             task_type           = args.task_type,
+            all_edges_by_block  = all_edges_by_block,
         ).to(device)
         if self.args.compile_model: 
             model = self._compile_model(args, model)

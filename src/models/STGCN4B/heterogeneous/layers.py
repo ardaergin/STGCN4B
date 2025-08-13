@@ -63,6 +63,7 @@ class HeteroSTBlock(nn.Module):
             ntype_channels_in:      Mapping[str, int],
             ntype_channels_mid:     Mapping[str, int],
             ntype_channels_out:     Mapping[str, int],
+            static_edge_dict:       Dict[tuple, Dict[str, Tensor]],
             act_func:               str = "glu",
             bias:                   bool = True,
             droprate:               float = 0.0,
@@ -77,6 +78,7 @@ class HeteroSTBlock(nn.Module):
         super().__init__()
         self.bidir_p2d = bidir_p2d
         self.bidir_d2r = bidir_d2r
+        self.static_edge_dict = static_edge_dict
         
         # Temporal layer 1
         self.temp1 = HeteroTemporalBlock(ntype_channels_in, ntype_channels_mid, Kt, act_func)
@@ -174,13 +176,15 @@ class HeteroSTBlock(nn.Module):
                 in_channels     = ntype_channels_mid['room'],
                 out_channels    = ntype_channels_mid['room'],
                 bias            = bias,
-                add_self_loops  = True
+                add_self_loops  = False,
+                normalize       = False,
             ),
             ('room', 'adjacent_vertical', 'room'): GCNConv(
                 in_channels     = ntype_channels_mid['room'],
                 out_channels    = ntype_channels_mid['room'],
                 bias            = bias,
-                add_self_loops  = True
+                add_self_loops  = False,
+                normalize       = False,
             ),
             }, aggr=aggr
         )
@@ -247,28 +251,22 @@ class HeteroSTBlock(nn.Module):
         return (1 - alpha_reshaped) * x_old + alpha_reshaped * x_new
     
     @staticmethod
-    def _tile_edge_index_over_time(
-        edge_index_B: Tensor,
+    def _tile_edge_index_over_bt(
+        edge_index: Tensor,  # (2, E) single-graph indices
         B: int,
         T: int,
         N_src: int,
         N_dst: int,
-        device: torch.device
+        device: torch.device,
     ) -> Tensor:
-        """
-        Given batched-over-B edge_index (2, E_B), tile it over T time steps so indices
-        address features flattened over (B * T) graphs per node type.
-        """
-        # Offsets per time slice for src/dst types
-        # shape: (T, 1)
-        off_src = (torch.arange(T, device=device) * (B * N_src)).view(T, 1)
-        off_dst = (torch.arange(T, device=device) * (B * N_dst)).view(T, 1)
-
-        # Broadcast-add offsets, then reshape back to (2, T*E_B)
-        src = edge_index_B[0].unsqueeze(0) + off_src  # (T, E_B)
-        dst = edge_index_B[1].unsqueeze(0) + off_dst  # (T, E_B)
-        edge_index_BT = torch.stack([src.reshape(-1), dst.reshape(-1)], dim=0)
-        return edge_index_BT.long()
+        # indices layout after _flat_bt: idx = t*(B*N) + b*N + n
+        t = torch.arange(T, device=device).view(T,1).repeat(1,B).reshape(-1)  # [T*B]
+        b = torch.arange(B, device=device).view(1,B).repeat(T,1).reshape(-1)  # [T*B]
+        off_src = t * (B*N_src) + b * N_src
+        off_dst = t * (B*N_dst) + b * N_dst
+        src = edge_index[0].unsqueeze(0) + off_src.view(-1,1)   # [T*B,E]
+        dst = edge_index[1].unsqueeze(0) + off_dst.view(-1,1)   # [T*B,E]
+        return torch.stack([src.reshape(-1), dst.reshape(-1)], dim=0).long()
     
     @staticmethod
     def _flat_bt(x: Tensor) -> Tensor:
@@ -288,7 +286,6 @@ class HeteroSTBlock(nn.Module):
     def forward(
         self,
         x_dict: Dict[str, Tensor],          # each: (B, C, T, N)
-        edge_index_dict: Dict[tuple, Dict[str, Tensor]]  # {"index": Long[2,E_B], "weight": Optional[...]}
     ) -> Dict[str, Tensor]:
         # ---- Temporal 1 ----
         x_mid = self.temp1(x_dict)  # dict: (B, C_mid, T1, N)
@@ -299,7 +296,8 @@ class HeteroSTBlock(nn.Module):
         N_dev  = x_mid['device'].shape[3]
         N_prop = x_mid['property'].shape[3]
         device = x_mid['room'].device
-
+        edge_index_dict = self.static_edge_dict
+        
         # -------- Vectorized spatial pipeline --------
         # Flatten (B, T1) into one big "batch" for PyG
         x_flat = {
@@ -311,12 +309,12 @@ class HeteroSTBlock(nn.Module):
         
         # ---- Stage 1: property -> device (binary) ----
         ei_p2d_B  = edge_index_dict[('property', 'measured_by', 'device')]['index'].to(device)
-        ei_p2d_BT = self._tile_edge_index_over_time(ei_p2d_B, B=B, T=T1, N_src=N_prop, N_dst=N_dev, device=device)
+        ei_p2d_BT = self._tile_edge_index_over_bt(ei_p2d_B, B=B, T=T1, N_src=N_prop, N_dst=N_dev, device=device)
 
         edge_idx_1 = {('property', 'measured_by', 'device'): ei_p2d_BT}
         if self.bidir_p2d:
             ei_d2p_B  = edge_index_dict[('device', 'measures', 'property')]['index'].to(device)
-            ei_d2p_BT = self._tile_edge_index_over_time(ei_d2p_B, B=B, T=T1, N_src=N_dev, N_dst=N_prop, device=device)
+            ei_d2p_BT = self._tile_edge_index_over_bt(ei_d2p_B, B=B, T=T1, N_src=N_dev, N_dst=N_prop, device=device)
             edge_idx_1[('device', 'measures', 'property')] = ei_d2p_BT
 
         out_bi_1 = self.hetero_conv_1(
@@ -331,12 +329,12 @@ class HeteroSTBlock(nn.Module):
 
         # ---- Stage 2: device -> room (binary) ----
         ei_d2r_B  = edge_index_dict[('device', 'contained_in', 'room')]['index'].to(device)
-        ei_d2r_BT = self._tile_edge_index_over_time(ei_d2r_B, B=B, T=T1, N_src=N_dev, N_dst=N_room, device=device)
+        ei_d2r_BT = self._tile_edge_index_over_bt(ei_d2r_B, B=B, T=T1, N_src=N_dev, N_dst=N_room, device=device)
         
         edge_idx_2 = {('device', 'contained_in', 'room'): ei_d2r_BT}
         if self.bidir_d2r:
             ei_r2d_B  = edge_index_dict[('room', 'contains', 'device')]['index'].to(device)
-            ei_r2d_BT = self._tile_edge_index_over_time(ei_r2d_B, B=B, T=T1, N_src=N_room, N_dst=N_dev, device=device)
+            ei_r2d_BT = self._tile_edge_index_over_bt(ei_r2d_B, B=B, T=T1, N_src=N_room, N_dst=N_dev, device=device)
             edge_idx_2[('room', 'contains', 'device')] = ei_r2d_BT
         
         out_bi_2 = self.hetero_conv_2(
@@ -368,25 +366,17 @@ class HeteroSTBlock(nn.Module):
         o_proj = o_proj.permute(0, 2, 1).unsqueeze(-1)                              # (B, C_room, T1, 1)
 
         # Build per-batch room weights from ('outside','influences','room') edges
-        out_edge = edge_index_dict[('outside', 'influences', 'room')]
-        dst_idx_B = out_edge['index'][1].to(device)                 # (E_B,)
-        w_B = out_edge['weight']
-        if w_B is None:
-            w_B = torch.ones_like(dst_idx_B, dtype=o_proj.dtype, device=device)
-        else:
-            w_B = w_B.to(device).view(-1).to(dtype=o_proj.dtype)    # (E_B,)
+        dst = edge_index_dict[('outside','influences','room')]['index'][1].to(device)  # (E,)
+        w   = edge_index_dict[('outside','influences','room')]['weight']
+        w   = (torch.ones_like(dst, dtype=o_proj.dtype, device=device) if w is None
+            else w.to(device).view(-1).to(o_proj.dtype))  # (E,)
 
-        # Convert global batched indices -> (batch_id, local_room_id)
-        batch_id = dst_idx_B // N_room                               # (E_B,)
-        room_loc = dst_idx_B %  N_room                               # (E_B,)
+        W_room = torch.zeros(N_room, dtype=o_proj.dtype, device=device)
+        W_room.index_add_(0, dst, w)              # (N_room,)
 
-        # Dense weight matrix W_out->room: (B, N_room)
-        W = torch.zeros(B, N_room, dtype=o_proj.dtype, device=device)
-        W.index_put_((batch_id, room_loc), w_B, accumulate=True)
-
-        # Broadcast outside using weights: (B, 1, 1, N_room)
-        W = W.unsqueeze(1).unsqueeze(1)                              # (B, 1, 1, N_room)
-        o_proj = o_proj * W                                          # (B, C_room, T1, N_room)
+        # broadcast to all batches: (B,1,1,N_room)
+        W = W_room.view(1,1,1,N_room).expand(B, 1, 1, N_room)
+        o_proj = o_proj * W
 
         # Gated mixing of broadcasts
         t_mix = self._blend_with_gate(self.g_time2room,    torch.zeros_like(x_room), t_proj)
@@ -402,22 +392,22 @@ class HeteroSTBlock(nn.Module):
         # Horizontal
         ei_rh_B = edge_index_dict[('room', 'adjacent_horizontal', 'room')]['index'].to(device)
         ew_rh_B = edge_index_dict[('room', 'adjacent_horizontal', 'room')]['weight']
-        ei_rh_BT = self._tile_edge_index_over_time(
+        ei_rh_BT = self._tile_edge_index_over_bt(
             ei_rh_B, B=B, T=T1, N_src=N_room, N_dst=N_room, device=device
         )
         ew_rh_BT = None
-        if ew_rh_B is not None:
-            ew_rh_BT = ew_rh_B.to(device).view(-1).repeat(T1)        # (T1 * E_B,)
 
         # Vertical
         ei_rv_B = edge_index_dict[('room', 'adjacent_vertical', 'room')]['index'].to(device)
         ew_rv_B = edge_index_dict[('room', 'adjacent_vertical', 'room')]['weight']
-        ei_rv_BT = self._tile_edge_index_over_time(
+        ei_rv_BT = self._tile_edge_index_over_bt(
             ei_rv_B, B=B, T=T1, N_src=N_room, N_dst=N_room, device=device
         )
         ew_rv_BT = None
-        if ew_rv_B is not None:
-            ew_rv_BT = ew_rv_B.to(device).view(-1).repeat(T1)
+
+        # Room to room weights
+        ew_rh_BT = ew_rh_B.to(device).view(-1).repeat(T1 * B) if ew_rh_B is not None else None
+        ew_rv_BT = ew_rv_B.to(device).view(-1).repeat(T1 * B) if ew_rv_B is not None else None
 
         # Run GCNs (weighted where provided)
         out_room_dict = self.hetero_conv_3(

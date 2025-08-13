@@ -487,17 +487,18 @@ def to_device(
         }
 
         # 2. Move all edge-related tensors to the device
-        edges_on_device = {}
-        for etype, edge_contents in data['edges'].items():
-            # edge_contents is a dict like {'index': tensor, 'weight': tensor_or_none}
-            index_tensor = edge_contents['index'].to(device, non_blocking=True)
-            weight_tensor = None
-            if edge_contents['weight'] is not None:
-                weight_tensor = edge_contents['weight'].to(device, non_blocking=True)
+        # edges_on_device = {}
+        # for etype, edge_contents in data['edges'].items():
+        #     # edge_contents is a dict like {'index': tensor, 'weight': tensor_or_none}
+        #     index_tensor = edge_contents['index'].to(device, non_blocking=True)
+        #     weight_tensor = None
+        #     if edge_contents['weight'] is not None:
+        #         weight_tensor = edge_contents['weight'].to(device, non_blocking=True)
             
-            edges_on_device[etype] = {'index': index_tensor, 'weight': weight_tensor}
+        #     edges_on_device[etype] = {'index': index_tensor, 'weight': weight_tensor}
 
-        return {'features': features_on_device, 'edges': edges_on_device}
+        # return {'features': features_on_device, 'edges': edges_on_device}
+        return {'features': features_on_device}
 
     # Homogeneous data is a single tensor
     elif isinstance(data, torch.Tensor):

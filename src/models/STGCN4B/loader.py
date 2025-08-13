@@ -275,13 +275,9 @@ def hetero_collate(
     (1) Transposes the outer list to group snapshots by time,
     (2) stacks node features so the network receives dense tensors.
     
-    Note that this implementation assumes that the graph's edge structure is static.
-    This is the case for our datasets, but just keep this in mind.
-
     Returns
     -------
-    x_pack   : {"features": Dict[str, Tensor]  # (B, T, N, C)
-                "edges":    Dict[(src, rel, dst), LongTensor]}
+    x_pack   : {"features": Dict[str, Tensor]  # (B, T, N, C)}
     y_batch  : Tensor            (B, ...)
     m_batch  : Tensor            (B, ...)
     s_batch  : Tensor            (B, ...)
@@ -312,20 +308,20 @@ def hetero_collate(
         # Permute to (B, C, T, N) to mirror the homogeneous format
         feat_dict[ntype] = tensor_b_t_n_c.permute(0, 3, 1, 2)
     
-    last_snaps = [x_list[-1] for x_list in x_lists]
-    last_batch = Batch.from_data_list(last_snaps)
-    edge_dict = {}
-    for edge_type in last_batch.edge_types:
-        edge_store = last_batch[edge_type]
-        edge_dict[edge_type] = {
-            'index': edge_store.edge_index,
-            'weight': getattr(edge_store, 'edge_attr', None)
-        }
+    # last_snaps = [x_list[-1] for x_list in x_lists]
+    # last_batch = Batch.from_data_list(last_snaps)
+    # edge_dict = {}
+    # for edge_type in last_batch.edge_types:
+    #     edge_store = last_batch[edge_type]
+    #     edge_dict[edge_type] = {
+    #         'index': edge_store.edge_index,
+    #         'weight': getattr(edge_store, 'edge_attr', None)
+    #     }
 
     # Stack the features and edges into a single dictionary
     x_pack = {
         "features": feat_dict, 
-        "edges": edge_dict
+        # "edges": edge_dict
     }
     
     # Stack y, m, s (same as homogeneous collate)
