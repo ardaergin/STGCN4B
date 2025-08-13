@@ -39,6 +39,7 @@ class HeterogeneousSTGCN(nn.Module):
                 act_func                = args.act_func,
                 bias                    = args.enable_bias,
                 droprate                = args.droprate,
+                droprate_by_type        = {'time': 0.0, 'outside': 0.0},
                 aggr                    = args.aggr_type,
                 heads                   = args.att_heads,
                 gconv_type_p2d          = args.gconv_type_p2d,
@@ -62,7 +63,7 @@ class HeterogeneousSTGCN(nn.Module):
             n_vertex                    = 1, # We already did the reshaping
             act_func                    = args.act_func,
             bias                        = args.enable_bias,
-            droprate                    = args.droprate,
+            droprate                    = 0.0,
         )
 
     def forward(self, x_pack: Dict[str, Any]):

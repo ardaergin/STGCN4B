@@ -67,6 +67,7 @@ class HeteroSTBlock(nn.Module):
             act_func:               str = "glu",
             bias:                   bool = True,
             droprate:               float = 0.0,
+            droprate_by_type:       Dict[str,float] | None = None,
             aggr:                   str = "sum",
             heads:                  int = 4,
             gconv_type_p2d:         str = "sage",
@@ -199,11 +200,12 @@ class HeteroSTBlock(nn.Module):
         
         # LayerNorm and Dropout
         # NOTE: LayerNorm expects (..., C) so we will permute before applying it
-        self.norms = nn.ModuleDict({
-            ntype: nn.LayerNorm(C_out) for ntype, C_out in ntype_channels_out.items()
+        self.norms = nn.ModuleDict({ntype: nn.LayerNorm(C_out) for ntype, C_out in ntype_channels_out.items()})
+        self.dropouts = nn.ModuleDict({
+            ntype: nn.Dropout((droprate_by_type or {}).get(ntype, droprate))
+            for ntype in ntype_channels_out.keys()
         })
-        self.dropout = nn.Dropout(droprate)
-
+        
         # Learnable gates
         self.gate_mode = gate_mode
 
@@ -446,6 +448,7 @@ class HeteroSTBlock(nn.Module):
             # (B, C, T, N) -> (B, T, N, C) -> LN(C) -> back
             x_perm = x.permute(0, 2, 3, 1)
             x_norm = self.norms[ntype](x_perm)
-            final_x[ntype] = self.dropout(x_norm).permute(0, 3, 1, 2)
+            x_do   = self.dropouts[ntype](x_norm) # type-specific dropout
+            final_x[ntype] = x_do.permute(0, 3, 1, 2)
 
         return final_x

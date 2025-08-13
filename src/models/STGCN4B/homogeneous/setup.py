@@ -89,18 +89,45 @@ def create_gso(
         raise ValueError(f"Unknown gso_mode: {args.gso_mode!r}.")
 
 def create_optimizer(args: Any, model: nn.Module) -> torch.optim.Optimizer:
-    """Creates the optimizer for the model."""
-    if args.optimizer == 'adam':
-        optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.weight_decay_rate)
-    elif args.optimizer == 'adamw':
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay_rate)
+    decay, no_decay = [], []
+    seen = set()
+
+    for n, p in model.named_parameters():
+        if not p.requires_grad or id(p) in seen:
+            continue
+        seen.add(id(p))
+
+        name_l = n.lower()
+
+        is_bias      = n.endswith(".bias")
+        is_norm      = ("norm" in name_l)  # catches self.norms[...] LayerNorms
+        is_gate      = ("g_" in n)         # g_time2room, g_outside2room, etc.
+        is_singleton = (".time_proj_room" in n) or (".outside_proj" in n)
+
+        if is_bias or is_norm or is_gate or is_singleton:
+            no_decay.append(p)
+        else:
+            decay.append(p)
+
+    param_groups = [
+        {"params": decay, "weight_decay": args.weight_decay_rate},
+        {"params": no_decay, "weight_decay": 0.0},
+    ]
+
+    # Prefer decoupled WD
+    if args.optimizer == 'adamw':
+        opt = torch.optim.AdamW(param_groups, lr=args.lr)
+    elif args.optimizer == 'adam':
+        # Adam uses L2-style weight decay; if you care about true decoupling, prefer AdamW.
+        opt = torch.optim.Adam(param_groups, lr=args.lr)
     else:
-        optimizer = torch.optim.SGD(model.parameters(), lr=args.lr, momentum=0.9, weight_decay=args.weight_decay_rate)
-    
-    logger.info(f"Using optimizer: {optimizer.__class__.__name__} "
-                f"with lr={args.lr:.6f}, "
-                f"weight_decay={args.weight_decay_rate:.6f}")
-    return optimizer
+        opt = torch.optim.SGD(param_groups, lr=args.lr, momentum=0.9)
+
+    num_decay = sum(p.numel() for p in decay)
+    num_no_decay = sum(p.numel() for p in no_decay)
+    print(f"[WD groups] decay={num_decay:,} params, no_decay={num_no_decay:,} params")
+
+    return opt
 
 def create_scheduler(args: Any, optimizer: torch.optim.Optimizer) -> torch.optim.lr_scheduler._LRScheduler:
     """Creates the learning rate scheduler."""
