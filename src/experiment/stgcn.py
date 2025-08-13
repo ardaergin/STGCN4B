@@ -635,10 +635,10 @@ class Heterogeneous(STGCNExperimentRunner):
         
         # Find the indices of all rooms that have a connection from the outside
         room_idx = np.nonzero(outside_adj_vector > 0)[0]
-                
+        
         # Get the corresponding weights for those connections
-        edge_weights = outside_adj_vector[room_idx].astype(np.float32)
-        edge_weights = torch.from_numpy(edge_weights).unsqueeze(1)
+        edge_weights = outside_adj_vector[room_idx]
+        edge_weights = edge_weights.unsqueeze(1)
         
         # Convert to PyTorch tensors and assign to the hetero_data object
         edge_index = torch.vstack((
@@ -647,7 +647,7 @@ class Heterogeneous(STGCNExperimentRunner):
         ))  # shape (2, E)
         logger.info(f"Added {len(room_idx)} weighted outside-to-room edges")
         return edge_index, edge_weights
-    
+        
     def _setup_model(
             self, 
             args: Any
