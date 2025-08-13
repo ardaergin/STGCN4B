@@ -1,7 +1,7 @@
 import pandas as pd
 from shapely.geometry import Polygon
 import numpy as np
-from typing import Dict, List, Any
+from typing import Any, Dict, List, Tuple
 from collections import defaultdict
 from rdflib.term import URIRef
 
@@ -536,7 +536,7 @@ class SpatialBuilderMixin:
                     if not poly2: 
                         continue
 
-                    # Add binary adjacency if above the min_overlap_area threshold
+                    # Add weighted adjacency if above the min_overlap_area threshold
                     overlap = poly1.intersection(poly2).area
                     adj_df.at[uri1_str, uri2_str] = (overlap / poly1.area) if overlap > min_overlap_area else min_weight
         return adj_df
@@ -600,9 +600,6 @@ class SpatialBuilderMixin:
         
         Returns:
             np.ndarray: Combined adjacency matrix
-        
-        Raises:
-            ValueError: If matrices have different shapes.
         """
         if horizontal_adj_matrix.shape != vertical_adj_matrix.shape:
             raise ValueError(
@@ -678,6 +675,61 @@ class SpatialBuilderMixin:
         logger.info(f"Created {len(masked_adjs)} masked adjacency matrices.")
 
         return masked_adjs
+    
+    def separate_masked_adjacencies(
+        self,
+        masked_adjs: Dict[int, np.ndarray],
+        horizontal_adj_matrix: np.ndarray,
+        vertical_adj_matrix: np.ndarray
+    ) -> Tuple[Dict[int, np.ndarray], Dict[int, np.ndarray]]:
+        """
+        Separates a dictionary of combined masked adjacency matrices into
+        horizontal and vertical components.
+
+        This function uses the original horizontal and vertical matrices as
+        filters to decompose each time-step's masked matrix.
+
+        Args:
+            masked_adjs (Dict[int, np.ndarray]): The dictionary of combined masked
+                adjacency matrices, typically from create_masked_adjacency_matrices.
+            horizontal_adj_matrix (np.ndarray): The original, unmasked horizontal
+                adjacency matrix.
+            vertical_adj_matrix (np.ndarray): The original, unmasked vertical
+                adjacency matrix.
+
+        Returns:
+            Dict[str, Dict[int, np.ndarray]]: A dictionary with 'horizontal' and
+                'vertical' keys, each containing a dictionary mapping the
+                propagation step to its corresponding masked adjacency matrix.
+                e.g., {'horizontal': {0: matrix, 1: matrix}, 'vertical': {0: matrix, ...}}
+        """
+        if horizontal_adj_matrix.shape != vertical_adj_matrix.shape:
+            raise ValueError("Original horizontal and vertical matrices must have the same shape.")
+        
+        # Create boolean masks to identify the locations of horizontal and vertical edges.
+        # An entry is True if a connection exists in the original matrix.
+        h_mask = horizontal_adj_matrix != 0
+        v_mask = vertical_adj_matrix != 0
+        
+        horizontal_masked_adj = {}
+        vertical_masked_adj = {}
+
+        logger.info(f"Separating {len(masked_adjs)} masked matrices into horizontal and vertical components...")
+
+        for step, combined_adj in masked_adjs.items():
+            if combined_adj.shape != h_mask.shape:
+                raise ValueError(f"Shape mismatch at step {step}. Combined matrix is "
+                                 f"{combined_adj.shape}, but filter masks are {h_mask.shape}.")
+            
+            horizontal_masked_adj[step] = combined_adj * h_mask
+            vertical_masked_adj[step] = combined_adj * v_mask
+
+        h_conns_last_step = np.sum(horizontal_masked_adj[max(masked_adjs.keys())] > 0)
+        v_conns_last_step = np.sum(vertical_masked_adj[max(masked_adjs.keys())] > 0)
+        logger.info(f"Separation complete. At the final step, there are {h_conns_last_step} "
+                    f"horizontal and {v_conns_last_step} vertical connections.")
+        
+        return horizontal_masked_adj, vertical_masked_adj
     
     #############################
     # Outside Adjacency

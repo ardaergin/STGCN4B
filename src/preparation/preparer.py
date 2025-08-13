@@ -351,14 +351,16 @@ class STGCNDataPreparer(BaseDataPreparer):
         The loaded metadata includes both "binary" and "weighted" adjacency dictionaries.
         
         Both of the dictionaries have:
-        1. "room_URIs_str":             List[str] (N)
-        2. "n_nodes":                   int (N)
-        3. "horizontal_adj_matrix":     np.ndarray (NxN)
-        4. "vertical_adj_matrix":       np.ndarray (NxN)
-        5. "full_adj_matrix":           np.ndarray (NxN)
-        6. "masked_adj_matrices":       Dict[int, np.ndarray (NxN)]
-        7. "outside_adj_vector":        np.ndarray (N)
-        
+        1. "room_URIs_str":                     List[str] (N)
+        2. "n_nodes":                           int (N)
+        3. "horizontal_adj_matrix":             np.ndarray (NxN)
+        4. "vertical_adj_matrix":               np.ndarray (NxN)
+        5. "full_adj_matrix":                   np.ndarray (NxN)
+        6. "horizontal_masked_adj_matrices":    Dict[int, np.ndarray (NxN)]
+        7. "vertical_masked_adj_matrices":      Dict[int, np.ndarray (NxN)]
+        8. "full_masked_adj_matrices":          Dict[int, np.ndarray (NxN)]
+        9. "outside_adj_vector":                np.ndarray (N)
+
         We get the requested "binary" or "weighted" adjacency dictionary.
         Then, we convert them into tensors and return them.
         """
@@ -372,23 +374,33 @@ class STGCNDataPreparer(BaseDataPreparer):
         o_adj_vec_tensor = torch.from_numpy(adjacency_data["outside_adj_vector"]).float().to(device)
         
         # List of masked adjacency matrices as tensors
-        m_adj_mat_tensors = {
+        h_masked_adj_mat_tensors = {
             k: torch.from_numpy(v).float().to(device)
-            for k, v in adjacency_data["masked_adj_matrices"].items()
-            }
+            for k, v in adjacency_data["horizontal_masked_adj_matrices"].items()
+        }
+        v_masked_adj_mat_tensors = {
+            k: torch.from_numpy(v).float().to(device)
+            for k, v in adjacency_data["vertical_masked_adj_matrices"].items()
+        }
+        f_masked_adj_mat_tensors = {
+            k: torch.from_numpy(v).float().to(device)
+            for k, v in adjacency_data["full_masked_adj_matrices"].items()
+        }
         
         # Non-tensor
         room_URIs_str = adjacency_data["room_URIs_str"]
         n_nodes = adjacency_data["n_nodes"]
         
         return {
-            "room_URIs_str":        room_URIs_str,
-            "n_nodes":              n_nodes,
-            "h_adj_mat_tensor":     h_adj_mat_tensor,
-            "v_adj_mat_tensor":     v_adj_mat_tensor,
-            "f_adj_mat_tensor":     f_adj_mat_tensor,
-            "m_adj_mat_tensors":    m_adj_mat_tensors,
-            "o_adj_vec_tensor":     o_adj_vec_tensor,
+            "room_URIs_str":                room_URIs_str,
+            "n_nodes":                      n_nodes,
+            "h_adj_mat_tensor":             h_adj_mat_tensor,
+            "v_adj_mat_tensor":             v_adj_mat_tensor,
+            "f_adj_mat_tensor":             f_adj_mat_tensor,
+            "h_masked_adj_mat_tensors":     h_masked_adj_mat_tensors,
+            "v_masked_adj_mat_tensors":     v_masked_adj_mat_tensors,
+            "f_masked_adj_mat_tensors":     f_masked_adj_mat_tensors,
+            "o_adj_vec_tensor":             o_adj_vec_tensor,
         }
     
     def _post_prepare_target(self) -> None:
@@ -514,23 +526,27 @@ class STGCNDataPreparer(BaseDataPreparer):
     def _prepare_input_dict(self):
         """Common ground for all STGCNDataPreparer subclasses. Subclasses add feature data."""
         self.input_dict = {
-            "device":               self.device,
+            "device":                       self.device,
             # Data indices in block format
-            "blocks":               self.metadata["blocks"],
-            "block_size":           self.metadata["block_size"],
+            "blocks":                       self.metadata["blocks"],
+            "block_size":                   self.metadata["block_size"],
             # Graph structure
-            "room_URIs_str":        self.graph_dict["room_URIs_str"],
-            "n_nodes":              self.graph_dict["n_nodes"],
-            # Adjacency
-            "h_adj_mat_tensor":     self.graph_dict["h_adj_mat_tensor"],
-            "v_adj_mat_tensor":     self.graph_dict["v_adj_mat_tensor"],
-            "f_adj_mat_tensor":     self.graph_dict["f_adj_mat_tensor"],
-            "m_adj_mat_tensors":    self.graph_dict["m_adj_mat_tensors"],
-            "o_adj_vec_tensor":     self.graph_dict["o_adj_vec_tensor"],
+            "room_URIs_str":                self.graph_dict["room_URIs_str"],
+            "n_nodes":                      self.graph_dict["n_nodes"],
+            # Adjacency matrix
+            "h_adj_mat_tensor":             self.graph_dict["h_adj_mat_tensor"],
+            "v_adj_mat_tensor":             self.graph_dict["v_adj_mat_tensor"],
+            "f_adj_mat_tensor":             self.graph_dict["f_adj_mat_tensor"],
+            # Masked adjacency matrices
+            "h_masked_adj_mat_tensors":     self.graph_dict["h_masked_adj_mat_tensors"],
+            "v_masked_adj_mat_tensors":     self.graph_dict["v_masked_adj_mat_tensors"],
+            "f_masked_adj_mat_tensors":     self.graph_dict["f_masked_adj_mat_tensors"],
+            # Outside adjacency
+            "o_adj_vec_tensor":             self.graph_dict["o_adj_vec_tensor"],
             # Target
-            "target_array":         self.target_data["target_array"],
-            "target_mask":          self.target_data["target_mask"],
-            "target_source_array":  self.target_data["target_source_array"],
+            "target_array":                 self.target_data["target_array"],
+            "target_mask":                  self.target_data["target_mask"],
+            "target_source_array":          self.target_data["target_source_array"],
         }
 
 
@@ -579,6 +595,7 @@ class Heterogeneous(STGCNDataPreparer):
     def __init__(self, args: Any):
         super().__init__(args)
         assert args.graph_type == "heterogeneous", "Heterogeneous-STGCNDataPreparer only supports heterogeneous graph type."
+        assert args.weather_mode == "feature", "Heterogeneous-STGCNDataPreparer should only be used with weather mode 'feature'."
         self.hetero_input: Dict[str, Any] = {}
 
     def _load_data_from_disk(self) -> None:

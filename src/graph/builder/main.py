@@ -141,9 +141,16 @@ class OfficeGraphBuilder(
         )
         
         # Masked adjacency matrices
-        masked_adj_matrices = self.create_masked_adjacency_matrices(
+        full_masked_adj_matrices = self.create_masked_adjacency_matrices(
             adj_matrix              = full_adj_matrix,
             uri_str_list            = self.room_URIs_str
+        )
+        horizontal_masked_adj_matrices, vertical_masked_adj_matrices = (
+            self.separate_masked_adjacencies(
+                masked_adjs             = full_masked_adj_matrices,
+                horizontal_adj_matrix   = horizontal_adj_matrix,
+                vertical_adj_matrix     = vertical_adj_matrix
+            )
         )
         
         # Outside adjacency
@@ -156,16 +163,18 @@ class OfficeGraphBuilder(
         )
         
         adjacency_dict = {
-            "room_URIs_str":            self.room_URIs_str,
-            "n_nodes":                  len(self.room_URIs_str),
+            "room_URIs_str":                    self.room_URIs_str,
+            "n_nodes":                          len(self.room_URIs_str),
             
-            "horizontal_adj_matrix":    horizontal_adj_matrix,
-            "vertical_adj_matrix":      vertical_adj_matrix,
-            "full_adj_matrix":          full_adj_matrix,
-            
-            "masked_adj_matrices":      masked_adj_matrices,
-            
-            "outside_adj_vector":       outside_adj_vector,
+            "horizontal_adj_matrix":            horizontal_adj_matrix,
+            "vertical_adj_matrix":              vertical_adj_matrix,
+            "full_adj_matrix":                  full_adj_matrix,
+
+            "horizontal_masked_adj_matrices":   horizontal_masked_adj_matrices,
+            "vertical_masked_adj_matrices":     vertical_masked_adj_matrices,
+            "full_masked_adj_matrices":         full_masked_adj_matrices,
+
+            "outside_adj_vector":               outside_adj_vector,
         }
         return adjacency_dict
     

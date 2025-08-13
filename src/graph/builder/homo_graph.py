@@ -76,7 +76,7 @@ class HomogGraphBuilderMixin:
             The updated adjacency_dict with modified:
             - "room_URIs_str": Updated to include the outside URI
             - "full_adj_matrix": Updated to (N+1)x(N+1) matrix
-            - "masked_adj_matrices": Updated masked adjacency matrices
+            - "full_masked_adj_matrices": Updated masked adjacency matrices
         """
         adj_dict = adjacency_dict.copy()
 
@@ -117,6 +117,6 @@ class HomogGraphBuilderMixin:
         adj_dict["room_URIs_str"] = new_uri_list
         adj_dict["n_nodes"] += 1
         adj_dict["full_adj_matrix"] = new_adj_matrix
-        adj_dict["masked_adj_matrices"] = new_masked_adjs
+        adj_dict["full_masked_adj_matrices"] = new_masked_adjs
         
         return adj_dict
