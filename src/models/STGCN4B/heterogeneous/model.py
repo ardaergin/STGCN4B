@@ -4,6 +4,7 @@ from torch import nn, Tensor
 
 from .layers import HeteroSTBlock
 from ..homogeneous.layers import OutputBlock
+from ....config.args import build_channel_dicts
 
 
 class HeterogeneousSTGCN(nn.Module):
@@ -21,15 +22,32 @@ class HeterogeneousSTGCN(nn.Module):
         node_types = metadata[0]
         
         # Channel dimensions plan
-        st_main = args.st_main_channels
-        out_ch = args.output_channels
+        ch_mid_plan, ch_out_plan = build_channel_dicts(args)
+        
+        # Sanity check if GAT heads
+        if args.gconv_type_p2d == "gat":
+            dev_ch = ch_mid_plan["device"]
+            prop_ch = ch_mid_plan["property"]
+            if dev_ch % args.att_heads != 0:
+                raise ValueError(f"device mid channels ({dev_ch}) must be divisible by att_heads ({args.att_heads}) for GAT p->d")
+            if args.bidir_p2d and (prop_ch % args.att_heads != 0):
+                raise ValueError(f"property mid channels ({prop_ch}) must be divisible by att_heads ({args.att_heads}) for reverse GAT d->p")
+
+        if args.gconv_type_d2r == "gat":
+            room_ch = ch_mid_plan["room"]
+            dev_ch  = ch_mid_plan["device"]
+            if room_ch % args.att_heads != 0:
+                raise ValueError(f"room mid channels ({room_ch}) must be divisible by att_heads ({args.att_heads}) for GAT d->r")
+            if args.bidir_d2r and (dev_ch % args.att_heads != 0):
+                raise ValueError(f"device mid channels ({dev_ch}) must be divisible by att_heads ({args.att_heads}) for reverse GAT r->d")
         
         # ST-Conv Blocks
         self.st_blocks = nn.ModuleList()
-        current_dims = node_feature_dims
+        current_dims = dict(node_feature_dims)
+        
         for i in range(args.stblock_num):
-            mid_dims = {nt: st_main for nt in node_types}
-            out_dims = {nt: st_main for nt in node_types}
+            mid_dims = ch_mid_plan
+            out_dims = ch_out_plan
             self.st_blocks.append(HeteroSTBlock(
                 Kt                      = args.Kt,
                 ntype_channels_in       = current_dims,
@@ -54,7 +72,8 @@ class HeterogeneousSTGCN(nn.Module):
         self.Ko = args.n_his - (args.Kt - 1) * 2 * args.stblock_num
         if self.Ko <= 0:
             raise ValueError(f"Invalid architecture: Ko={self.Ko} <= 0.")
-
+        
+        out_ch = args.output_channels
         self.output_block = OutputBlock(
             Ko                          = self.Ko,
             last_block_channel          = current_dims['room'],

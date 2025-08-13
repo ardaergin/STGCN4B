@@ -479,6 +479,61 @@ def add_STGCN_args(parser):
                         choices=['scalar', 'channel'],
                         help='Gate mode for blending features.')
 
+    # Per-type channels. Two ways to pass them:
+    # (A) compact "room=64,device=32,property=32,time=8,outside=8"
+    parser.add_argument("--ch-mid", type=str, default="")   # optional
+    parser.add_argument("--ch-out", type=str, default="")   # optional
+
+    # (B) individual flags (used if present; otherwise fallback to compact or defaults)
+    parser.add_argument("--ch-room-mid", type=int, default=64)
+    parser.add_argument("--ch-device-mid", type=int, default=32)
+    parser.add_argument("--ch-property-mid", type=int, default=32)
+    parser.add_argument("--ch-time-mid", type=int, default=8)
+    parser.add_argument("--ch-outside-mid", type=int, default=8)
+
+    parser.add_argument("--ch-room-out", type=int, default=64)
+    parser.add_argument("--ch-device-out", type=int, default=32)
+    parser.add_argument("--ch-property-out", type=int, default=32)
+    parser.add_argument("--ch-time-out", type=int, default=8)
+    parser.add_argument("--ch-outside-out", type=int, default=8)
+
+def _parse_kv_ints(s: str) -> dict:
+    """
+    Parse 'room=64,device=32,property=32,time=8,outside=8' -> dict
+    """
+    out = {}
+    if not s:
+        return out
+    for kv in s.split(","):
+        k, v = kv.split("=")
+        out[k.strip()] = int(v)
+    return out
+
+def build_channel_dicts(args) -> tuple[dict, dict]:
+    """
+    Returns (mid_dict, out_dict) for node types you have.
+    Compact string values override individual flags. 
+    Missing keys fall back to the flag defaults.
+    """
+    compact_mid = _parse_kv_ints(args.ch_mid)
+    compact_out = _parse_kv_ints(args.ch_out)
+
+    mid = {
+        "room":     compact_mid.get("room",     args.ch_room_mid),
+        "device":   compact_mid.get("device",   args.ch_device_mid),
+        "property": compact_mid.get("property", args.ch_property_mid),
+        "time":     compact_mid.get("time",     args.ch_time_mid),
+        "outside":  compact_mid.get("outside",  args.ch_outside_mid),
+    }
+    out = {
+        "room":     compact_out.get("room",     args.ch_room_out),
+        "device":   compact_out.get("device",   args.ch_device_out),
+        "property": compact_out.get("property", args.ch_property_out),
+        "time":     compact_out.get("time",     args.ch_time_out),
+        "outside":  compact_out.get("outside",  args.ch_outside_out),
+    }
+    return mid, out
+
 def add_LightGBM_args(parser):
     """
     Tabular‐specific arguments for LightGBM training/evaluation.
