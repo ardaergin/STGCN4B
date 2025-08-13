@@ -88,45 +88,65 @@ def create_gso(
     else:
         raise ValueError(f"Unknown gso_mode: {args.gso_mode!r}.")
 
+_NORM_TYPES = (
+    nn.LayerNorm, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d,
+    nn.GroupNorm, nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d
+)
+_GATE_LEAF_NAMES = {
+    "g_p2d_dev", "g_d2p_prop", "g_d2r_room", "g_r2d_dev",
+    "g_time2room", "g_outside2room",
+}
+def _collect_no_decay_param_names(model: nn.Module) -> set[str]:
+    no_decay = set()
+
+    # 1) all params directly inside normalization modules
+    for mod_name, m in model.named_modules():
+        if isinstance(m, _NORM_TYPES):
+            for p_name, _ in m.named_parameters(recurse=False):
+                full = f"{mod_name}.{p_name}" if mod_name else p_name
+                no_decay.add(full)
+
+    # 2) gate scalars by exact leaf name
+    for n, _ in model.named_parameters():
+        leaf = n.rsplit(".", 1)[-1]
+        if leaf in _GATE_LEAF_NAMES:
+            no_decay.add(n)
+
+    # 3) singleton projections (time/outside) — exclude weight & bias
+    for n, _ in model.named_parameters():
+        if ".time_proj_room." in n or ".outside_proj." in n:
+            no_decay.add(n)
+
+    # 4) biases
+    for n, _ in model.named_parameters():
+        if n.endswith(".bias"):
+            no_decay.add(n)
+
+    return no_decay
+
 def create_optimizer(args: Any, model: nn.Module) -> torch.optim.Optimizer:
+    no_decay_names = _collect_no_decay_param_names(model)
+
     decay, no_decay = [], []
-    seen = set()
-
     for n, p in model.named_parameters():
-        if not p.requires_grad or id(p) in seen:
+        if not p.requires_grad:
             continue
-        seen.add(id(p))
-
-        name_l = n.lower()
-
-        is_bias      = n.endswith(".bias")
-        is_norm      = ("norm" in name_l)  # catches self.norms[...] LayerNorms
-        is_gate      = ("g_" in n)         # g_time2room, g_outside2room, etc.
-        is_singleton = (".time_proj_room" in n) or (".outside_proj" in n)
-
-        if is_bias or is_norm or is_gate or is_singleton:
-            no_decay.append(p)
-        else:
-            decay.append(p)
+        (no_decay if n in no_decay_names else decay).append(p)
 
     param_groups = [
-        {"params": decay, "weight_decay": args.weight_decay_rate},
+        {"params": decay,    "weight_decay": args.weight_decay_rate},
         {"params": no_decay, "weight_decay": 0.0},
     ]
 
-    # Prefer decoupled WD
-    if args.optimizer == 'adamw':
-        opt = torch.optim.AdamW(param_groups, lr=args.lr)
-    elif args.optimizer == 'adam':
-        # Adam uses L2-style weight decay; if you care about true decoupling, prefer AdamW.
-        opt = torch.optim.Adam(param_groups, lr=args.lr)
-    else:
-        opt = torch.optim.SGD(param_groups, lr=args.lr, momentum=0.9)
+    opt = (
+        torch.optim.AdamW(param_groups, lr=args.lr) if args.optimizer == "adamw"
+        else torch.optim.Adam(param_groups, lr=args.lr) if args.optimizer == "adam"
+        else torch.optim.SGD(param_groups, lr=args.lr, momentum=0.9)
+    )
 
-    num_decay = sum(p.numel() for p in decay)
-    num_no_decay = sum(p.numel() for p in no_decay)
-    print(f"[WD groups] decay={num_decay:,} params, no_decay={num_no_decay:,} params")
-
+    num_decay   = sum(p.numel() for p in decay)
+    num_nodcay  = sum(p.numel() for p in no_decay)
+    print(f"[WD groups] decay={num_decay:,} params, no_decay={num_nodcay:,} params")
     return opt
 
 def create_scheduler(args: Any, optimizer: torch.optim.Optimizer) -> torch.optim.lr_scheduler._LRScheduler:
