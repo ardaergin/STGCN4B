@@ -15,6 +15,7 @@ def calc_gso_edge(
         gso_type: str,
         device: torch.device,
         return_format: Literal["dense", "coo", "sparse"] = "dense",
+        transpose: bool = False,
 ) -> Union[GSODense, GSOCoo, GSOSparse]:
     """
     Compute a Graph Shift Operator (GSO).
@@ -31,7 +32,7 @@ def calc_gso_edge(
       - "coo"    -> returns (edge_index: LongTensor [2, E], edge_weight: Tensor [E])
       - "sparse" -> returns a torch.sparse_coo_tensor (num_nodes x num_nodes)
     """
-    
+        
     if gso_type == 'no_norm_only_self_loop':
         edge_index, edge_weight = add_self_loops(
             edge_index, edge_weight,
@@ -102,6 +103,10 @@ def calc_gso_edge(
                 normalization=norm_type,
                 num_nodes=num_nodes
             )
+
+    # Apply transpose at the very end, after normalization
+    if transpose:
+        edge_index = edge_index[[1, 0]]
     
     # Return in the requested format
     if return_format == "coo":
