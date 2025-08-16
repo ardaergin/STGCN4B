@@ -158,14 +158,24 @@ class HeteroSTBlock(nn.Module):
         
         # Stage 3: broadcast time node and outside node to room nodes
         ## time: no weights
-        self.time_proj_room = nn.Linear(
+        self.time_proj_scale = nn.Linear(
+            in_features         = ntype_channels_mid['time'],
+            out_features        = ntype_channels_mid['room'], 
+            bias                = bias
+        )
+        self.time_proj_shift = nn.Linear(
             in_features         = ntype_channels_mid['time'],
             out_features        = ntype_channels_mid['room'], 
             bias                = bias
         )
         ## outside: has outside-room weights!
-        self.outside_proj = nn.Linear(
-            in_features         = ntype_channels_mid['outside'],
+        self.outside_proj_scale = nn.Linear(
+            in_features         = ntype_channels_mid['outside'], 
+            out_features        = ntype_channels_mid['room'], 
+            bias                = bias
+        )
+        self.outside_proj_shift = nn.Linear(
+            in_features         = ntype_channels_mid['outside'], 
             out_features        = ntype_channels_mid['room'], 
             bias                = bias
         )
@@ -227,7 +237,7 @@ class HeteroSTBlock(nn.Module):
             self.g_r2d_dev  = make_gate(ntype_channels_mid['device'], init=-2.0)
 
         # broadcast gates (slightly on by default)
-        self.g_time2room    = make_gate(ntype_channels_mid['room'], init=0.0)
+        self.g_time2room    = make_gate(ntype_channels_mid['room'], init=2.0)
         self.g_outside2room = make_gate(ntype_channels_mid['room'], init=-2.0)
 
     @staticmethod
@@ -358,34 +368,41 @@ class HeteroSTBlock(nn.Module):
         x_prop = self._unflat_bt(x_flat['property'], B, T1, N_prop, C_prop_mid)
 
         # ---- Stage 3: broadcast time/outside -> room ----
-        # time: (B, C_t, T1, 1) -> project -> (B, C_room, T1, 1) -> broadcast to rooms
-        t_proj = self.time_proj_room(x_mid['time'].squeeze(-1).permute(0, 2, 1))  # (B, T1, C_room)
-        t_proj = t_proj.permute(0, 2, 1).unsqueeze(-1)                             # (B, C_room, T1, 1)
-        t_proj = t_proj.expand(-1, -1, -1, N_room)                                 # (B, C_room, T1, N_room)
-
-        # outside: (B, C_out, T1, 1) -> project -> (B, C_room, T1) then weight per room
-        o_proj = self.outside_proj(x_mid['outside'].squeeze(-1).permute(0, 2, 1))  # (B, T1, C_room)
-        o_proj = o_proj.permute(0, 2, 1).unsqueeze(-1)                              # (B, C_room, T1, 1)
-
-        # Build per-batch room weights from ('outside','influences','room') edges
-        dst = edge_index_dict[('outside','influences','room')]['index'][1].to(device)  # (E,)
-        w   = edge_index_dict[('outside','influences','room')]['weight']
-        w   = (torch.ones_like(dst, dtype=o_proj.dtype, device=device) if w is None
-            else w.to(device).view(-1).to(o_proj.dtype))  # (E,)
-
-        W_room = torch.zeros(N_room, dtype=o_proj.dtype, device=device)
-        W_room.index_add_(0, dst, w)              # (N_room,)
-
-        # broadcast to all batches: (B,1,1,N_room)
-        W = W_room.view(1,1,1,N_room).expand(B, 1, 1, N_room)
-        o_proj = o_proj * W
-
-        # Gated mixing of broadcasts
-        t_mix = self._blend_with_gate(self.g_time2room,    torch.zeros_like(x_room), t_proj)
-        o_mix = self._blend_with_gate(self.g_outside2room, torch.zeros_like(x_room), o_proj)
+        # --- 3a. Apply Time FiLM ---
+        time_features_flat = x_mid['time'].squeeze(-1).permute(0, 2, 1)  # (B, T1, C_time)
         
-        # Add broadcasts to room with learnable strength
-        x_room = x_room + t_mix + o_mix
+        gamma_time = self.time_proj_scale(time_features_flat).permute(0, 2, 1).unsqueeze(-1).expand_as(x_room)
+        beta_time = self.time_proj_shift(time_features_flat).permute(0, 2, 1).unsqueeze(-1).expand_as(x_room)
+
+        film_effect_time = (gamma_time * x_room) + beta_time
+        x_room_after_time = self._blend_with_gate(self.g_time2room, x_room, film_effect_time)
+
+        # --- 3b. Apply Outside FiLM (using the output from the time step) ---
+        outside_features_flat = x_mid['outside'].squeeze(-1).permute(0, 2, 1) # (B, T1, C_outside)
+
+        gamma_outside = self.outside_proj_scale(outside_features_flat).permute(0, 2, 1).unsqueeze(-1)
+        beta_outside = self.outside_proj_shift(outside_features_flat).permute(0, 2, 1).unsqueeze(-1)
+        
+        # Get static weights and expand them to the right shape for broadcasting
+        dst = self.static_edge_dict[('outside','influences','room')]['index'][1].to(device)
+        w = self.static_edge_dict[('outside','influences','room')]['weight']
+        w = (torch.ones_like(dst, dtype=gamma_outside.dtype, device=device) if w is None
+            else w.to(device).view(-1).to(gamma_outside.dtype))
+        
+        W_room = torch.zeros(N_room, dtype=gamma_outside.dtype, device=device)
+        W_room.index_add_(0, dst, w)
+        W = W_room.view(1, 1, 1, N_room).expand(B, -1, T1, -1) # Shape: (B, 1, T1, N_room)
+
+        # Use static weights to scale the FiLM parameters
+        gamma_outside_weighted = gamma_outside * W
+        beta_outside_weighted = beta_outside * W
+        
+        # Apply the weighted FiLM transformation to the time-modulated features
+        film_effect_outside = (gamma_outside_weighted * x_room_after_time) + beta_outside_weighted
+        x_room_after_outside = self._blend_with_gate(self.g_outside2room, x_room_after_time, film_effect_outside)
+        
+        # Final 'room' tensor to be used in the next stage
+        x_room = x_room_after_outside
         
         # ---- Stage 4: room-room diffusion (weighted) ----
         # Flatten room features and tile room-room edges over time
