@@ -360,7 +360,7 @@ def add_STGCN_args(parser):
                         choices=['static', 'dynamic'], 
                         help='Adjacency matrix type')
     
-    parser.add_argument('--gso_type', type=str, default='rw_norm_adj',
+    parser.add_argument('--gso_type', type=str, default='rw_renorm_adj',
         choices=[
             'sym_norm_adj',  'sym_renorm_adj',  'sym_norm_lap',  'sym_renorm_lap',
             'rw_norm_adj',   'rw_renorm_adj',   'rw_norm_lap',   'rw_renorm_lap',
