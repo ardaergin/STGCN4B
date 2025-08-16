@@ -549,42 +549,71 @@ class Heterogeneous(STGCNExperimentRunner):
         """The objective function for Optuna, performing k-fold cross-validation."""
         trial_args = deepcopy(self.args)
         
-        ########## Preflight pruning ##########
-        # Handling the possible invalid architecture
-        trial_args.stblock_num = trial.suggest_int("stblock_num", 2, 3)
-        trial_args.Kt = 2
-        
-        # Suggesting n_his
-        trial_args.n_his = 24
-        
-        # Check if the combination is valid. If not, PRUNE.
-        min_required_n_his = trial_args.stblock_num * 2 * (trial_args.Kt - 1) + 1
-        if trial_args.n_his < min_required_n_his:
-            raise optuna.exceptions.TrialPruned("Invalid architecture.")
-        
-        ########## End of Preflight pruning ##########
+        # NOTE: Preflight pruning not necessary with fixed n_his = 48
+        trial_args.stblock_num = 2
+        trial_args.Kt = 3
+        trial_args.n_his = 48
         
         # --- General Training Hyperparameters ---
-        trial_args.lr = trial.suggest_float("lr", 5e-5, 1e-3, log=True)
-        trial_args.weight_decay_rate = trial.suggest_float("weight_decay_rate", 1e-5, 3e-3, log=True)
-        trial_args.optimizer = trial.suggest_categorical("optimizer", ["adam", "adamw"])
-        trial_args.step_size = trial.suggest_int("step_size", 2, 6, step=2)
-        trial_args.gamma = trial.suggest_float("gamma", 0.5, 0.7, log=True)
-        trial_args.droprate = trial.suggest_float("droprate", 0.1, 0.2)
-        trial_args.enable_bias = True
-        trial_args.act_func = "glu"
+        trial_args.lr                   = trial.suggest_float("lr", 0.0001, 0.01, log=True)
+        trial_args.weight_decay_rate    = trial.suggest_float("weight_decay_rate", 0.0001, 0.01, log=True)
+        trial_args.droprate             = trial.suggest_float("droprate", 0.05, 0.3)
+        # Fixing the rest
+        trial_args.optimizer            = "adamw"
+        trial_args.step_size            = 50
+        trial_args.gamma                = 0.99
+        trial_args.enable_bias          = True
+        trial_args.act_func             = "glu"
         
-        trial_args.st_main_channels       = trial.suggest_int("st_main_channels",       16,  48,   step=8)
-        trial_args.output_channels        = trial.suggest_int("output_channels",        32,  64,  step=8)
-
         # We don't tune epochs directly. We set a max value and let early stopping find the best.
         # This is the max number of epochs the model is allowed to run for in each CV fold.
-        trial_args.es_patience = 3
-        trial_args.epochs = 10
-        trial_args.n_startup_trials = 3
-        trial_args.n_warmup_steps = 5
-        trial_args.interval_steps = 1
-                
+        trial_args.epochs               = 20
+        trial_args.es_patience          = 5
+        trial_args.n_startup_trials     = 5
+        trial_args.n_warmup_steps       = 5
+        trial_args.interval_steps       = 1
+        
+        ### Model Architecture ###
+        
+        # Graph Convolution
+        trial_args.gconv_type_p2d       = 'sage'
+        trial_args.gconv_type_d2r       = 'sage'
+        trial_args.bidir_d2r            = trial.suggest_categorical("bidir_d2r", [True, False])
+        trial_args.bidir_p2d            = trial.suggest_categorical("bidir_p2d", [True, False])
+        trial_args.aggr_type            = trial.suggest_categorical("aggr_type", ["sum", "mean"])
+        
+        # Per-type channels:
+        # - Room:               high
+        # - Device/Property:    moderate
+        # - Time/Outside:       small
+        def _clamp(x, low=8, high=128):
+            return int(max(low, min(high, round(x))))
+        
+        def shrink(x): 
+            return _clamp(x * out_shrink)
+        
+        mid_base        = trial.suggest_int("mid_base", 16, 64, step=16)
+        room_factor     = trial.suggest_float("room_factor", 1.0, 2.0, step=0.5) # expand
+        globals_factor  = trial.suggest_float("globals_factor", 0.25, 0.75, step=0.25) # shrink
+        out_shrink      = 1 # trial.suggest_float("out_shrink", 0.25, 0.75, step=0.25)
+        
+        # Mid
+        trial_args.ch_room_mid     = _clamp(room_factor     * mid_base)
+        trial_args.ch_device_mid   = _clamp(1.0             * mid_base)
+        trial_args.ch_property_mid = _clamp(1.0             * mid_base)
+        trial_args.ch_time_mid     = _clamp(globals_factor  * mid_base)
+        trial_args.ch_outside_mid  = _clamp(globals_factor  * mid_base)
+        
+        # Output per-type channels
+        trial_args.ch_room_out     = shrink(trial_args.ch_room_mid)
+        trial_args.ch_device_out   = shrink(trial_args.ch_device_mid)
+        trial_args.ch_property_out = shrink(trial_args.ch_property_mid)
+        trial_args.ch_time_out     = shrink(trial_args.ch_time_mid)
+        trial_args.ch_outside_out  = shrink(trial_args.ch_outside_mid)
+        
+        # Main output
+        trial_args.output_channels = trial_args.ch_room_out # trial.suggest_int("output_channels", 32, 128, step=32)
+
         return trial_args
     
     ##########################
