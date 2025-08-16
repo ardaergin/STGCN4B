@@ -364,6 +364,7 @@ def add_STGCN_args(parser):
         choices=[
             'sym_norm_adj',  'sym_renorm_adj',  'sym_norm_lap',  'sym_renorm_lap',
             'rw_norm_adj',   'rw_renorm_adj',   'rw_norm_lap',   'rw_renorm_lap',
+            'col_renorm_adj', 'no_norm_only_self_loop'
         ],
         help=(
             "Which Graph-Shift Operator to build:\n"
