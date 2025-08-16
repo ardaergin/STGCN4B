@@ -23,6 +23,7 @@ def create_gso(
         adj_matrix: torch.Tensor,
         masked_adj_matrices: Dict[str, torch.Tensor] = None,
         return_format: Literal["dense", "coo", "sparse"] = "dense",
+        transpose: bool = False
 ) -> Union[GSOType, GSOList]:
     """
     Creates the Graph Shift Operator (GSO) for the model.
@@ -61,7 +62,8 @@ def create_gso(
         num_nodes           = n_nodes,
         gso_type            = args.gso_type,
         device              = device,
-        return_format       = return_format
+        return_format       = return_format,
+        transpose           = transpose
     )
     if args.gso_mode == "static":
         return static_gso
@@ -77,7 +79,8 @@ def create_gso(
                 num_nodes       = n_nodes,
                 gso_type        = args.gso_type, 
                 device          = device,
-                return_format   = return_format
+                return_format   = return_format,
+                transpose       = transpose
             )
             masked_gsos.append(gso)
         # Pad with the static GSO if not enough dynamic ones are available

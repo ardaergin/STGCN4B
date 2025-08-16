@@ -375,7 +375,10 @@ def add_STGCN_args(parser):
             "  • rw_renorm_adj  : D^{-1}(A+I)\n"
             "  • rw_norm_lap    : I - D^{-1} A\n"
             "  • rw_renorm_lap  : I - D^{-1}(A+I)"))
-
+    
+    parser.add_argument('--transpose_gso', action='store_true',
+                        help='If set, applies transpose to the GSO.')
+    
     ########## STGCN parameters ##########
     parser.add_argument('--n_his', type=int, 
                         default=24,

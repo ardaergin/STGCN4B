@@ -468,7 +468,7 @@ class Homogeneous(STGCNExperimentRunner):
                 adj_matrix          = A,
                 masked_adj_matrices = M if args.gso_mode == "dynamic" else None,
                 return_format       = "dense",
-                transpose           = True
+                transpose           = args.transpose_gso
             )
         
         # Initialize model
