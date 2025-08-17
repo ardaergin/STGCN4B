@@ -15,7 +15,7 @@ class STGCNNormalizer(ABC):
     implementation for target normalization, which is shared across different
     graph types.
     """
-    def __init__(self, args):
+    def __init__(self):
         # Targets (implemented in base class)
         self.target_center = None
         self.target_scale = None
