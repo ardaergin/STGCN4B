@@ -625,7 +625,7 @@ class TemporalBuilderMixin:
         logger.info(f"=== Total cleaned rows: {total_cleared:,} ===")
         
         # =============== 4) Per-device NaN stats ===============
-        if "device_uri_str" in df.columns and "mean" in df.columns:
+        if {"device_uri_str", "mean", "property_type"}.issubset(df.columns):
             nan_percents = (
                 df.groupby("device_uri_str")["mean"]
                 .apply(lambda x: x.isna().mean() * 100)
@@ -633,9 +633,10 @@ class TemporalBuilderMixin:
             )
             logger.info("[Per-device NaN percentage after cleaning] (analyzed col: mean):")
             for dev, perc in nan_percents.items():
-                logger.info(f"  {dev}: {perc:.1f}% NaN")
-                if perc > 75:  # highlight dangerous cases
-                    logger.info(f"(!) Device {dev} has >75% NaNs after cleaning. (!)")
+                prop_types = df.loc[df["device_uri_str"] == dev, "property_type"].unique().tolist()
+                logger.info(f"  {dev} {prop_types}: {perc:.1f}% NaN")
+                if perc > 75:
+                    logger.info(f"(!) Device {dev} {prop_types} has >75% NaNs after cleaning. (!)")
         
         return df
     

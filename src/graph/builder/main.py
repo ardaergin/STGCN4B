@@ -1,22 +1,20 @@
 import os
 import joblib
-import numpy as np
 import torch
 import pandas as pd
 from typing import Dict, Any
 
-from ..officegraph import OfficeGraph
+from ..officegraph  import OfficeGraph
+from .spatial       import SpatialBuilderMixin
+from .spatial_viz   import SpatialVisualizerMixin
+from .temporal      import TemporalBuilderMixin
+from .temporal_viz  import TemporalVisualizerMixin
+from .homo_graph    import HomogGraphBuilderMixin
+from .hetero_graph  import HeteroGraphBuilderMixin
+from .tabular       import TabularBuilderMixin
 
 from ...utils.missingness_plot import plot_missing_values
 from ...utils.filename_util import get_data_filename
-
-from .temporal import TemporalBuilderMixin
-from .temporal_viz import TemporalVisualizerMixin
-from .spatial import SpatialBuilderMixin
-from .spatial_viz import SpatialVisualizerMixin
-from .homo_graph import HomogGraphBuilderMixin
-from .hetero_graph import HeteroGraphBuilderMixin
-from .tabular import TabularBuilderMixin
 
 # Main logging setup
 import logging, sys
@@ -28,14 +26,14 @@ logger = logging.getLogger(__name__)
 
 
 class OfficeGraphBuilder(
-    SpatialBuilderMixin,
-    SpatialVisualizerMixin,
-    TemporalBuilderMixin,
-    TemporalVisualizerMixin,
-    HomogGraphBuilderMixin,
-    HeteroGraphBuilderMixin,
-    TabularBuilderMixin
-    ):
+        SpatialBuilderMixin,
+        SpatialVisualizerMixin,
+        TemporalBuilderMixin,
+        TemporalVisualizerMixin,
+        HomogGraphBuilderMixin,
+        HeteroGraphBuilderMixin,
+        TabularBuilderMixin
+):
     """
     Consolidated class to build and manipulate graphs from OfficeGraph data,
     including spatial relationships and temporal features.
@@ -53,9 +51,10 @@ class OfficeGraphBuilder(
         # Property configuration
         self.ignored_property_types = {
             "DeviceStatus", "BatteryLevel", # unnecessary
-            "Contact", "Motion", "thermostatHeatingSetpoint" # too few measurements
+            # "Contact", "Motion", 
+            "thermostatHeatingSetpoint" # too few measurements
             }
-        self.used_property_types = ["Temperature", "CO2Level", "Humidity"]
+        self.used_property_types = ["Temperature", "CO2Level", "Humidity", "Contact", "Motion"]
         
         # Static Room class attributes to use for modeling, default 'standard' preset:
         self.static_room_attributes = ['hasWindows', 'has_multiple_windows', 
