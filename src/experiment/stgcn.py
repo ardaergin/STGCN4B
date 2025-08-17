@@ -90,8 +90,8 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         train_feature_slice = self._slice_train_features(train_indices)
         
         # 3. Fit normalizer and transform
-        normalizer_cls = self._get_normalizer_class(args)
-        normalizer = normalizer_cls()
+        normalizer_cls = self._get_normalizer_class()
+        normalizer = normalizer_cls(args)
         
         # Features
         normalizer.fit_features(
@@ -553,14 +553,8 @@ class Heterogeneous(STGCNExperimentRunner):
     def _get_data_preparer_class(self):
         return HeterogeneousSTGCNDataPreparer
     
-    def _get_normalizer_class(self, args: Any):
-        normalizer = HeterogeneousSTGCNNormalizer(
-            clip_value              = args.norm_clip_value,
-            eps_scale               = args.norm_eps_scale,
-            log1p_feature_keys      = args.norm_log1p_feature_keys,
-            alpha_wide_spread       = args.norm_alpha_wide_spread
-        )
-        return normalizer
+    def _get_normalizer_class(self):
+        return HeterogeneousSTGCNNormalizer
     
     #########################
     # Split preparation

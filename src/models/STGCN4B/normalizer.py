@@ -15,7 +15,9 @@ class STGCNNormalizer(ABC):
     implementation for target normalization, which is shared across different
     graph types.
     """
-    def __init__(self):
+    def __init__(self, args):
+        self.args = args
+
         # Targets (implemented in base class)
         self.target_center = None
         self.target_scale = None
@@ -171,28 +173,22 @@ class Homogeneous(STGCNNormalizer):
 class Heterogeneous(STGCNNormalizer):
     """Normalizer for heterogeneous graph data stored in HeteroData snapshots."""
     
-    def __init__(
-            self, 
-            clip_value:             Optional[float] = None,
-            eps_scale:              float = 1e-6,
-            log1p_feature_keys:     tuple[str] = ("count", "std"),
-            alpha_wide_spread:      float = 0.3,
-    ):
+    def __init__(self):
         super().__init__()
         self.feature_center: Dict[str, torch.Tensor] = {}
         self.feature_scale: Dict[str, torch.Tensor] = {}
-
+        
         # Config
-        self.eps_scale = float(eps_scale)
-        self.log1p_feature_keys = tuple(k.lower() for k in log1p_feature_keys)
-        self.alpha_wide_spread = float(alpha_wide_spread)
-
+        self.eps_scale = float(self.args.norm_eps_scale)
+        self.log1p_feature_keys = tuple(k.lower() for k in self.args.norm_log1p_feature_keys)
+        self.alpha_wide_spread = float(self.args.norm_alpha_wide_spread)
+        
         # clip config (guard against None -> float(None) crash)
-        if clip_value is None:
+        if self.args.norm_clip_value is None:
             self.clip_value = None
         else:
-            self.clip_value = float(clip_value)
-
+            self.clip_value = float(self.args.norm_clip_value)
+        
         if self.clip_value is not None:
             logger.info(f"Heterogeneous normalizer will clip features to [{-self.clip_value}, {self.clip_value}].")
 
