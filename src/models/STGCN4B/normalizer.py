@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Union, List, Dict
+from typing import Union, List, Dict, Optional
 import numpy as np
 import torch
 from torch_geometric.data import HeteroData
@@ -171,11 +171,34 @@ class Homogeneous(STGCNNormalizer):
 class Heterogeneous(STGCNNormalizer):
     """Normalizer for heterogeneous graph data stored in HeteroData snapshots."""
     
-    def __init__(self):
+    def __init__(
+            self, 
+            clip_value:             Optional[float] = None,
+            eps_scale:              float = 1e-6,
+            log1p_feature_keys:     tuple[str] = ("count", "std"),
+            alpha_wide_spread:      float = 0.3,
+    ):
         super().__init__()
         self.feature_center: Dict[str, torch.Tensor] = {}
         self.feature_scale: Dict[str, torch.Tensor] = {}
-    
+
+        # Config
+        self.eps_scale = float(eps_scale)
+        self.log1p_feature_keys = tuple(k.lower() for k in log1p_feature_keys)
+        self.alpha_wide_spread = float(alpha_wide_spread)
+
+        # clip config (guard against None -> float(None) crash)
+        if clip_value is None:
+            self.clip_value = None
+        else:
+            self.clip_value = float(clip_value)
+
+        if self.clip_value is not None:
+            logger.info(f"Heterogeneous normalizer will clip features to [{-self.clip_value}, {self.clip_value}].")
+
+        # per-node-type masks for log1p columns (built in fit, reused in transform)
+        self._log1p_mask: Dict[str, torch.BoolTensor] = {}
+        
     @staticmethod
     def _nanquantile_torch(x: torch.Tensor, q: float) -> torch.Tensor:
         """
@@ -212,8 +235,21 @@ class Heterogeneous(STGCNNormalizer):
             if not tensors:
                 continue
             joined = torch.cat(tensors, 0)  # (N_total, C)
-
-            # statistics ignoring NaNs
+            
+            ## log1p pre-transform on selected feature columns
+            names = feature_names.get(nt, [])
+            if names:
+                mask = torch.tensor(
+                    [any(key in n.lower() for key in self.log1p_feature_keys) for n in names],
+                    device=joined.device, dtype=torch.bool
+                )
+            else:
+                mask = torch.zeros(joined.shape[1], dtype=torch.bool, device=joined.device)
+            if mask.any():
+                joined[:, mask] = torch.log1p(torch.clamp_min(joined[:, mask], 0.0))
+            self._log1p_mask[nt] = mask
+            
+            ## Statistics ignoring NaNs
             if method == "mean":
                 self.feature_center[nt] = torch.nanmean(joined, dim=0)
                 self.feature_scale[nt] = torch.nanstd(joined,  dim=0)
@@ -221,11 +257,21 @@ class Heterogeneous(STGCNNormalizer):
                 self.feature_center[nt] = torch.nanmedian(joined, dim=0).values
                 q25 = self._nanquantile_torch(joined, 0.25)
                 q75 = self._nanquantile_torch(joined, 0.75)
-                self.feature_scale[nt] = q75 - q25
+                iqr = q75 - q25
+                
+                # Add wide-spread floor using (q95 - q05)
+                q05 = self._nanquantile_torch(joined, 0.05)
+                q95 = self._nanquantile_torch(joined, 0.95)
+                wide = q95 - q05
+
+                scale = torch.maximum(iqr, self.alpha_wide_spread * wide)
+
+                # eps floor
+                self.feature_scale[nt] = torch.clamp(scale, min=self.eps_scale)
             else:
                 raise ValueError("method must be 'mean' or 'median'")
 
-            # 3. skip‑normalisation handling
+            # 3. Skip‑normalisation handling
             if features_to_skip_norm:
                 names = feature_names.get(nt, [])
                 skip_indices = [i for i, n in enumerate(names)
@@ -235,10 +281,11 @@ class Heterogeneous(STGCNNormalizer):
                     logger.info(f"Node type '{nt}': Skipping normalization for {len(skip_indices)} features: {skipped_feature_names}")
                     self.feature_center[nt][skip_indices] = 0.0
                     self.feature_scale[nt][skip_indices] = 1.0
-
-            # 4. avoid divide‑by‑zero
+            
+            # 4. avoid divide-by-zero
             self.feature_scale[nt][self.feature_scale[nt] == 0] = 1.0
-
+            self.feature_scale[nt] = torch.clamp(self.feature_scale[nt], min=self.eps_scale)
+        
         return self
     
     def transform_features(
@@ -254,8 +301,21 @@ class Heterogeneous(STGCNNormalizer):
             norm_snapshot = snapshot.clone()
             for nt in norm_snapshot.node_types:
                 if 'x' in norm_snapshot[nt]:
-                    norm_snapshot[nt].x = (
-                        norm_snapshot[nt].x - self.feature_center[nt]
-                        ) / self.feature_scale[nt]
+                    x = norm_snapshot[nt].x
+
+                    # Apply same log1p pre-transform on selected columns
+                    mask = self._log1p_mask.get(nt, None)
+                    if mask is not None and mask.any():
+                        x = x.clone()  # avoid in-place on shared tensors
+                        x[:, mask] = torch.log1p(torch.clamp_min(x[:, mask], 0.0))
+                    
+                    # Normalization
+                    x = (x - self.feature_center[nt]) / self.feature_scale[nt]
+
+                    # Clipping (if enabled)
+                    if self.clip_value is not None:
+                        torch.clamp_(x, min=-self.clip_value, max=self.clip_value)
+
+                    norm_snapshot[nt].x = x
             norm_data[t] = norm_snapshot
         return norm_data
