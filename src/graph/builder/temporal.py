@@ -624,20 +624,19 @@ class TemporalBuilderMixin:
         total_cleared = n_weekly + (extra_mask.sum() if extra_buckets else 0) + n_high_counts
         logger.info(f"=== Total cleaned rows: {total_cleared:,} ===")
         
-        # =============== 4) Per-device NaN stats ===============
+        # =============== 4) Per-device-property NaN stats ===============
         if {"device_uri_str", "mean", "property_type"}.issubset(df.columns):
             nan_percents = (
-                df.groupby("device_uri_str")["mean"]
+                df.groupby(["device_uri_str", "property_type"])["mean"]
                 .apply(lambda x: x.isna().mean() * 100)
                 .sort_values(ascending=False)
             )
-            logger.info("[Per-device NaN percentage after cleaning] (analyzed col: mean):")
-            for dev, perc in nan_percents.items():
-                prop_types = df.loc[df["device_uri_str"] == dev, "property_type"].unique().tolist()
-                logger.info(f"  {dev} {prop_types}: {perc:.1f}% NaN")
+            logger.info("[Per-device-property NaN percentage after cleaning] (analyzed col: mean):")
+            for (dev, prop), perc in nan_percents.items():
+                logger.info(f"  {dev} ({prop}): {perc:.1f}% NaN")
                 if perc > 75:
-                    logger.info(f"(!) Device {dev} {prop_types} has >75% NaNs after cleaning. (!)")
-        
+                    logger.info(f"(!) Device {dev} ({prop}) has >75% NaNs after cleaning. (!)")
+                
         return df
     
     ##############################
