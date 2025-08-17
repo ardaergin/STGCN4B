@@ -5,6 +5,7 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Any, List
 from abc import ABC, abstractmethod
+from torch_geometric.data import HeteroData
 
 from ..utils.filename_util import get_data_filename
 from .feature import BlockAwareFeatureEngineer
@@ -50,7 +51,7 @@ class BaseDataPreparer(ABC):
             self._mask_workhours()
         
         # Step 4: Drop features if requested, before _prepare_features()
-        self._drop_requested_columns()
+        self._drop_requested_features()
         
         # Step 5: Prepare features (subclass-specific logic)
         self._prepare_features()
@@ -167,18 +168,6 @@ class BaseDataPreparer(ABC):
         self.target_engineer = BlockAwareTargetEngineer(self.metadata['blocks'])
         self.feature_engineer = BlockAwareFeatureEngineer(self.metadata['blocks'])
     
-    def _drop_requested_columns(self) -> None:
-        """Drop any column whose name contains a substring from args.features_to_drop."""
-        if not self.args.features_to_drop:
-            return
-        substrings_to_drop = self.args.features_to_drop
-        cols_to_drop = [col for col in self.df.columns 
-                        if any(sub in col for sub in substrings_to_drop)]
-        if cols_to_drop:
-            self.df.drop(columns=cols_to_drop, inplace=True)
-            logger.info(f"Dropped {len(cols_to_drop)} columns containing substrings {substrings_to_drop}.")
-            logger.debug(f"Dropped columns: {cols_to_drop}")
-    
     def _prepare_target(self) -> None:
         """
         Prepares the target columns. The common logic for identifying the source
@@ -232,6 +221,23 @@ class BaseDataPreparer(ABC):
     def _mask_workhours(self) -> None:
         """Mask data based on whether it is a workhour or not."""
         pass
+
+    @abstractmethod
+    def _drop_requested_features(self) -> None:
+        """Abstract class to drop any requested feature whose name contains a substring from args.features_to_drop."""
+        pass
+    
+    def _drop_requested_columns(self) -> None:
+        """Feature dropping method for any model that works with DataFrames."""
+        if not self.args.features_to_drop:
+            return
+        substrings_to_drop = self.args.features_to_drop
+        cols_to_drop = [col for col in self.df.columns 
+                        if any(sub in col for sub in substrings_to_drop)]
+        if cols_to_drop:
+            self.df.drop(columns=cols_to_drop, inplace=True)
+            logger.info(f"Dropped {len(cols_to_drop)} columns containing substrings {substrings_to_drop}.")
+            logger.debug(f"Dropped columns: {cols_to_drop}")
     
     @abstractmethod
     def _prepare_features(self) -> None:
@@ -255,7 +261,7 @@ class TabularDataPreparer(BaseDataPreparer):
         assert args.model_family == "tabular", "TabularDataPreparer only supports 'tabular' model_family."
         assert len(args.forecast_horizons)==1, "Tabular models only support single-horizon forecasting."
         self.id_cols = ['bucket_idx', 'room_uri_str'] if self.args.task_type == "measurement_forecast" else ['bucket_idx']
-    
+        
     def _post_prepare_target(self) -> None:
         """
         For tabular models, we have the target columns and feature columns in one DataFrame
@@ -295,6 +301,9 @@ class TabularDataPreparer(BaseDataPreparer):
         
         # We don't need the mask columns anymore
         self.df.drop(columns=self.target_dict["workhour_mask_colnames"], inplace=True)
+    
+    def _drop_requested_features(self) -> None:
+        self._drop_requested_columns()
     
     def _prepare_features(self) -> None:
         """        
@@ -558,6 +567,9 @@ class Homogeneous(STGCNDataPreparer):
         super().__init__(args)
         assert args.graph_type == "homogeneous", "Homogeneous-STGCNDataPreparer only supports homogeneous graph type."
     
+    def _drop_requested_features(self) -> None:
+        self._drop_requested_columns()
+    
     def _prepare_features(self) -> None:
         """
         Prepares features for the STGCN model.
@@ -612,6 +624,63 @@ class Heterogeneous(STGCNDataPreparer):
         # Loading to CPU. carrying them to GPU after DataLoader and at training:
         self.hetero_input = torch.load(hetero_file_path, map_location='cpu') 
 
+    def _drop_requested_features(self) -> None:
+        """
+        Drop features from the HeteroData objects based on substrings.
+
+        This method iterates through the base graph and all temporal snapshots.
+        For each node type, it identifies features whose names contain any of the
+        substrings in `self.args.features_to_drop`, removes them from the
+        feature tensor (`.x`), and updates the corresponding feature name list.
+        """
+        if not self.args.features_to_drop:
+            logger.info("No features requested to be dropped. Skipping.")
+            return
+
+        substrings_to_drop = self.args.features_to_drop
+        logger.info(f"Attempting to drop features containing substrings: {substrings_to_drop}")
+
+        # A helper function to process a single graph object (either base or temporal)
+        def _process_graph(graph: 'HeteroData', feature_names_dict: Dict[str, List[str]]):
+            for node_type in graph.node_types:
+                # Check if this node type has features and a corresponding feature name list
+                if 'x' not in graph[node_type] or node_type not in feature_names_dict:
+                    continue
+
+                original_feature_names = feature_names_dict[node_type]
+                
+                # Determine which feature indices to KEEP
+                indices_to_keep = [
+                    i for i, name in enumerate(original_feature_names)
+                    if not any(sub in name for sub in substrings_to_drop)
+                ]
+
+                # If the number of features to keep is the same, no changes needed
+                if len(indices_to_keep) == len(original_feature_names):
+                    continue
+
+                dropped_count = len(original_feature_names) - len(indices_to_keep)
+                if dropped_count > 0:
+                    logger.info(f"Node type '{node_type}': Dropping {dropped_count} features.")
+                    
+                    # 1. Slice the feature tensor to keep only the desired columns
+                    graph[node_type].x = graph[node_type].x[:, indices_to_keep]
+
+                    # 2. Update the feature names list in the central dictionary
+                    feature_names_dict[node_type] = [original_feature_names[i] for i in indices_to_keep]
+
+        # Process the base graph first
+        logger.debug("Processing base_graph for feature dropping...")
+        _process_graph(self.hetero_input["base_graph"], self.hetero_input["feature_names"])
+        
+        # Process all temporal graph snapshots
+        logger.debug(f"Processing {len(self.hetero_input['temporal_graphs'])} temporal graphs for feature dropping...")
+        for bucket_idx, temporal_graph in self.hetero_input["temporal_graphs"].items():
+            # Note: The feature name dictionary is shared, so we pass the same one
+            _process_graph(temporal_graph, self.hetero_input["feature_names"])
+            
+        logger.info("Finished dropping requested features from all heterogeneous graphs.")
+    
     def _prepare_features(self) -> None:
         """HeteroData snapshot already has the features prepared. They are already nicely tensorized."""
         pass
