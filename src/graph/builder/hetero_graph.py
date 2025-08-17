@@ -56,7 +56,8 @@ class HeteroGraphBuilderMixin:
             self, 
             horizontal_adj_matrix: np.ndarray,
             vertical_adj_matrix: np.ndarray,
-            outside_adj_vector: np.ndarray
+            outside_adj_vector: np.ndarray,
+            hetero_prop_features: List[str]
     ) -> HeteroData:
         """
         Build the base heterogeneous graph structure with static features.
@@ -71,6 +72,12 @@ class HeteroGraphBuilderMixin:
         
         # Initialize heterogeneous graph
         hetero_data = HeteroData()
+        
+        # Store temporal property feature names for later use
+        self.temporal_prop_features = [
+            f for f in self.device_level_df_temporal_feature_names
+            if f in hetero_prop_features
+        ]
         
         # Build node mappings and features
         self._build_node_mappings()
@@ -244,12 +251,7 @@ class HeteroGraphBuilderMixin:
     
     def _add_property_nodes_by_type(self, hetero_data: HeteroData) -> None:
         """Add property nodes as separate node types for each property."""
-        # Store temporal feature names for later use
-        self.temporal_prop_features = [
-            f for f in self.device_level_df_temporal_feature_names
-            if f in self.args.hetero_prop_features
-        ]
-        
+                
         for prop_type in self.used_property_types:
             prop_node_type = f'prop_{prop_type}'
             n_nodes = len(self.node_mappings[prop_node_type])

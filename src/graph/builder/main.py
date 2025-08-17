@@ -315,9 +315,10 @@ class OfficeGraphBuilder(
         #       So, weighted here, all weights can be replaced with 1 later.
         adj = self.run_adjacency_pipeline(args, "weighted") 
         self.build_base_hetero_graph(
-            adj["horizontal_adj_matrix"],
-            adj["vertical_adj_matrix"],
-            adj["outside_adj_vector"]
+            horizontal_adj_matrix   = adj["horizontal_adj_matrix"],
+            vertical_adj_matrix     = adj["vertical_adj_matrix"],
+            outside_adj_vector      = adj["outside_adj_vector"],
+            hetero_prop_features    = args.hetero_prop_features
         )
         
         self.build_hetero_temporal_graphs()
@@ -387,7 +388,7 @@ def main():
     builder.run_temporal_pipeline(args=args)
     builder.run_tabular_pipeline(args=args)
     builder.run_homograph_pipeline(args=args)
-    builder.run_heterograph_pipeline(args)
+    builder.run_heterograph_pipeline(args=args)
 
 
 if __name__ == "__main__":
