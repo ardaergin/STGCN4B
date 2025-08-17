@@ -27,7 +27,7 @@ from ..models.STGCN4B.normalizer import Heterogeneous as HeterogeneousSTGCNNorma
 # Data Loaders
 from ..models.STGCN4B.loader import get_data_loaders
 # Models
-from ..models.STGCN4B.homogeneous.models import HomogeneousSTGCN
+from ..models.STGCN4B.homogeneous.model import HomogeneousSTGCN
 from ..models.STGCN4B.heterogeneous.model import HeterogeneousSTGCN
 # Utils
 from ..models.STGCN4B.gso_utils import create_gso
