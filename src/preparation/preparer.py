@@ -70,7 +70,6 @@ class BaseDataPreparer(ABC):
             weather_mode    = self.args.weather_mode,
             model_family    = self.args.model_family,
             task_type       = self.args.task_type,
-            hetero_mode     = self.args.hetero_mode
         )
         data_file_path = os.path.join(self.args.processed_data_dir, f"{data_fname_base}.parquet")
         logger.info(f"Loading parquet data from {data_file_path}")
@@ -619,6 +618,7 @@ class Heterogeneous(STGCNDataPreparer):
         hetero_fname_base = get_data_filename(
             file_type       = "hetero_input", 
             interval        = self.args.interval, 
+            hetero_mode     = self.args.hetero_mode,
         )
         hetero_file_path = os.path.join(self.args.processed_data_dir, f"{hetero_fname_base}.joblib")
         logger.info(f"Loading heterogeneous graph data from {hetero_file_path}")
