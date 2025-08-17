@@ -207,6 +207,22 @@ class OfficeGraphBuilder(
         # Building different level feature DataFrames
         self.build_property_level_df()
         self.build_device_level_df()
+
+        # Interim anomaly cleaning
+        # NOTE: Only appropriate for (for now):
+        # - interval=30min 
+        # - use_sundays=False
+        logger.info("Cleaning anomalies from device-level DataFrame...")
+        anomaly_buckets = [864, 865, 866, 867, 868, 870, 874, 875, 
+                           1017, 5879, 5882, 5884, 6032]
+        self.device_level_df = self.clean_anomalies(
+            df                  = self.device_level_df,
+            period              = 288,
+            offset              = 287,
+            extra_buckets       = anomaly_buckets,
+            clear_high_counts   = True,
+        )
+        
         self.build_room_level_df()
         self.build_floor_level_df()
         self.build_building_level_df()

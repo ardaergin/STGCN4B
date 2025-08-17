@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Optional, List
 import os 
 import numpy as np
 from datetime import datetime
@@ -544,6 +544,100 @@ class TemporalBuilderMixin:
         
         return None
     
+    ##############################
+    # Cleanup
+    ##############################
+    
+    @staticmethod
+    def clean_anomalies(
+            df:                 pd.DataFrame, 
+            period:             int = 288, 
+            offset:             int = 287,
+            extra_buckets:      Optional[List[int]] = None,
+            clear_high_counts:  bool = False
+    ) -> pd.DataFrame:
+        """
+        Clean anomalies in device-level data step by step:
+
+        1. Clear regular weekly spike buckets (periodic dumps).
+        2. Clear user-specified anomalous buckets.
+        3. Optionally clear all rows with count > 1 (rogue measurements).
+
+        Args:
+            df: device_level_df with 'bucket_idx', 'count', 'has_measurement' and stat columns.
+            period: interval of spike repetition (e.g. 288 for 30min buckets = 7 days).
+            offset: bucket offset where spikes occur (e.g. 287 = Saturday 23:30 if start=0).
+            extra_buckets: list of additional bucket_idx values to clean.
+            clear_high_counts: if True, clears out all rows where count > 1.
+
+        Returns:
+            Modified DataFrame with anomalies NaN'ed out, count=0, has_measurement=0.
+        """
+        df = df.copy()
+        
+        # =============== 1) Regular weekly spike buckets ===============
+        weekly_mask = (df["bucket_idx"] % period == offset)
+        n_weekly = weekly_mask.sum()
+        if n_weekly > 0:
+            df.loc[weekly_mask, "count"] = 0.0
+            df.loc[weekly_mask, "has_measurement"] = 0.0
+            for col in ["mean", "std", "max", "min"]:
+                if col in df.columns:
+                    df.loc[weekly_mask, col] = np.nan
+        logger.info(f"[Step 1] Cleared {n_weekly:,} rows from regular weekly spikes (offset={offset}, period={period}).")
+        
+        # =============== 2) Extra manually specified buckets ===============
+        extra_mask = pd.Series(False, index=df.index)
+        if extra_buckets is not None and len(extra_buckets) > 0:
+            extra_mask = df["bucket_idx"].isin(extra_buckets)
+            n_extra = extra_mask.sum()
+            if n_extra > 0:
+                df.loc[extra_mask, "count"] = 0.0
+                df.loc[extra_mask, "has_measurement"] = 0.0
+                for col in ["mean", "std", "max", "min"]:
+                    if col in df.columns:
+                        df.loc[extra_mask, col] = np.nan
+            logger.info(f"[Step 2] Cleared {n_extra:,} rows from extra buckets {extra_buckets}.")
+        else:
+            logger.info("[Step 2] No extra buckets specified.")
+        
+        # =============== 3) Clear rows with count > 1 ===============
+        n_high_counts = 0
+        if clear_high_counts:
+            high_mask = (df["count"] > 1)
+            n_high_counts = high_mask.sum()
+            if n_high_counts > 0:
+                df.loc[high_mask, "has_measurement"] = 0.0
+                if "mean" in df.columns:
+                    df.loc[high_mask, "mean"] = np.nan
+            
+            # Drop unused columns, as they are unneccessary when the "count < 2"
+            drop_cols = [c for c in ["std", "max", "min", "count"] if c in df.columns]
+            if drop_cols:
+                df = df.drop(columns=drop_cols)
+
+            logger.info(f"[Step 3] Cleared {n_high_counts:,} rows where count > 1 "
+                        f"and dropped columns {drop_cols}.")
+        else:
+            logger.info("[Step 3] clear_high_counts=False, skipped.")
+        
+        total_cleared = n_weekly + (extra_mask.sum() if extra_buckets else 0) + n_high_counts
+        logger.info(f"=== Total cleaned rows: {total_cleared:,} ===")
+        
+        # =============== 4) Per-device NaN stats ===============
+        if "device_uri_str" in df.columns and "mean" in df.columns:
+            nan_percents = (
+                df.groupby("device_uri_str")["mean"]
+                .apply(lambda x: x.isna().mean() * 100)
+                .sort_values(ascending=False)
+            )
+            logger.info("[Per-device NaN percentage after cleaning] (analyzed col: mean):")
+            for dev, perc in nan_percents.items():
+                logger.info(f"  {dev}: {perc:.1f}% NaN")
+                if perc > 75:  # highlight dangerous cases
+                    logger.info(f"(!) Device {dev} has >75% NaNs after cleaning. (!)")
+        
+        return df
     
     ##############################
     # Room-level DataFrame
@@ -551,6 +645,8 @@ class TemporalBuilderMixin:
 
     def build_room_level_df(self) -> None:
         """
+        (--- outdated docstring ---)
+
         Transforms device-level data into a room-level feature matrix.
 
         This method pivots the `self.device_level_df` (keyed by device, property,
@@ -598,12 +694,10 @@ class TemporalBuilderMixin:
         
         
         # 3) Using pivot_table to aggregate and pivot
-        wide = pd.pivot_table(
-            df,
-            index=['room_uri_str', 'bucket_idx'],
-            columns='property_type',
-            values=['mean', 'std', 'max', 'min', 'count', 'has_measurement'],
-            aggfunc={
+        if 'count' in df.columns and 'std' in df.columns:
+            logger.info("Performing full aggregation on detailed device-level stats.")
+            values_to_agg = ['mean', 'std', 'max', 'min', 'count', 'has_measurement']
+            agg_functions = {
                 'mean': ['mean', 'std'],
                 'std': 'mean', 
                 'max': 'max', 
@@ -611,6 +705,20 @@ class TemporalBuilderMixin:
                 'count': 'sum', 
                 'has_measurement': ['sum', 'max']
             }
+        else:
+            logger.info("Performing simplified aggregation on mean device-level values.")
+            values_to_agg = ['mean', 'has_measurement']
+            agg_functions = {
+                'mean': ['mean', 'std', 'max', 'min'],
+                'has_measurement': ['sum', 'max']
+            }
+
+        wide = pd.pivot_table(
+            df,
+            index=['room_uri_str', 'bucket_idx'],
+            columns='property_type',
+            values=values_to_agg,
+            aggfunc=agg_functions
         )
         
         # Flatten the multi-level columns
@@ -640,7 +748,7 @@ class TemporalBuilderMixin:
             
             # The standard case
             else:
-                # max, min → just prop_stat
+                # max, min, count -> just "{prop}_{value}"
                 name = f"{prop}_{value}"
             
             new_column_names.append(name)
