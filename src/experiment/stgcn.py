@@ -100,12 +100,48 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         )
         norm_features = normalizer.transform_features(all_data=self.all_X)
         
-        logger.info(f"Normalized features stats: "
-            f"min={np.nanmin(norm_features):.2f}, "
-            f"max={np.nanmax(norm_features):.2f}, "
-            f"mean={np.nanmean(norm_features):.2f}, "
-            f"std={np.nanstd(norm_features):.2f}")
+        ### LOGGING ###
         
+        # Log statistics based on the data type returned by the normalizer
+        if isinstance(norm_features, np.ndarray):
+            # Homogeneous case: use numpy for stats
+            logger.info(
+                "Normalized homogeneous features stats: "
+                f"min={np.nanmin(norm_features):.4f}, "
+                f"max={np.nanmax(norm_features):.4f}, "
+                f"mean={np.nanmean(norm_features):.4f}, "
+                f"std={np.nanstd(norm_features):.4f}"
+            )
+        elif isinstance(norm_features, dict):
+            # Heterogeneous case: gather all torch tensors and compute stats
+            all_feature_tensors = []
+            for snapshot in norm_features.values():
+                for node_type in snapshot.node_types:
+                    if 'x' in snapshot[node_type] and snapshot[node_type].x is not None:
+                        all_feature_tensors.append(snapshot[node_type].x)
+
+            if not all_feature_tensors:
+                logger.info("Normalized heterogeneous features stats: No feature tensors found.")
+            else:
+                # Concatenate all tensors into one large tensor for global stats
+                combined_tensor = torch.cat(all_feature_tensors)
+                
+                # Filter out NaNs to get accurate stats on valid values
+                valid_values = combined_tensor[~torch.isnan(combined_tensor)]
+                
+                if valid_values.numel() > 0:
+                    logger.info(
+                        "Normalized heterogeneous features stats: "
+                        f"min={torch.min(valid_values).item():.4f}, "
+                        f"max={torch.max(valid_values).item():.4f}, "
+                        f"mean={torch.mean(valid_values).item():.4f}, "
+                        f"std={torch.std(valid_values).item():.4f}"
+                    )
+                else:
+                    logger.info("Normalized heterogeneous features stats: All feature values are NaN.")
+        
+        ### END OF LOGGING ###
+
         # Targets
         train_target_slice = self.input_dict["target_array"][train_indices]
         train_mask_slice = self.input_dict["target_mask"][train_indices]
