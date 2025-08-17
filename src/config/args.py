@@ -250,7 +250,7 @@ def add_base_modelling_args(parser):
                         help='Normalization method')
     parser.add_argument('--skip_normalization_for', nargs='*', 
                         default=['_sin', '_cos', 'wc_', 
-                                'has_measurement'
+                                'has_measurement',
                                 'hasWindows', 'has_multiple_windows', 
                                 'window_direction_sin', 'window_direction_cos', 
                                 'isProperRoom', 'norm_areas_minmax',
