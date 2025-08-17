@@ -15,6 +15,7 @@ class HeterogeneousSTGCN(nn.Module):
         metadata:           tuple,
         all_edges_by_block: List[Dict[tuple, Dict[str, Tensor]]],
         node_feature_dims:  Dict[str, int],
+        property_types:     List[str],
         task_type:          str = "measurement_forecast",
     ):
         super().__init__()
@@ -22,16 +23,18 @@ class HeterogeneousSTGCN(nn.Module):
         node_types = metadata[0]
         
         # Channel dimensions plan
-        ch_mid_plan, ch_out_plan = build_channel_dicts(args)
+        ch_mid_plan, ch_out_plan = build_channel_dicts(args, property_types)
         
         # Sanity check if GAT heads
         if args.gconv_type_p2d == "gat":
             dev_ch = ch_mid_plan["device"]
-            prop_ch = ch_mid_plan["property"]
             if dev_ch % args.att_heads != 0:
-                raise ValueError(f"device mid channels ({dev_ch}) must be divisible by att_heads ({args.att_heads}) for GAT p->d")
-            if args.bidir_p2d and (prop_ch % args.att_heads != 0):
-                raise ValueError(f"property mid channels ({prop_ch}) must be divisible by att_heads ({args.att_heads}) for reverse GAT d->p")
+                raise ValueError("device mid channels must be divisible by att_heads for GAT p->d")
+            if args.bidir_p2d:
+                for pt in property_types:
+                    prop_ch = ch_mid_plan[f"prop_{pt}"]
+                    if prop_ch % args.att_heads != 0:
+                        raise ValueError(f"prop_{pt} mid channels must be divisible by att_heads for reverse GAT d->p")
 
         if args.gconv_type_d2r == "gat":
             room_ch = ch_mid_plan["room"]
@@ -54,6 +57,7 @@ class HeterogeneousSTGCN(nn.Module):
                 ntype_channels_mid      = mid_dims,
                 ntype_channels_out      = out_dims,
                 static_edge_dict        = all_edges_by_block[i],
+                property_types          = property_types,
                 act_func                = args.act_func,
                 bias                    = args.enable_bias,
                 droprate                = args.droprate,

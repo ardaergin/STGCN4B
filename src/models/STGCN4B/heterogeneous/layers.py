@@ -1,4 +1,4 @@
-from typing import Mapping, Dict
+from typing import Mapping, Dict, List
 import torch
 from torch import nn, Tensor
 from ..homogeneous.layers import TemporalConvLayer
@@ -64,6 +64,7 @@ class HeteroSTBlock(nn.Module):
             ntype_channels_mid:     Mapping[str, int],
             ntype_channels_out:     Mapping[str, int],
             static_edge_dict:       Dict[tuple, Dict[str, Tensor]],
+            property_types:         List[str],
             act_func:               str = "glu",
             bias:                   bool = True,
             droprate:               float = 0.0,
@@ -80,6 +81,7 @@ class HeteroSTBlock(nn.Module):
         self.bidir_p2d = bidir_p2d
         self.bidir_d2r = bidir_d2r
         self.static_edge_dict = static_edge_dict
+        self.property_types = property_types
         
         # Temporal layer 1
         self.temp1 = HeteroTemporalBlock(ntype_channels_in, ntype_channels_mid, Kt, act_func)
@@ -89,38 +91,46 @@ class HeteroSTBlock(nn.Module):
         # Stage 1: property (measurement) -> device
         ## No edge weight, just binary
         convs_1: Dict[tuple, nn.Module] = {}
-        if gconv_type_p2d == 'gat':
-            convs_1[('property', 'measured_by', 'device')] = GATConv(
-                in_channels     = (ntype_channels_mid['property'], ntype_channels_mid['device']),
-                out_channels    = ntype_channels_mid['device'] // heads,
-                heads           = heads,
-                concat          = True,
-                bias            = bias,
-                add_self_loops  = False,
-            )
-            if self.bidir_p2d:
-                convs_1[('device', 'measures', 'property')] = GATConv(
-                    in_channels     = (ntype_channels_mid['device'], ntype_channels_mid['property']),
-                    out_channels    = ntype_channels_mid['property'] // heads,
+        
+        for prop_type in property_types:
+            prop_node_type = f'prop_{prop_type}'
+            
+            if gconv_type_p2d == 'gat':
+                # Forward: property -> device
+                convs_1[(prop_node_type, 'measured_by', 'device')] = GATConv(
+                    in_channels     = (ntype_channels_mid[prop_node_type], ntype_channels_mid['device']),
+                    out_channels    = ntype_channels_mid['device'] // heads,
                     heads           = heads,
                     concat          = True,
                     bias            = bias,
                     add_self_loops  = False,
                 )
-        elif gconv_type_p2d == 'sage':
-            convs_1[('property', 'measured_by', 'device')] = SAGEConv(
-                in_channels     = (ntype_channels_mid['property'], ntype_channels_mid['device']),
-                out_channels    = ntype_channels_mid['device'],
-                bias            = bias
-            )
-            if self.bidir_p2d:
-                convs_1[('device', 'measures', 'property')] = SAGEConv(
-                    in_channels     = (ntype_channels_mid['device'], ntype_channels_mid['property']),
-                    out_channels    = ntype_channels_mid['property'],
+                if self.bidir_p2d:
+                    # Reverse: device -> property
+                    convs_1[('device', f'measures_{prop_type}', prop_node_type)] = GATConv(
+                        in_channels     = (ntype_channels_mid['device'], ntype_channels_mid[prop_node_type]),
+                        out_channels    = ntype_channels_mid[prop_node_type] // heads,
+                        heads           = heads,
+                        concat          = True,
+                        bias            = bias,
+                        add_self_loops  = False,
+                    )
+            elif gconv_type_p2d == 'sage':
+                # Forward: property -> device
+                convs_1[(prop_node_type, 'measured_by', 'device')] = SAGEConv(
+                    in_channels     = (ntype_channels_mid[prop_node_type], ntype_channels_mid['device']),
+                    out_channels    = ntype_channels_mid['device'],
                     bias            = bias
                 )
+                if self.bidir_p2d:
+                    # Reverse: device -> property
+                    convs_1[('device', f'measures_{prop_type}', prop_node_type)] = SAGEConv(
+                        in_channels     = (ntype_channels_mid['device'], ntype_channels_mid[prop_node_type]),
+                        out_channels    = ntype_channels_mid[prop_node_type],
+                        bias            = bias
+                    )
         self.hetero_conv_1 = HeteroConv(convs_1, aggr=aggr)
-                
+                        
         # Stage 2: device -> room
         ## No edge weight, just binary
         convs_2: Dict[tuple, nn.Module] = {}
@@ -218,7 +228,7 @@ class HeteroSTBlock(nn.Module):
         
         # Learnable gates
         self.gate_mode = gate_mode
-
+        
         def make_gate(size, init=-2.0):  # scalar or per-channel vector
             if gate_mode == "scalar":
                 return nn.Parameter(torch.tensor(init))          # ~0.12 after sigmoid
@@ -227,15 +237,20 @@ class HeteroSTBlock(nn.Module):
             else:
                 raise ValueError("gate_mode must be 'scalar' or 'channel'")
         
-        # After p<->d block:
+        # Gates for p<->d block
         self.g_p2d_dev  = make_gate(ntype_channels_mid['device'], init=+2.0)
+        
         if self.bidir_p2d:
-            self.g_d2p_prop = make_gate(ntype_channels_mid['property'], init=-2.0)
-
-        self.g_d2r_room = make_gate(ntype_channels_mid['room'],   init=+2.0)
+            self.g_d2p_prop = nn.ParameterDict({
+                f'prop_{pt}': make_gate(ntype_channels_mid[f'prop_{pt}'], init=-2.0)
+                for pt in property_types
+            })
+        
+        # Gates for d<->r block
+        self.g_d2r_room = make_gate(ntype_channels_mid['room'], init=+2.0)
         if self.bidir_d2r:
             self.g_r2d_dev  = make_gate(ntype_channels_mid['device'], init=-2.0)
-
+        
         # broadcast gates (slightly on by default)
         self.g_time2room    = make_gate(ntype_channels_mid['room'], init=2.0)
         self.g_outside2room = make_gate(ntype_channels_mid['room'], init=-2.0)
@@ -306,38 +321,85 @@ class HeteroSTBlock(nn.Module):
         T1 = next(iter(x_mid.values())).shape[2]
         N_room = x_mid['room'].shape[3]
         N_dev  = x_mid['device'].shape[3]
-        N_prop = x_mid['property'].shape[3]
         device = x_mid['room'].device
         edge_index_dict = self.static_edge_dict
         
+        # Count nodes for each property type
+        N_prop_by_type = {}
+        for prop_type in self.property_types:
+            prop_node_type = f'prop_{prop_type}'
+            if prop_node_type in x_mid:
+                N_prop_by_type[prop_node_type] = x_mid[prop_node_type].shape[3]
+        
         # -------- Vectorized spatial pipeline --------
         # Flatten (B, T1) into one big "batch" for PyG
+        # Shapes: (B*T1*N_type, C_mid_type)
         x_flat = {
             'room':     self._flat_bt(x_mid['room']),
             'device':   self._flat_bt(x_mid['device']),
-            'property': self._flat_bt(x_mid['property']),
-            # time/outside are single-node types; not used in HeteroConv, keep as is.
-        }  # shapes: (B*T1*N_type, C_mid_type)
+        }
+        for prop_type in self.property_types:
+            prop_node_type = f'prop_{prop_type}'
+            if prop_node_type in x_mid:
+                x_flat[prop_node_type] = self._flat_bt(x_mid[prop_node_type])
         
-        # ---- Stage 1: property -> device (binary) ----
-        ei_p2d_B  = edge_index_dict[('property', 'measured_by', 'device')]['index'].to(device)
-        ei_p2d_BT = self._tile_edge_index_over_bt(ei_p2d_B, B=B, T=T1, N_src=N_prop, N_dst=N_dev, device=device)
 
-        edge_idx_1 = {('property', 'measured_by', 'device'): ei_p2d_BT}
-        if self.bidir_p2d:
-            ei_d2p_B  = edge_index_dict[('device', 'measures', 'property')]['index'].to(device)
-            ei_d2p_BT = self._tile_edge_index_over_bt(ei_d2p_B, B=B, T=T1, N_src=N_dev, N_dst=N_prop, device=device)
-            edge_idx_1[('device', 'measures', 'property')] = ei_d2p_BT
+        # ---- Stage 1: property -> device (binary) ----
+        edge_idx_1 = {}
+        
+        # Build edge indices for each property type
+        for prop_type in self.property_types:
+            prop_node_type = f'prop_{prop_type}'
+            
+            # Skip if this property type doesn't exist in the graph
+            if prop_node_type not in N_prop_by_type:
+                continue
+                
+            N_prop = N_prop_by_type[prop_node_type]
+            
+            # Forward edges: property -> device
+            edge_key_forward = (prop_node_type, 'measured_by', 'device')
+            if edge_key_forward in edge_index_dict:
+                ei_p2d_B = edge_index_dict[edge_key_forward]['index'].to(device)
+                ei_p2d_BT = self._tile_edge_index_over_bt(
+                    ei_p2d_B, B=B, T=T1, N_src=N_prop, N_dst=N_dev, device=device
+                )
+                edge_idx_1[edge_key_forward] = ei_p2d_BT
+            
+            # Reverse edges: device -> property (if bidirectional)
+            if self.bidir_p2d:
+                edge_key_reverse = ('device', f'measures_{prop_type}', prop_node_type)
+                if edge_key_reverse in edge_index_dict:
+                    ei_d2p_B = edge_index_dict[edge_key_reverse]['index'].to(device)
+                    ei_d2p_BT = self._tile_edge_index_over_bt(
+                        ei_d2p_B, B=B, T=T1, N_src=N_dev, N_dst=N_prop, device=device
+                    )
+                    edge_idx_1[edge_key_reverse] = ei_d2p_BT
+
+        # Build input dict for hetero_conv_1
+        x_dict_stage1 = {'device': x_flat['device']}
+        for prop_node_type in N_prop_by_type.keys():
+            x_dict_stage1[prop_node_type] = x_flat[prop_node_type]
 
         out_bi_1 = self.hetero_conv_1(
-            x_dict={'property': x_flat['property'], 'device': x_flat['device']},
+            x_dict=x_dict_stage1,
             edge_index_dict=edge_idx_1
         )
-        # Always update device (forward p->d)
+        
+        # Always update device (aggregated from all property types)
         x_flat['device'] = self._blend_with_gate(self.g_p2d_dev, x_flat['device'], out_bi_1['device'])
-        # Update property only if reverse relation is enabled
-        if self.bidir_p2d and 'property' in out_bi_1:
-            x_flat['property'] = self._blend_with_gate(self.g_d2p_prop, x_flat['property'], out_bi_1['property'])
+        
+        # Update each property type if reverse relation is enabled
+        if self.bidir_p2d:
+            for prop_type in self.property_types:
+                prop_node_type = f'prop_{prop_type}'
+                if prop_node_type in out_bi_1:
+                    x_flat[prop_node_type] = self._blend_with_gate(
+                        self.g_d2p_prop[prop_node_type], 
+                        x_flat[prop_node_type], 
+                        out_bi_1[prop_node_type]
+                    )
+        
 
         # ---- Stage 2: device -> room (binary) ----
         ei_d2r_B  = edge_index_dict[('device', 'contained_in', 'room')]['index'].to(device)
@@ -362,10 +424,18 @@ class HeteroSTBlock(nn.Module):
         # Reshape room/device back to (B, C_mid, T1, N)
         C_room_mid = x_mid['room'].shape[1]
         C_dev_mid  = x_mid['device'].shape[1]
-        C_prop_mid = x_mid['property'].shape[1]
         x_room = self._unflat_bt(x_flat['room'],   B, T1, N_room, C_room_mid)
         x_dev  = self._unflat_bt(x_flat['device'], B, T1, N_dev,  C_dev_mid)
-        x_prop = self._unflat_bt(x_flat['property'], B, T1, N_prop, C_prop_mid)
+        x_props = {}
+        for prop_type in self.property_types:
+            prop_node_type = f'prop_{prop_type}'
+            if prop_node_type in N_prop_by_type:
+                C_prop_mid = x_mid[prop_node_type].shape[1]
+                N_prop = N_prop_by_type[prop_node_type]
+                x_props[prop_node_type] = self._unflat_bt(
+                    x_flat[prop_node_type], B, T1, N_prop, C_prop_mid
+                )
+        
 
         # ---- Stage 3: broadcast time/outside -> room ----
         # --- 3a. Apply Time FiLM ---
@@ -451,10 +521,12 @@ class HeteroSTBlock(nn.Module):
         x_after_spatial = {
             'room':     x_room,
             'device':   x_dev,
-            'property': x_prop,
             'outside':  x_mid['outside'],
             'time':     x_mid['time'],
         }
+        for prop_node_type, x_prop in x_props.items():
+            x_after_spatial[prop_node_type] = x_prop
+        
         x_relu = {k: self.relu(v) for k, v in x_after_spatial.items()}
 
         x_out = self.temp2(x_relu)  # dict: (B, C_out, T2, N)

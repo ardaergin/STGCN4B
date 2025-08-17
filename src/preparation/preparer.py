@@ -626,5 +626,6 @@ class Heterogeneous(STGCNDataPreparer):
                                                                                         # NOTE: Tuple[str, str] is used for device-property pairs, 
                                                                                         #       the rest of the node types are single strings. 
             "feature_names":            self.hetero_input["feature_names"],             # Dict[str, List[str]]
+            "property_types":           self.hetero_input.get("property_types", []),
         }
         self.input_dict |= hetero_feature_data

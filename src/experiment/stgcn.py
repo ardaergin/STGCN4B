@@ -816,9 +816,10 @@ class Heterogeneous(STGCNExperimentRunner):
         model = HeterogeneousSTGCN(
             args                = args,
             metadata            = metadata,
-            node_feature_dims   = node_feature_dims,
-            task_type           = args.task_type,
             all_edges_by_block  = all_edges_by_block,
+            node_feature_dims   = node_feature_dims,
+            property_types      = self.input_dict["property_types"],
+            task_type           = args.task_type,
         ).to(device)
         if self.args.compile_model: 
             model = self._compile_model(args, model)

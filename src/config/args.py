@@ -513,7 +513,7 @@ def _parse_kv_ints(s: str) -> dict:
         out[k.strip()] = int(v)
     return out
 
-def build_channel_dicts(args) -> tuple[dict, dict]:
+def build_channel_dicts(args, property_types: list[str]) -> tuple[dict, dict]:
     """
     Returns (mid_dict, out_dict) for node types you have.
     Compact string values override individual flags. 
@@ -522,21 +522,35 @@ def build_channel_dicts(args) -> tuple[dict, dict]:
     compact_mid = _parse_kv_ints(args.ch_mid)
     compact_out = _parse_kv_ints(args.ch_out)
 
+    # Base widths (single "property" width reused for all prop_* types)
+    room_mid     = compact_mid.get("room",     args.ch_room_mid)
+    device_mid   = compact_mid.get("device",   args.ch_device_mid)
+    prop_mid_w   = compact_mid.get("property", args.ch_property_mid)
+    time_mid     = compact_mid.get("time",     args.ch_time_mid)
+    outside_mid  = compact_mid.get("outside",  args.ch_outside_mid)
+
+    room_out     = compact_out.get("room",     args.ch_room_out)
+    device_out   = compact_out.get("device",   args.ch_device_out)
+    prop_out_w   = compact_out.get("property", args.ch_property_out)
+    time_out     = compact_out.get("time",     args.ch_time_out)
+    outside_out  = compact_out.get("outside",  args.ch_outside_out)
+
     mid = {
-        "room":     compact_mid.get("room",     args.ch_room_mid),
-        "device":   compact_mid.get("device",   args.ch_device_mid),
-        "property": compact_mid.get("property", args.ch_property_mid),
-        "time":     compact_mid.get("time",     args.ch_time_mid),
-        "outside":  compact_mid.get("outside",  args.ch_outside_mid),
+        "room":    room_mid,
+        "device":  device_mid,
+        "time":    time_mid,
+        "outside": outside_mid,
+        **{f"prop_{pt}": prop_mid_w for pt in property_types},
     }
     out = {
-        "room":     compact_out.get("room",     args.ch_room_out),
-        "device":   compact_out.get("device",   args.ch_device_out),
-        "property": compact_out.get("property", args.ch_property_out),
-        "time":     compact_out.get("time",     args.ch_time_out),
-        "outside":  compact_out.get("outside",  args.ch_outside_out),
+        "room":    room_out,
+        "device":  device_out,
+        "time":    time_out,
+        "outside": outside_out,
+        **{f"prop_{pt}": prop_out_w for pt in property_types},
     }
     return mid, out
+
 
 def add_LightGBM_args(parser):
     """
