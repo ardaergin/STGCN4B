@@ -622,8 +622,20 @@ class Heterogeneous(STGCNDataPreparer):
         hetero_file_path = os.path.join(self.args.processed_data_dir, f"{hetero_fname_base}.joblib")
         logger.info(f"Loading heterogeneous graph data from {hetero_file_path}")
         # Loading to CPU. carrying them to GPU after DataLoader and at training:
-        self.hetero_input = torch.load(hetero_file_path, map_location='cpu') 
-
+        self.hetero_input = torch.load(hetero_file_path, map_location='cpu')
+        
+        # Logging: feature names
+        if "feature_names" in self.hetero_input:
+            logger.info("="*50)
+            logger.info("INSPECTING LOADED 'feature_names' DICTIONARY:")
+            feature_names_dict = self.hetero_input["feature_names"]
+            for node_type, names_list in sorted(feature_names_dict.items()):
+                logger.info(f"  - Node Type '{node_type}' ({len(names_list)} features):")
+                logger.info(f"    {names_list}")
+            logger.info("="*50)
+        else:
+            logger.warning("'feature_names' dictionary not found in loaded data.")
+    
     def _drop_requested_features(self) -> None:
         """
         Drop features from the HeteroData objects based on substrings.
