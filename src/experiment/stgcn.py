@@ -3,6 +3,7 @@
 from copy import deepcopy
 from typing import Any, Dict, List, Tuple
 from argparse import Namespace
+from collections import defaultdict
 from abc import ABC, abstractmethod
 import numpy as np
 import torch
@@ -113,32 +114,35 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
                 f"std={np.nanstd(norm_features):.4f}"
             )
         elif isinstance(norm_features, dict):
-            # Heterogeneous case: gather all torch tensors and compute stats
-            all_feature_tensors = []
+            # Heterogeneous case: Collect tensors PER NODE TYPE and log stats
+            tensors_by_nodetype = defaultdict(list)
             for snapshot in norm_features.values():
                 for node_type in snapshot.node_types:
                     if 'x' in snapshot[node_type] and snapshot[node_type].x is not None:
-                        all_feature_tensors.append(snapshot[node_type].x)
+                        tensors_by_nodetype[node_type].append(snapshot[node_type].x)
 
-            if not all_feature_tensors:
-                logger.info("Normalized heterogeneous features stats: No feature tensors found.")
-            else:
-                # Concatenate all tensors into one large tensor for global stats
-                combined_tensor = torch.cat(all_feature_tensors)
+            logger.info("Normalized heterogeneous features stats:")
+            for node_type, tensor_list in tensors_by_nodetype.items():
+                if not tensor_list:
+                    logger.info(f"  - Node Type '{node_type}': No feature tensors found.")
+                    continue
+
+                # Concatenate all tensors for THIS node type (now shapes will match)
+                combined_tensor = torch.cat(tensor_list, dim=0)
                 
-                # Filter out NaNs to get accurate stats on valid values
                 valid_values = combined_tensor[~torch.isnan(combined_tensor)]
                 
                 if valid_values.numel() > 0:
+                    num_features = combined_tensor.shape[1]
                     logger.info(
-                        "Normalized heterogeneous features stats: "
+                        f"  - Node Type '{node_type}' ({num_features} features): "
                         f"min={torch.min(valid_values).item():.4f}, "
                         f"max={torch.max(valid_values).item():.4f}, "
                         f"mean={torch.mean(valid_values).item():.4f}, "
                         f"std={torch.std(valid_values).item():.4f}"
                     )
                 else:
-                    logger.info("Normalized heterogeneous features stats: All feature values are NaN.")
+                    logger.info(f"  - Node Type '{node_type}': All feature values are NaN.")
         
         ### END OF LOGGING ###
 
