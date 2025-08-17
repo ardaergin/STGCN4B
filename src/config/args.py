@@ -253,7 +253,7 @@ def add_base_modelling_args(parser):
                                 'has_measurement'
                                 'hasWindows', 'has_multiple_windows', 
                                 'window_direction_sin', 'window_direction_cos', 
-                                'isProperRoom', 
+                                'isProperRoom', 'norm_areas_minmax',
                                 'norm_area_minmax', 'norm_area_prop',
                                 # Time features
                                 'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'is_workhour',
