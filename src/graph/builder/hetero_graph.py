@@ -245,7 +245,10 @@ class HeteroGraphBuilderMixin:
     def _add_property_nodes_by_type(self, hetero_data: HeteroData) -> None:
         """Add property nodes as separate node types for each property."""
         # Store temporal feature names for later use
-        temporal_prop_features = self.device_level_df_temporal_feature_names
+        self.temporal_prop_features = [
+            f for f in self.device_level_df_temporal_feature_names
+            if f in self.args.hetero_prop_features
+        ]
         
         for prop_type in self.used_property_types:
             prop_node_type = f'prop_{prop_type}'
@@ -257,7 +260,7 @@ class HeteroGraphBuilderMixin:
             
             # For base graph, we only need placeholders for temporal features
             # No static features needed since the property type is encoded in the node type itself
-            n_temporal_features = len(temporal_prop_features)
+            n_temporal_features = len(self.temporal_prop_features)
             
             # Initialize with NaN placeholders (will be filled per time bucket)
             property_features = torch.full(
@@ -269,7 +272,7 @@ class HeteroGraphBuilderMixin:
             hetero_data[prop_node_type].x = property_features
             
             # Store feature names for this property type
-            self.feature_names[prop_node_type] = temporal_prop_features
+            self.feature_names[prop_node_type] = self.temporal_prop_features
             
             logger.info(f"Added {n_nodes} {prop_node_type} nodes with {n_temporal_features} temporal feature placeholders")
         
@@ -523,7 +526,7 @@ class HeteroGraphBuilderMixin:
         
         df = self.device_level_df        
         bucket_df = df[df['bucket_idx'] == bucket_idx]
-        cols = self.device_level_df_temporal_feature_names
+        cols = self.temporal_prop_features
         
         # Update each property type separately
         for prop_type in self.used_property_types:

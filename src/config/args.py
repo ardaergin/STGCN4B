@@ -174,6 +174,15 @@ def add_OfficeGraph_args(parser):
                         dest="mask_workhours",
                         help="Disable work-hour masking. By default, masking is enabled."
     )
+    
+    parser.add_argument("--hetero_prop_features", type=str,
+        nargs="+",
+        default=["mean", "std", "max", "min", "count", "has_measurement"],
+        help=(
+            "Subset of property-level temporal features to use in heterogeneous graphs. "
+            "Default is the full set: mean, std, max, min, count, has_measurement."
+        ),
+    )
 
 
 def add_base_modelling_args(parser):
