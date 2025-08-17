@@ -100,6 +100,12 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         )
         norm_features = normalizer.transform_features(all_data=self.all_X)
         
+        logger.info(f"Normalized features stats: "
+            f"min={np.nanmin(norm_features):.2f}, "
+            f"max={np.nanmax(norm_features):.2f}, "
+            f"mean={np.nanmean(norm_features):.2f}, "
+            f"std={np.nanstd(norm_features):.2f}")
+        
         # Targets
         train_target_slice = self.input_dict["target_array"][train_indices]
         train_mask_slice = self.input_dict["target_mask"][train_indices]
