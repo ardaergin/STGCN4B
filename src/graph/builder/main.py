@@ -306,7 +306,7 @@ class OfficeGraphBuilder(
 
     def run_heterograph_pipeline(self, args):
         logger.info("========== Running the heterogeneous graph pipeline... ==========")
-
+        
         # NOTE: we do want the option to have binary or weighted,
         #       however, there is no reason to create two different
         #       data files of temporal graphs. In the preparation phase,
@@ -323,7 +323,7 @@ class OfficeGraphBuilder(
         self.build_hetero_temporal_graphs()
         hetero_input = self.prepare_hetero_stgcn_input()
         
-        fname_base = get_data_filename(file_type="hetero_input", interval=args.interval)
+        fname_base = get_data_filename(file_type="hetero_input", interval=args.interval, hetero_mode=args.hetero_mode)
         self.save_hetero_input(hetero_input, file_name=f"{fname_base}.joblib")
         
         logger.info("========== Finished the heterogeneous graph pipeline. ==========")

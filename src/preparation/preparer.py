@@ -70,6 +70,7 @@ class BaseDataPreparer(ABC):
             weather_mode    = self.args.weather_mode,
             model_family    = self.args.model_family,
             task_type       = self.args.task_type,
+            hetero_mode     = self.args.hetero_mode
         )
         data_file_path = os.path.join(self.args.processed_data_dir, f"{data_fname_base}.parquet")
         logger.info(f"Loading parquet data from {data_file_path}")

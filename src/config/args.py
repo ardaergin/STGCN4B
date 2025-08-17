@@ -183,6 +183,12 @@ def add_OfficeGraph_args(parser):
             "Default is the full set: mean, std, max, min, count, has_measurement."
         ),
     )
+    parser.add_argument("--hetero_mode", type=str,
+        default="full",
+        choices=["full", "minimal"],
+        help="Mode for heterogeneous graph construction. Specifies the feature set to use."
+        "Minimal if 'mean' + 'has_measurement', full if all features."
+    )
 
 
 def add_base_modelling_args(parser):
