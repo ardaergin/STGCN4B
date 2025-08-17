@@ -115,35 +115,47 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
                 f"std={np.nanstd(norm_features):.4f}"
             )
         elif isinstance(norm_features, dict):
-            # Heterogeneous case: Collect tensors PER NODE TYPE and log stats
+            logger.info("Normalized heterogeneous features stats (per-feature):")
             tensors_by_nodetype = defaultdict(list)
             for snapshot in norm_features.values():
                 for node_type in snapshot.node_types:
                     if 'x' in snapshot[node_type] and snapshot[node_type].x is not None:
                         tensors_by_nodetype[node_type].append(snapshot[node_type].x)
 
-            logger.info("Normalized heterogeneous features stats:")
             for node_type, tensor_list in tensors_by_nodetype.items():
                 if not tensor_list:
                     logger.info(f"  - Node Type '{node_type}': No feature tensors found.")
                     continue
 
-                # Concatenate all tensors for THIS node type (now shapes will match)
+                # Concatenate all tensors for this node type
                 combined_tensor = torch.cat(tensor_list, dim=0)
                 
-                valid_values = combined_tensor[~torch.isnan(combined_tensor)]
-                
-                if valid_values.numel() > 0:
-                    num_features = combined_tensor.shape[1]
-                    logger.info(
-                        f"  - Node Type '{node_type}' ({num_features} features): "
-                        f"min={torch.min(valid_values).item():.4f}, "
-                        f"max={torch.max(valid_values).item():.4f}, "
-                        f"mean={torch.mean(valid_values).item():.4f}, "
-                        f"std={torch.std(valid_values).item():.4f}"
-                    )
-                else:
-                    logger.info(f"  - Node Type '{node_type}': All feature values are NaN.")
+                # Get the feature names for this node type from your input_dict
+                feature_names_list = self.input_dict["feature_names"].get(node_type, [])
+                num_features = combined_tensor.shape[1]
+
+                logger.info(f"  --- Stats for Node Type: '{node_type}' ({num_features} features) ---")
+
+                # Iterate through each feature column and log its specific stats
+                for i in range(num_features):
+                    name = feature_names_list[i] if i < len(feature_names_list) else f"Feature_{i}"
+                    feature_col = combined_tensor[:, i]
+                    
+                    valid_values = feature_col[~torch.isnan(feature_col)]
+
+                    if valid_values.numel() > 0:
+                        min_val = torch.min(valid_values).item()
+                        max_val = torch.max(valid_values).item()
+                        mean_val = torch.mean(valid_values).item()
+                        std_val = torch.std(valid_values).item()
+
+                        logger.info(
+                            f"    Feature '{name:<20}': "
+                            f"min={min_val:<10.4f}, max={max_val:<10.4f}, "
+                            f"mean={mean_val:<10.4f}, std={std_val:<10.4f}"
+                        )
+                    else:
+                        logger.info(f"    Feature '{name:<20}': All NaN values.")
         
         ### END OF LOGGING ###
 
