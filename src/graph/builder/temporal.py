@@ -489,15 +489,53 @@ class TemporalBuilderMixin:
         # Fix std for single measurements (when count=1, std should be 0)
         count_is_one = full_df['count'] == 1
         full_df.loc[count_is_one, 'std'] = 0.0
-        
-        # Logging
+
+        # === Logging ===
         logger.info("=" * 40)
         logger.info(f"BUILT FULL DEVICE FEATURE MATRIX ({len(full_df)} rows)")
+        
+        # Has measurement mask
         missing_mask = full_df['has_measurement'] == 0.0
         missing_pct = missing_mask.mean() * 100
         logger.info(f"Sparsity: {missing_mask.sum()} entries ({missing_pct:.1f}%) have no valid measurements.")
-        logger.info("=" * 40)
         
+        # Count
+        total_rows = len(full_df)
+        count_zero = (full_df['count'] == 0).sum()
+        count_one = (full_df['count'] == 1).sum()
+        count_many = (full_df['count'] > 1).sum()
+        
+        logger.info(
+            f"No measurements (count=0):    {count_zero:10,} "
+            f"({(count_zero/total_rows):.1%})"
+        )
+        logger.info(
+            f"Single measurement (count=1): {count_one:10,} "
+            f"({(count_one/total_rows):.1%})"
+        )
+        logger.info(
+            f"Multiple measurements (count>1): {count_many:9,} "
+            f"({(count_many/total_rows):.1%})"
+        )
+        
+        # Variation
+        count_std_zero = (full_df['std'] == 0).sum()
+        
+        # Check where mean, min, and max are all equal (ignores NaNs automatically)
+        equal_stats_mask = (full_df['mean'] == full_df['min']) & (full_df['mean'] == full_df['max'])
+        count_equal_stats = equal_stats_mask.sum()
+
+        logger.info("-" * 20 + " Variation Statistics " + "-" * 20)
+        logger.info(
+            f"Instances with std == 0:        {count_std_zero:10,} "
+            f"({(count_std_zero/total_rows):.1%})"
+        )
+        logger.info(
+            f"Instances with mean==min==max:  {count_equal_stats:10,} "
+            f"({(count_equal_stats/total_rows):.1%})"
+        )
+        logger.info("=" * 40)        
+
         # Store the final DataFrame
         self.device_level_df = full_df
         self.device_level_df_temporal_feature_names = [
