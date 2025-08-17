@@ -13,7 +13,7 @@ class TemporalBuilderMixin:
             self, 
             start_time: str = "2022-03-07 00:00:00",
             end_time: str = "2023-01-29 00:00:00",
-            interval: str   = "1h",
+            interval: str   = "30min",
             use_sundays: bool = False
     ) -> None:
         """
@@ -289,137 +289,222 @@ class TemporalBuilderMixin:
         
         return None
     
-    
     ##############################
-    # Device-level DataFrame
+    # Property-level DataFrame
     ##############################
 
-    def build_device_level_df(self) -> None:
+    def build_property_level_df(self) -> None:
         """
-        Constructs a complete device-level feature DataFrame.
-
-        This function orchestrates the entire process of transforming raw time-series
-        data into a structured, dense DataFrame. It is designed to be both highly
-        performant and robust against missing or invalid data.
-
-        The process involves:
-        1.  **Performant Flattening**: Gathers raw data using an efficient, single-pass
-            approach with a pre-computed lookup map.
-        2.  **Data Cleaning**: Explicitly removes measurements with invalid (NaN) values
-            before any processing.
-        3.  **Aggregation**: Aggregates the measurements into time buckets.
-        4.  **Grid Expansion & Reindexing**: Expands the aggregated data into a dense grid
-            covering every device, property, and time bucket.
-        5.  **Robust Imputation**: Imputes to column 'count' where the ground truth can be
-            derived. Further Creates a 'has_measurement' flag based on the final count of 
-            valid data points. If a "count" value is `1` for a given measurement, the 
-            corresponding "std" is set to 0, since this is also a ground truth.
-
-        The final DataFrame is stored in `self.device_level_df`.
-        """
-        if not hasattr(self, 'time_buckets') or not self.time_buckets:
-            raise ValueError("Time buckets are not initialized. Please call initialize_time_parameters() first.")
-
-        logger.info("Starting to build the device-level feature DataFrame...")
-
-        # === Stage 1: Data Flattening ===
-        logger.info("[Step 1/5] Flattening raw measurements...")
-        records = []
-        used_property_types = self.used_property_types
+        Build a DataFrame containing raw property measurements without time bucketing.
         
+        This method creates a foundational DataFrame with columns:
+        - timestamp: The exact timestamp of the measurement
+        - device_uri: The device URI as a string
+        - property_type: The property type (e.g., Temperature, CO2Level, Humidity)
+        - value: The measurement value
+        
+        The resulting DataFrame contains only valid measurements within the specified
+        time range and for the selected property types. No aggregation or bucketing
+        is performed at this stage.
+        
+        Stores the result in `self.property_level_df`.
+        """
+        logger.info("Building property-level DataFrame with raw measurements...")
+        
+        # Create property URI to type mapping for efficient lookups
         prop_uri_to_type = {
             uri: p_type
             for p_type, uris in self.office_graph.property_type_mappings.items()
             for uri in uris
         }
         
+        # Collect all valid measurements
+        records = []
+        total_measurements = 0
+        skipped_out_of_range = 0
+        skipped_wrong_property = 0
+        
         for meas in self.office_graph.measurements.values():
+            total_measurements += 1
+            
+            # Filter by time range
             if not (self.start_time <= meas.timestamp < self.end_time):
+                skipped_out_of_range += 1
                 continue
             
+            # Filter by property type
             prop_type = prop_uri_to_type.get(meas.property_type)
-            if not prop_type or prop_type not in used_property_types:
+            if not prop_type or prop_type not in self.used_property_types:
+                skipped_wrong_property += 1
                 continue
             
+            # Add valid measurement
             records.append({
-                "device_uri_str": str(meas.device_uri),
-                "property_type": prop_type,
                 "timestamp": meas.timestamp,
+                "device_uri": str(meas.device_uri),
+                "property_type": prop_type,
                 "value": meas.value
             })
-
+        
         if not records:
-            raise ValueError("No measurements found within the specified time range and for the given properties.")
+            raise ValueError(
+                f"No measurements found within the specified time range "
+                f"({self.start_time} to {self.end_time}) and for the given properties "
+                f"({self.used_property_types}). Total measurements: {total_measurements}, "
+                f"Out of range: {skipped_out_of_range}, Wrong property: {skipped_wrong_property}"
+            )
         
-        
-        # === Stage 2: Initial DataFrame and Robust Cleaning ===
-        logger.info("[Step 2/5] Cleaning raw measurement data...")
+        # Create DataFrame
         df = pd.DataFrame.from_records(records)
         
-        # Explicitly drop records where the measurement value itself is NaN.
+        # Drop any rows with NaN values
         initial_rows = len(df)
         df.dropna(subset=['value'], inplace=True)
-        if initial_rows > len(df):
-            logger.info(f"Dropped {initial_rows - len(df)} rows with invalid/NaN measurement values.")
-
-        df['device_uri_str'] = df['device_uri_str'].astype('category')
+        rows_with_nan = initial_rows - len(df)
+        
+        # Convert categorical columns for memory efficiency
+        df['device_uri'] = df['device_uri'].astype('category')
         df['property_type'] = df['property_type'].astype('category')
         
+        # Store the DataFrame
+        self.property_level_df = df
+        
+        # Calculate and log statistics
+        n_measurements = len(df)
+        n_unique_devices = df['device_uri'].nunique()
+        n_unique_properties = df['property_type'].nunique()
+        
+        logger.info("=" * 60)
+        logger.info("PROPERTY-LEVEL DATAFRAME STATISTICS")
+        logger.info("=" * 60)
+        logger.info(f"Total measurements processed: {total_measurements:,}")
+        logger.info(f"  - Skipped (out of time range): {skipped_out_of_range:,}")
+        logger.info(f"  - Skipped (wrong property type): {skipped_wrong_property:,}")
+        logger.info(f"  - Dropped (NaN values): {rows_with_nan:,}")
+        logger.info(f"Valid measurements retained: {n_measurements:,}")
+        logger.info(f"Unique devices: {n_unique_devices}")
+        logger.info(f"Property types: {n_unique_properties} ({', '.join(df['property_type'].unique())})")
+        
+        # Log average frequency of measurments per property type
+        # Step 1: Define a function to calculate avg interval for a single device-property group
+        def calculate_avg_interval(group):
+            if len(group) < 2:
+                return pd.NaT  # Cannot calculate an interval with less than 2 points
+            # Sort by time, calculate difference between consecutive timestamps, and get the mean
+            return group['timestamp'].sort_values().diff().mean()
 
-        # === Stage 3: Bucketing and Aggregation ===
-        logger.info("[Step 3/5] Aggregating measurements into time buckets...")
+        # Step 2: Apply this function to each device-property group
+        avg_intervals_per_device = df.groupby(['device_uri', 'property_type']).apply(calculate_avg_interval)
+
+        # Step 3: Now, average those results across devices for each property type
+        avg_intervals_by_prop = avg_intervals_per_device.groupby(level='property_type').mean()
+        
+        logger.info("-" * 60)
+        logger.info("Average measurements per property type:")
+        for prop_type in sorted(df['property_type'].unique()):
+            prop_data = df[df['property_type'] == prop_type]
+            avg_value = prop_data['value'].mean()
+            std_value = prop_data['value'].std()
+            count = len(prop_data)
+            pct = (count / n_measurements) * 100
+            
+            # Use the pre-calculated, accurate average interval
+            avg_interval_str = ""
+            avg_delta = avg_intervals_by_prop.get(prop_type)
+            if pd.notna(avg_delta):
+                avg_seconds = avg_delta.total_seconds()
+                avg_interval_str = f", avg interval = {avg_seconds:,.1f}s"
+
+            logger.info(
+                f"  {prop_type:15s}: {count:7,} measurements ({pct:5.1f}%), "
+                f"avg value = {avg_value:8.2f} (±{std_value:.2f}){avg_interval_str}"
+            )
+                
+        return None
+    
+    
+    ##############################
+    # Device-level DataFrame
+    ##############################
+    
+    def build_device_level_df(self) -> None:
+        """
+        Constructs a complete device-level feature DataFrame.
+        
+        This function uses the property_level_df as its foundation and performs:
+        1. Time bucketing of raw measurements
+        2. Aggregation into statistical features
+        3. Grid expansion to cover all device-property-bucket combinations
+        4. Imputation of known values (count=0 for missing, std=0 for single measurements)
+        
+        The final DataFrame is stored in `self.device_level_df`.
+        """
+        if not hasattr(self, 'time_buckets'):
+            raise ValueError("time_buckets not found. Run initialize_time_parameters() first.")
+        if not hasattr(self, 'property_level_df'):
+            raise ValueError("property_level_df not found. Run build_property_level_df() first.")
+        df = self.property_level_df.copy()
+        
+        logger.info("Starting to build the device-level feature DataFrame...")
+        
+        # === Stage 1: Bucketing ===
+        logger.info("[Step 1/4] Assigning measurements to time buckets...")
         bin_edges = [start for start, _ in self.time_buckets] + [self.time_buckets[-1][1]]
         labels = list(range(len(self.time_buckets)))
         df["bucket_idx"] = pd.cut(df["timestamp"], bins=bin_edges, right=False, labels=labels)
+        
+        # Drop measurements that don't fall into any bucket (shouldn't happen, but safety check)
         df.dropna(subset=["bucket_idx"], inplace=True)
         df["bucket_idx"] = df["bucket_idx"].astype(int)
-
-        # Defining aggregation stats, aggregate with pandas groupby
+        
+        # === Stage 2: Aggregation ===
+        logger.info("[Step 2/4] Aggregating measurements by device, property, and time bucket...")
         stats = ["mean", "std", "max", "min", "count"]
-        agg_df = df.groupby(["device_uri_str", "property_type", "bucket_idx"])["value"].agg(stats).reset_index()
-
-
-        # === Stage 4: Grid Expansion & Reindexing ===
-        logger.info("[Step 4/5] Expanding to a full grid and reindexing...")
-
+        agg_df = df.groupby(["device_uri", "property_type", "bucket_idx"])["value"].agg(stats).reset_index()
+        
+        # === Stage 3: Grid Expansion ===
+        logger.info("[Step 3/4] Expanding to a full grid and reindexing...")
         full_idx = pd.MultiIndex.from_product(
             [
-                agg_df['device_uri_str'].unique(),
+                agg_df['device_uri'].unique(),
                 agg_df['property_type'].unique(),
                 range(len(self.time_buckets))
             ],
-            names=["device_uri_str", "property_type", "bucket_idx"]
+            names=["device_uri", "property_type", "bucket_idx"]
         )
-        full_df = agg_df.set_index(['device_uri_str', 'property_type', 'bucket_idx']).reindex(full_idx).reset_index()
+        full_df = agg_df.set_index(['device_uri', 'property_type', 'bucket_idx']).reindex(full_idx).reset_index()
         
+        # Rename device_uri to device_uri_str for consistency with the rest of the codebase
+        full_df.rename(columns={'device_uri': 'device_uri_str'}, inplace=True)
         
-        # === Stage 5: Final Imputation & Feature Creation ===
-
-        # For the new rows created by reindex, 'count' is NaN, can be safely filled with 0
+        # === Stage 4: Imputation & Feature Creation ===
+        logger.info("[Step 4/4] Performing imputation and creating features...")
+        
+        # For newly created rows, 'count' is NaN and can be safely filled with 0
         full_df['count'] = full_df['count'].fillna(0.0)
-
-        # Creating binary flag of 'has_measurement'
+        
+        # Create binary flag for 'has_measurement'
         full_df['has_measurement'] = (full_df['count'] > 0).astype(float)
-
-        # Fixing std for single-measurements
+        
+        # Fix std for single measurements (when count=1, std should be 0)
         count_is_one = full_df['count'] == 1
         full_df.loc[count_is_one, 'std'] = 0.0
-
-        # --- Logging and Storing ---
+        
+        # Logging
         logger.info("=" * 40)
         logger.info(f"BUILT FULL DEVICE FEATURE MATRIX ({len(full_df)} rows)")
         missing_mask = full_df['has_measurement'] == 0.0
         missing_pct = missing_mask.mean() * 100
         logger.info(f"Sparsity: {missing_mask.sum()} entries ({missing_pct:.1f}%) have no valid measurements.")
         logger.info("=" * 40)
-
-        # Store the final, clean DataFrame
+        
+        # Store the final DataFrame
         self.device_level_df = full_df
         self.device_level_df_temporal_feature_names = [
             c for c in full_df.columns if c not in ('bucket_idx', 'device_uri_str', 'property_type')
         ]
+        
         return None
-
     
     
     ##############################

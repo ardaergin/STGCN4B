@@ -205,6 +205,7 @@ class OfficeGraphBuilder(
         )
         
         # Building different level feature DataFrames
+        self.build_property_level_df()
         self.build_device_level_df()
         self.build_room_level_df()
         self.build_floor_level_df()
