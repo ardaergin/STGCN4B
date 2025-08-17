@@ -174,7 +174,7 @@ def add_OfficeGraph_args(parser):
                         dest="mask_workhours",
                         help="Disable work-hour masking. By default, masking is enabled."
     )
-    
+
     parser.add_argument("--hetero_prop_features", type=str,
         nargs="+",
         default=["mean", "std", "max", "min", "count", "has_measurement"],
@@ -190,6 +190,11 @@ def add_OfficeGraph_args(parser):
         "Minimal if 'mean' + 'has_measurement', full if all features."
     )
 
+    parser.add_argument(
+        "--clear_high_counts",
+        action="store_true",
+        help="If set, clears all rows where count > 1 and drops std/max/min/count columns (keeps only mean + has_measurement)."
+    )
 
 def add_base_modelling_args(parser):
     """Parse common data and training arguments."""

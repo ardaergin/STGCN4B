@@ -220,8 +220,10 @@ class OfficeGraphBuilder(
             period              = 288,
             offset              = 287,
             extra_buckets       = anomaly_buckets,
-            clear_high_counts   = True,
+            clear_high_counts   = args.clear_high_counts,
         )
+        if args.clear_high_counts:
+            self.device_level_df_temporal_feature_names = ["mean", "has_measurement"]
         
         self.build_room_level_df()
         self.build_floor_level_df()
