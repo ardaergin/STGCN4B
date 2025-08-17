@@ -28,11 +28,12 @@ from ..models.STGCN4B.normalizer import Heterogeneous as HeterogeneousSTGCNNorma
 from ..models.STGCN4B.loader import get_data_loaders
 # Models
 from ..models.STGCN4B.homogeneous.models import HomogeneousSTGCN
-from ..models.STGCN4B.homogeneous.setup import create_gso # for Homogeneous
 from ..models.STGCN4B.heterogeneous.model import HeterogeneousSTGCN
-from ..models.STGCN4B.homogeneous.setup import create_optimizer, create_scheduler # for both
+# Utils
+from ..models.STGCN4B.gso_utils import create_gso
+from ..models.STGCN4B.optim_utils import create_optimizer, create_scheduler
 # Training
-from ..models.STGCN4B.homogeneous.train import train_model, evaluate_model
+from ..models.STGCN4B.train import train_model, evaluate_model
 from ..utils.tracking import TrainingResult, TrainingHistory
 
 import logging; logger = logging.getLogger(__name__)
