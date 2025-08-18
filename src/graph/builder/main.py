@@ -48,12 +48,12 @@ class OfficeGraphBuilder(
         super().__init__()
         self.office_graph = office_graph
         
-        # Property configuration
-        self.ignored_property_types = {
-            "DeviceStatus", "BatteryLevel",                         # unnecessary
-            # "Contact", "Motion", "thermostatHeatingSetpoint"      # too few measurements
-            }
-        self.used_property_types = ["Temperature", "CO2Level", "Humidity"]
+        # Property type configuration
+        self.used_property_types = [
+            "Temperature", "CO2Level", "Humidity",
+            # "DeviceStatus", "BatteryLevel",                       # unnecessary
+            # "Contact", "Motion", "thermostatHeatingSetpoint",     # too few measurements
+        ]
         
         # Static Room class attributes to use for modeling, default 'standard' preset:
         self.static_room_attributes = ['hasWindows', 'has_multiple_windows', 
