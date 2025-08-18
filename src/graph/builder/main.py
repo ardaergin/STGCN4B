@@ -50,11 +50,10 @@ class OfficeGraphBuilder(
         
         # Property configuration
         self.ignored_property_types = {
-            "DeviceStatus", "BatteryLevel", # unnecessary
-            # "Contact", "Motion", 
-            "thermostatHeatingSetpoint" # too few measurements
+            "DeviceStatus", "BatteryLevel",                         # unnecessary
+            # "Contact", "Motion", "thermostatHeatingSetpoint"      # too few measurements
             }
-        self.used_property_types = ["Temperature", "CO2Level", "Humidity", "Contact", "Motion"]
+        self.used_property_types = ["Temperature", "CO2Level", "Humidity"]
         
         # Static Room class attributes to use for modeling, default 'standard' preset:
         self.static_room_attributes = ['hasWindows', 'has_multiple_windows', 
@@ -223,6 +222,12 @@ class OfficeGraphBuilder(
         )
         if args.clear_high_counts:
             self.device_level_df_temporal_feature_names = ["mean", "has_measurement"]
+        
+        if args.drop_high_missingness:
+            self.device_level_df = self.drop_high_missingness(
+                df=self.device_level_df,
+                threshold=args.missingness_threshold,
+            )
         
         self.build_room_level_df()
         self.build_floor_level_df()

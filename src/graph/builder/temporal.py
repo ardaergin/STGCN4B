@@ -639,6 +639,73 @@ class TemporalBuilderMixin:
                 
         return df
     
+    @staticmethod
+    def drop_high_missingness(
+            df: pd.DataFrame, 
+            threshold: float = 0.75
+    ) -> pd.DataFrame:
+        """
+        Drop device–property combinations that exceed a missingness threshold.
+        """
+        if not {"device_uri_str", "property_type", "mean"}.issubset(df.columns):
+            raise ValueError("df must contain 'device_uri_str', 'property_type', and 'mean' columns")
+        
+        n_devices_before = df["device_uri_str"].nunique()
+        logger.info(f"[Device counts BEFORE filtering] Total: {n_devices_before}")
+        for prop, cnt in df.groupby("property_type")["device_uri_str"].nunique().items():
+            logger.info(f"  - {prop}: {cnt} devices")
+
+        # Compute missingness per device–property
+        missingness = (
+            df.groupby(["device_uri_str", "property_type"])["mean"]
+            .apply(lambda x: x.isna().mean())
+        )
+        
+        # Select groups to keep
+        keep_mask = missingness <= threshold
+        to_drop = missingness[~keep_mask]
+        
+        if not to_drop.empty:
+            logger.info("Dropping %d device–property combos above %.1f%% missingness:",
+                        len(to_drop), threshold * 100)
+            for (dev, prop), frac in to_drop.items():
+                logger.info(f"  - {dev} ({prop}): {frac:.1%} NaN")
+        
+        # Filter the df
+        keep_keys = set(missingness[keep_mask].index)
+        mask = df.set_index(["device_uri_str", "property_type"]).index.isin(keep_keys)
+        df_filtered = df.loc[mask].reset_index(drop=True)
+
+        n_devices_after = df_filtered["device_uri_str"].nunique()
+        logger.info(f"[Device counts AFTER filtering] Total: {n_devices_after} "
+                    f"({n_devices_before - n_devices_after} removed)")
+        for prop, cnt in df_filtered.groupby("property_type")["device_uri_str"].nunique().items():
+            logger.info(f"  - {prop}: {cnt} devices")
+
+        # === Extra Logging: measurement counts ===
+        total_rows = len(df_filtered)
+        if "count" in df_filtered.columns:
+            count_zero = (df_filtered['count'] == 0).sum()
+            count_one = (df_filtered['count'] == 1).sum()
+            count_many = (df_filtered['count'] > 1).sum()
+
+            logger.info("-" * 20 + " Count Statistics " + "-" * 20)
+            logger.info(
+                f"No measurements (count=0):    {count_zero:10,} "
+                f"({(count_zero/total_rows):.1%})"
+            )
+            logger.info(
+                f"Single measurement (count=1): {count_one:10,} "
+                f"({(count_one/total_rows):.1%})"
+            )
+            logger.info(
+                f"Multiple measurements (count>1): {count_many:9,} "
+                f"({(count_many/total_rows):.1%})"
+            )
+            logger.info("-" * 60)
+
+        return df_filtered
+
     ##############################
     # Room-level DataFrame
     ##############################

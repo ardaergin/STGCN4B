@@ -196,6 +196,23 @@ def add_OfficeGraph_args(parser):
         help="If set, clears all rows where count > 1 and drops std/max/min/count columns (keeps only mean + has_measurement)."
     )
 
+    parser.add_argument(
+        "--drop_high_missingness",
+        action="store_true",
+        help=(
+            "Drop device–property pairs with high missingness (default threshold 75%). "
+            "If not set, only logs missingness statistics."
+        ),
+    )
+    
+    parser.add_argument(
+        "--missingness_threshold",
+        type=float,
+        default=0.15, # seperation of R5 with others
+        help="Threshold for maximum allowed missingness fraction per device–property (default: 0.75).",
+    )
+
+
 def add_base_modelling_args(parser):
     """Parse common data and training arguments."""
     
