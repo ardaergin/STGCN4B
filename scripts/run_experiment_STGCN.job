@@ -7,7 +7,7 @@
 #SBATCH --cpus-per-task=5
 #SBATCH --mem=64G
 #SBATCH --time=48:00:00
-#SBATCH --array=0-2
+#SBATCH --array=0
 #SBATCH --output=logs/experiments/stgcn/%A_%a.out # %A=job ID, %a=task ID
 #SBATCH --error=logs/experiments/stgcn/%A_%a.err
 
