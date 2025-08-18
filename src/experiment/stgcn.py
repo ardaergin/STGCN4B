@@ -102,63 +102,9 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         )
         norm_features = normalizer.transform_features(all_data=self.all_X)
         
-        ### LOGGING ###
+        # Subclass-specific logging
+        self._log_normalization_stats(x=norm_features)
         
-        # Log statistics based on the data type returned by the normalizer
-        if isinstance(norm_features, np.ndarray):
-            # Homogeneous case: use numpy for stats
-            logger.info(
-                "Normalized homogeneous features stats: "
-                f"min={np.nanmin(norm_features):.4f}, "
-                f"max={np.nanmax(norm_features):.4f}, "
-                f"mean={np.nanmean(norm_features):.4f}, "
-                f"std={np.nanstd(norm_features):.4f}"
-            )
-        elif isinstance(norm_features, dict):
-            logger.info("Normalized heterogeneous features stats (per-feature):")
-            tensors_by_nodetype = defaultdict(list)
-            for snapshot in norm_features.values():
-                for node_type in snapshot.node_types:
-                    if 'x' in snapshot[node_type] and snapshot[node_type].x is not None:
-                        tensors_by_nodetype[node_type].append(snapshot[node_type].x)
-
-            for node_type, tensor_list in tensors_by_nodetype.items():
-                if not tensor_list:
-                    logger.info(f"  - Node Type '{node_type}': No feature tensors found.")
-                    continue
-
-                # Concatenate all tensors for this node type
-                combined_tensor = torch.cat(tensor_list, dim=0)
-                
-                # Get the feature names for this node type from your input_dict
-                feature_names_list = self.input_dict["feature_names"].get(node_type, [])
-                num_features = combined_tensor.shape[1]
-
-                logger.info(f"  --- Stats for Node Type: '{node_type}' ({num_features} features) ---")
-
-                # Iterate through each feature column and log its specific stats
-                for i in range(num_features):
-                    name = feature_names_list[i] if i < len(feature_names_list) else f"Feature_{i}"
-                    feature_col = combined_tensor[:, i]
-                    
-                    valid_values = feature_col[~torch.isnan(feature_col)]
-
-                    if valid_values.numel() > 0:
-                        min_val = torch.min(valid_values).item()
-                        max_val = torch.max(valid_values).item()
-                        mean_val = torch.mean(valid_values).item()
-                        std_val = torch.std(valid_values).item()
-
-                        logger.info(
-                            f"    Feature '{name:<20}': "
-                            f"min={min_val:<10.4f}, max={max_val:<10.4f}, "
-                            f"mean={mean_val:<10.4f}, std={std_val:<10.4f}"
-                        )
-                    else:
-                        logger.info(f"    Feature '{name:<20}': All NaN values.")
-        
-        ### END OF LOGGING ###
-
         # Targets
         train_target_slice = self.input_dict["target_array"][train_indices]
         train_mask_slice = self.input_dict["target_mask"][train_indices]
@@ -170,6 +116,11 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         norm_target = normalizer.transform_target(targets=self.input_dict["target_array"])
         
         return norm_features, norm_target, normalizer
+    
+    @abstractmethod
+    def _log_normalization_stats(self, x):
+        """Abstract method for logging normalization statistics."""
+        pass
     
     @abstractmethod
     def _load_data_to_tensors(self, features: Any, targets: np.ndarray) -> Dict[str, Any]:
@@ -392,7 +343,7 @@ class Homogeneous(STGCNExperimentRunner):
     #########################
     # Split preparation
     #########################
-
+    
     @property
     def all_X(self) -> np.ndarray:
         """Returns the homogeneous feature array."""
@@ -401,7 +352,29 @@ class Homogeneous(STGCNExperimentRunner):
     def _slice_train_features(self, train_indices: List[int]) -> np.ndarray:
         """Slices the homogeneous feature array using the 'all_X' property."""
         return self.all_X[train_indices]
+    
+    def _log_normalization_stats(self, x: np.ndarray):
+        """Logs per-feature statistics for the normalized homogeneous feature array."""
+        logger.info("Normalized homogeneous features stats (per-feature):")
         
+        feature_names_list = self.input_dict["feature_names"]
+        num_features = x.shape[2]
+
+        for i in range(num_features):
+            name = feature_names_list[i] if i < len(feature_names_list) else f"Feature_{i}"
+            feature_data = x[:, :, i]
+
+            min_val = np.nanmin(feature_data)
+            max_val = np.nanmax(feature_data)
+            mean_val = np.nanmean(feature_data)
+            std_val = np.nanstd(feature_data)
+
+            logger.info(
+                f"  Feature '{name:<25}': "
+                f"min={min_val:<10.4f}, max={max_val:<10.4f}, "
+                f"mean={mean_val:<10.4f}, std={std_val:<10.4f}"
+            )
+    
     def _impute_split(
             self, 
             feature_array: np.ndarray, 
@@ -575,6 +548,47 @@ class Heterogeneous(STGCNExperimentRunner):
         only the keys (time indices) present in the training split.
         """
         return {idx: self.all_X[idx] for idx in train_indices}
+    
+    def _log_normalization_stats(self, x: Dict[int, HeteroData]):
+        """Logs per-feature statistics for the normalized heterogeneous graph snapshots."""
+        logger.info("Normalized heterogeneous features stats (per-feature):")
+        tensors_by_nodetype = defaultdict(list)
+        for snapshot in x.values():
+            for node_type in snapshot.node_types:
+                if 'x' in snapshot[node_type] and snapshot[node_type].x is not None:
+                    tensors_by_nodetype[node_type].append(snapshot[node_type].x)
+
+        for node_type, tensor_list in tensors_by_nodetype.items():
+            if not tensor_list:
+                logger.info(f"  - Node Type '{node_type}': No feature tensors found.")
+                continue
+
+            combined_tensor = torch.cat(tensor_list, dim=0)
+            feature_names_list = self.input_dict["feature_names"].get(node_type, [])
+            num_features = combined_tensor.shape[1]
+
+            logger.info(f"  --- Stats for Node Type: '{node_type}' ({num_features} features) ---")
+
+            for i in range(num_features):
+                name = feature_names_list[i] if i < len(feature_names_list) else f"Feature_{i}"
+                feature_col = combined_tensor[:, i]
+                
+                valid_values = feature_col[~torch.isnan(feature_col)]
+
+                if valid_values.numel() > 0:
+                    min_val, max_val, mean_val, std_val = (
+                        torch.min(valid_values).item(),
+                        torch.max(valid_values).item(),
+                        torch.mean(valid_values).item(),
+                        torch.std(valid_values).item()
+                    )
+                    logger.info(
+                        f"    Feature '{name:<20}': "
+                        f"min={min_val:<10.4f}, max={max_val:<10.4f}, "
+                        f"mean={mean_val:<10.4f}, std={std_val:<10.4f}"
+                    )
+                else:
+                    logger.info(f"    Feature '{name:<20}': All NaN values.")
     
     def _impute_split(
             self,
