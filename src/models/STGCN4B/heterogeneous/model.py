@@ -16,6 +16,7 @@ class HeterogeneousSTGCN(nn.Module):
         all_edges_by_block: List[Dict[tuple, Dict[str, Tensor]]],
         node_feature_dims:  Dict[str, int],
         property_types:     List[str],
+        num_devices:        int,
         task_type:          str = "measurement_forecast",
     ):
         super().__init__()
@@ -24,6 +25,15 @@ class HeterogeneousSTGCN(nn.Module):
         
         # Channel dimensions plan
         ch_mid_plan, ch_out_plan = build_channel_dicts(args, property_types)
+        
+        # Device (nodes) embeddings
+        self.device_embedding = nn.Embedding(
+            num_embeddings      = num_devices,
+            embedding_dim       = args.device_embed_dim
+        )
+        # Update node_feature_dims to reflect the embedding dimension
+        node_feature_dims = dict(node_feature_dims)
+        node_feature_dims['device'] = args.device_embed_dim
         
         # Sanity check if GAT heads
         if args.gconv_type_p2d == "gat":
@@ -94,25 +104,45 @@ class HeterogeneousSTGCN(nn.Module):
         Forward pass assumes x_pack["features"] contains tensors of shape (B, C, T, N).
         """
         x_dict = x_pack["features"]
-                
+        
+        ### Applying the device embeddings at the start of the forward pass ###
+        # 1. Get device indices. Shape is (B, 1, T, N_device), dtype=long.
+        # The indices are the same across time, so we take them from T=0.
+        device_indices = x_dict['device'][:, 0, 0, :].long()  # Shape: (B, N_device)
+        
+        # 2. Look up the embeddings.
+        # Output shape: (B, N_device, D_embedding)
+        device_features = self.device_embedding(device_indices)
+        
+        # 3. Reshape for the ST-Blocks, which expect (B, C, T, N).
+        # Permute to (B, D_embedding, N_device)
+        device_features = device_features.permute(0, 2, 1)
+        
+        # 4. Get the history length (T) from another node type and expand.
+        # Repeating the static embeddings across the time dimension.
+        T = x_dict['room'].shape[2]
+        x_dict['device'] = device_features.unsqueeze(2).expand(-1, -1, T, -1)
+        # Final shape for 'device' is now (B, D_embedding, T, N_device)
+        
+        
         for blk in self.st_blocks:
             x_dict = blk(x_dict)
-
+        
         # We only care about 'room' nodes for the final forecast, as that's our target
         x_room = x_dict['room'] # Shape: (B, C, T_out, N_room)
         
         # Reshape for the OutputBlock
         B, C, T, N_room = x_room.shape
         x_room_reshaped = x_room.permute(0, 3, 1, 2).reshape(B * N_room, C, T, 1)
-
+        
         output = self.output_block(x_room_reshaped) # (B*N_room, H, 1, 1)
-
+        
         # Reshape to match target y shape: (B, H, N_room)
         H = output.shape[1]
         output = output.squeeze(-1).squeeze(-1).view(B, N_room, H).permute(0, 2, 1)
-
+        
         return output
-
+    
     def reset_all_parameters(self, seed: int) -> None:
         """
         Re-initialise all learnable parameters and running buffers.

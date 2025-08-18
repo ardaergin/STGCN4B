@@ -775,7 +775,7 @@ class Heterogeneous(STGCNExperimentRunner):
         node_feature_dims = {
             ntype: len(feat_names[ntype])
             for ntype in feat_names
-        }        
+        }
         logger.info(f"Model input feature dimensions: {node_feature_dims}")
         
         # 3. Prepare Edge Information for ALL ST-Blocks
@@ -831,6 +831,7 @@ class Heterogeneous(STGCNExperimentRunner):
             all_edges_by_block  = all_edges_by_block,
             node_feature_dims   = node_feature_dims,
             property_types      = self.input_dict["property_types"],
+            num_devices         = self.input_dict["num_devices"],
             task_type           = args.task_type,
         ).to(device)
         if self.args.compile_model: 

@@ -295,7 +295,8 @@ def add_base_modelling_args(parser):
                                 # Time features
                                 'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'is_workhour',
                                 # Heterogeneous:
-                                'measures_', 'is_type_', # device nodes
+                                # 'measures_', 'is_type_', # device nodes
+                                'embedding_index' # device nodes
                                 'property_type_' # property nodes
                                 ],
                         help='List of (sub-)strings for feature names that should NOT be normalized.')
@@ -554,6 +555,13 @@ def add_STGCN_args(parser):
     parser.add_argument("--ch-property-out", type=int, default=32)
     parser.add_argument("--ch-time-out", type=int, default=8)
     parser.add_argument("--ch-outside-out", type=int, default=8)
+    
+    parser.add_argument(
+            "--device-embed-dim",
+            type=int,
+            default=16,
+            help="Dimension for the learnable device node embeddings."
+        )
 
 def _parse_kv_ints(s: str) -> dict:
     """
