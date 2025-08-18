@@ -472,6 +472,7 @@ class Homogeneous(STGCNExperimentRunner):
         trial_args.act_func             = "glu"
         
         # Model architecture
+        trial_args.gso_type             = trial.suggest_categorical("gso_type", ["rw_renorm_adj", "col_renorm_adj"])
         trial_args.stblock_num          = trial.suggest_int("stblock_num", 2, 4)
         trial_args.Kt                   = 3
         trial_args.n_his                = 48
@@ -662,6 +663,8 @@ class Heterogeneous(STGCNExperimentRunner):
         trial_args.bidir_d2r            = trial.suggest_categorical("bidir_d2r", [True, False])
         trial_args.bidir_p2d            = trial.suggest_categorical("bidir_p2d", [True, False])
         trial_args.aggr_type            = trial.suggest_categorical("aggr_type", ["sum", "mean"])
+
+        trial_args.gso_type             = trial.suggest_categorical("gso_type", ["rw_renorm_adj", "col_renorm_adj"])
         
         ## Per-type channels:
         # - Room:               high
@@ -673,10 +676,11 @@ class Heterogeneous(STGCNExperimentRunner):
         
         def shrink(x): 
             return _clamp(x * out_shrink)
-        
-        mid_base                        = trial.suggest_int("mid_base", 16, 64, step=16)
-        room_factor                     = trial.suggest_float("room_factor", 1.0, 2.0, step=0.5) # expand
-        globals_factor                  = trial.suggest_float("globals_factor", 0.25, 0.75, step=0.25) # shrink
+
+        mid_base                        = trial.suggest_categorical("mid_base", [16, 32, 64])
+        trial_args.device_embed_dim     = mid_base
+        room_factor                     = trial.suggest_float("room_factor", 1.0, 1.5, step=0.5) # expand
+        globals_factor                  = trial.suggest_float("globals_factor", 0.25, 0.5, step=0.25) # shrink
         out_shrink                      = 1 # trial.suggest_float("out_shrink", 0.25, 0.75, step=0.25)
         
         ### Mid
