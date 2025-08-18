@@ -15,7 +15,10 @@ _GATE_LEAF_NAMES = {
 }
 def _collect_no_decay_param_names(model: nn.Module) -> set[str]:
     no_decay = set()
-
+    
+    if hasattr(model, "device_embedding"):
+        no_decay.add("device_embedding.weight")
+    
     # 1) all params directly inside normalization modules
     for mod_name, m in model.named_modules():
         if isinstance(m, _NORM_TYPES):
