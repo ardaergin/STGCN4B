@@ -286,18 +286,14 @@ def add_base_modelling_args(parser):
                         choices=['mean', 'median'],
                         help='Normalization method')
     parser.add_argument('--skip_normalization_for', nargs='*', 
-                        default=['_sin', '_cos', 'wc_', 
+                        default=['_sin', '_cos', 'wc_',
                                 'has_measurement',
                                 'hasWindows', 'has_multiple_windows', 
                                 'window_direction_sin', 'window_direction_cos', 
                                 'isProperRoom', 'norm_areas_minmax',
                                 'norm_area_minmax', 'norm_area_prop',
-                                # Time features
-                                'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'is_workhour',
-                                # Heterogeneous:
-                                # 'measures_', 'is_type_', # device nodes
-                                'embedding_index' # device nodes
-                                'property_type_' # property nodes
+                                'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'is_workhour', # time
+                                'embedding_index', # device
                                 ],
                         help='List of (sub-)strings for feature names that should NOT be normalized.')
 
