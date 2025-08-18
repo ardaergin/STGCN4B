@@ -704,6 +704,18 @@ class TemporalBuilderMixin:
             )
             logger.info("-" * 60)
 
+            # === Extra Logging: total measurements left ===
+            total_measurements = df_filtered['count'].sum()
+            logger.info(f"Total measurements remaining: {int(total_measurements):,}")
+
+            per_prop_measurements = (
+                df_filtered.groupby("property_type")["count"].sum().sort_values(ascending=False)
+            )
+            for prop, total in per_prop_measurements.items():
+                logger.info(f"  - {prop}: {int(total):,} measurements")
+
+            logger.info("=" * 60)
+
         return df_filtered
 
     ##############################
