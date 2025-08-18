@@ -473,9 +473,9 @@ def add_STGCN_args(parser):
                         default=10, 
                         help='early stopping patience')
     parser.add_argument('--es_delta', type=float, 
-                        default=0.01, 
-                        help='early stopping delta (default: 0.01)')
-
+                        default=0.001, 
+                        help='early stopping delta (default: 0.001)')
+    
     # Common training parameters
     parser.add_argument('--lr', type=float, 
                         default=0.0005, 
