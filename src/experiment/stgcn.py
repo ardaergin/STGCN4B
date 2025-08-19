@@ -91,16 +91,16 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         
         # 3. Fit normalizer and transform
         normalizer_cls = self._get_normalizer_class()
-        normalizer = normalizer_cls(args)
+        normalizer = normalizer_cls()
         
         # Features
         normalizer.fit_features(
-            train_data              = train_feature_slice,
+            x_train                 = train_feature_slice,
             feature_names           = self.input_dict["feature_names"],
             method                  = args.normalization_method,
             features_to_skip_norm   = args.skip_normalization_for
         )
-        norm_features = normalizer.transform_features(all_data=self.all_X)
+        norm_features = normalizer.transform_features(x=self.all_X)
         
         # Subclass-specific logging
         self._log_normalization_stats(x=norm_features)
@@ -109,11 +109,11 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         train_target_slice = self.input_dict["target_array"][train_indices]
         train_mask_slice = self.input_dict["target_mask"][train_indices]
         normalizer.fit_target(
-            train_targets           = train_target_slice, 
-            train_mask              = train_mask_slice,
-            method                  = 'median'
+            y_train           = train_target_slice, 
+            y_train_mask      = train_mask_slice,
+            method            = 'median'
         )
-        norm_target = normalizer.transform_target(targets=self.input_dict["target_array"])
+        norm_target = normalizer.transform_target(y=self.input_dict["target_array"])
         
         return norm_features, norm_target, normalizer
     

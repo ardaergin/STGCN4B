@@ -75,14 +75,11 @@ class STGCNNormalizer(ABC):
         logger.info(f"Fitted target scaler using method={method}.")
         return self
     
-    def transform_target(
-            self, 
-            targets: np.ndarray
-    ) -> np.ndarray:
+    def transform_target(self, y: np.ndarray) -> np.ndarray:
         """Normalizes the target array using the fitted target scaler."""
         if self.target_scaler is None:
             raise RuntimeError("Must call fit_target() before transforming.")
-        return self.target_scaler.transform(targets.reshape(-1, 1)).reshape(-1)
+        return self.target_scaler.transform(y.reshape(-1, 1)).reshape(-1)
     
     def inverse_transform_target(
             self, 
@@ -112,16 +109,16 @@ class Homogeneous(STGCNNormalizer):
         
     def fit_features(
             self, 
-            train_data: np.ndarray, 
-            feature_names: List[str], 
-            method: str = 'median',
-            features_to_skip_norm: List[str] = None
+            x_train:                np.ndarray, 
+            feature_names:          List[str], 
+            method:                 str = 'median',
+            features_to_skip_norm:  List[str] = None
     ) -> "Homogeneous":
         """
         Calculates feature statistics from the training data slice.
 
         Args:
-            train_data (np.ndarray): A 3D array of shape (T_train, R, F).
+            x_train (np.ndarray): A 3D array of shape (T_train, R, F).
             feature_names (List[str]): A list of length F with feature names.
             method (str): The scaling method to use: 'mean' for Z-score or 'median' for Robust Scaling.
             features_to_skip_norm (List[str], optional): List of substrings for features to skip.
@@ -137,21 +134,18 @@ class Homogeneous(STGCNNormalizer):
             else:
                 scaler = self._get_scaler(method=method)
                 # collapse T,R into one axis
-                vals = train_data[..., i].reshape(-1, 1)
+                vals = x_train[..., i].reshape(-1, 1)
                 scaler.fit(vals)
                 self.feature_scalers.append(scaler)
                 
         logger.info(f"Fitted feature processor using method={method}.")
         return self
     
-    def transform_features(
-            self, 
-            all_data: np.ndarray
-    ) -> np.ndarray:
+    def transform_features(self, x: np.ndarray) -> np.ndarray:
         """Applies transformation to the full (T, R, F) numpy array."""
         if not self.feature_scalers:
             raise RuntimeError("Must call fit_features() before transforming.")
-        out = all_data.copy()
+        out = x.copy()
         for i, scaler in enumerate(self.feature_scalers):
             if scaler is not None:
                 vals = out[..., i].reshape(-1, 1)
@@ -175,16 +169,16 @@ class Heterogeneous(STGCNNormalizer):
         
     def fit_features(
             self,
-            train_data: Dict[int, HeteroData],
-            feature_names: Dict[str, List[str]],
-            method: str = "median",
-            features_to_skip_norm: List[str] | None = None,
+            x_train:                Dict[int, HeteroData],
+            feature_names:          Dict[str, List[str]],
+            method:                 str = "median",
+            features_to_skip_norm:  List[str] | None = None,
     ) -> "Heterogeneous":
         logger.info("Fitting heterogeneous normalizer (no NaN imputation).")
         
         # 1. Collect node‑wise feature matrices
         collector: Dict[str, List[torch.Tensor]] = {nt: [] for nt in feature_names}
-        for snap in train_data.values():
+        for snap in x_train.values():
             for nt in snap.node_types:
                 if "x" in snap[nt]:
                     collector[nt].append(snap[nt].x.float().cpu().numpy())
@@ -210,16 +204,13 @@ class Heterogeneous(STGCNNormalizer):
         logger.info(f"Fitted feature processor using method={method}.")
         return self
     
-    def transform_features(
-            self, 
-            all_data: Dict[int, HeteroData]
-    ) -> Dict[int, HeteroData]:
+    def transform_features(self, x: Dict[int, HeteroData]) -> Dict[int, HeteroData]:
         """Applies the transformation to all snapshots in-place."""
         if not self.feature_scalers:
             raise RuntimeError("Must call fit_features() before transforming.")
         
         norm_data = {}
-        for t, snapshot in all_data.items():
+        for t, snapshot in x.items():
             norm_snapshot = snapshot.clone()
             for nt in norm_snapshot.node_types:
                 if "x" in norm_snapshot[nt]:
