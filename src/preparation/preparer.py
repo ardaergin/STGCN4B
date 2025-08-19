@@ -303,7 +303,27 @@ class TabularDataPreparer(BaseDataPreparer):
         self.df.drop(columns=self.target_dict["workhour_mask_colnames"], inplace=True)
     
     def _drop_requested_features(self) -> None:
+        """
+        1. Drop requested features. 
+        2. Drop lag features that are redundant given the forecast horizon.
+        """
+        # 1. Drop user-requested features
         self._drop_requested_columns()
+        
+        # 2. Drop redundant lag features
+        horizon = self.args.forecast_horizons[0]
+        lag_cols = [col for col in self.df.columns if "_lag_" in col]
+        
+        # Keep only lags <= horizon
+        lags_to_keep = [
+            col for col in lag_cols
+            if (int(col.split("_lag_")[-1]) <= horizon) or (int(col.split("_lag_")[-1]) > 8)
+        ]
+        unnecessary_lags = [col for col in lag_cols if col not in lags_to_keep]
+        
+        if unnecessary_lags:
+            self.df.drop(columns=unnecessary_lags, inplace=True)
+            logger.info(f"Dropped {len(unnecessary_lags)} unnecessary lag features.")
     
     def _prepare_features(self) -> None:
         """        

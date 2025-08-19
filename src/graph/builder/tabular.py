@@ -7,7 +7,10 @@ import logging; logger = logging.getLogger(__name__)
 
 class TabularBuilderMixin:
         
-    def build_base_tabular_df(self, build_mode: str) -> None:
+    def build_base_tabular_df(
+            self, 
+            build_mode: str
+    ) -> None:
         """
         Selects and prepares the initial base DataFrame based on the `build_mode`.
         This method populates `self.tabular_feature_df` with room, floor, or building level data.
@@ -31,12 +34,14 @@ class TabularBuilderMixin:
         logger.info(f"Base DataFrame built. Shape: {self.tabular_feature_df.shape}")
         return None
     
-    def engineer_tabular_features(self,
-                                build_mode: str,
-                                lags: List[int] = None,
-                                windows: List[int] = None,
-                                shift_amount: int = 1, 
-                                integrate_weather: bool = True):
+    def engineer_tabular_features(
+            self,
+            build_mode: str,
+            lags: List[int] = None,
+            windows: List[int] = None,
+            shift_amount: int = 1, 
+            integrate_weather: bool = True
+    ) -> None:
         """
         Applies feature engineering (lags, MAs, time, weather) to the existing `tabular_feature_df`.
         """
@@ -53,46 +58,66 @@ class TabularBuilderMixin:
         # Defining selective feature lists for lags and moving averages
         base_cols = self.tabular_feature_df.select_dtypes("number").columns.tolist()
         base_cols = [c for c in base_cols if c not in ('bucket_idx', 'block_id')]
-
+        
         # Tier 1: Core signals for both Lags and MAs
         core_signals_for_lags_and_ma = [
             c for c in base_cols if 
-            any(k in c for k in ['_mean', '_max', '_min']) or
-            c in ['temperature_2m', 'relative_humidity_2m', 'precipitation', 
-                  'wind_speed_10m', 'wind_speed_80m', 'cloud_cover']
+            any(
+                k in c for k in [
+                    '_mean', 
+                    '_max', '_min', 
+                ] # per property (3)
+            ) or
+            c in [
+                'temperature_2m', 
+                'relative_humidity_2m', 
+            ]
         ]
         logger.info(f"Generating lags and MAs for {len(core_signals_for_lags_and_ma)} core signal columns.")
 
         # Tier 2: Secondary signals for MA only
         secondary_signals_for_ma_only = [
             c for c in base_cols if 
-            any(k in c for k in ['_std', '_count', '_n_devices', '_has_measurement'])
+            any(
+                k in c for k in [
+                    '_std',
+                    '_n_active_devices', 
+                    '_has_measurement', 
+                    '_count', 
+                    '_average_intra_device_variation'
+                ] # per property (3)
+            ) or
+            c in [
+                'precipitation', 
+                'wind_speed_10m', 'wind_speed_80m',
+                'wind_direction_10m_sin', 'wind_direction_10m_cos',
+                'wind_direction_80m_sin', 'wind_direction_80m_cos',
+                'cloud_cover'
+            ]
         ]
         logger.info(f"Generating MAs only for {len(secondary_signals_for_ma_only)} secondary signal columns.")
 
         # Additional grouping col for "measurement_forecast" task
         extra_grouping_col = ["room_uri_str"] if build_mode == "measurement_forecast" else None
-
-        # Defaults for MAs & Lags
-        lags = lags or [1, 2, 3, 24]
-        windows = windows or [3, 6, 12, 24]
-
-        # Creating MAs & Lags        
+                
+        # Creating MAs & Lags
         self.tabular_feature_df = feature_engineer.add_lag_features(
-            lags=lags,
-            data_frame=self.tabular_feature_df,
-            cols=core_signals_for_lags_and_ma,
-            use_only_original_columns=True,
-            extra_grouping_cols=extra_grouping_col)
+            lags                        = lags,
+            data_frame                  = self.tabular_feature_df,
+            cols                        = core_signals_for_lags_and_ma,
+            use_only_original_columns   = True,
+            extra_grouping_cols         = extra_grouping_col
+        )
         
         self.tabular_feature_df = feature_engineer.add_moving_average_features(
-            windows=windows,
-            shift_amount=shift_amount,
-            data_frame=self.tabular_feature_df,
-            cols=core_signals_for_lags_and_ma + secondary_signals_for_ma_only,
-            use_only_original_columns=True,
-            extra_grouping_cols=extra_grouping_col)
-
+            windows                      = windows,
+            shift_amount                 = shift_amount,
+            data_frame                   = self.tabular_feature_df,
+            cols                         = core_signals_for_lags_and_ma + secondary_signals_for_ma_only,
+            use_only_original_columns    = True,
+            extra_grouping_cols          = extra_grouping_col
+        )
+        
         # NOTE: We can add the time features after taking MA & lag,
         #       as we should not really take the lag of the time-related features
         self.tabular_feature_df = self.add_time_features_to_df(df=self.tabular_feature_df)

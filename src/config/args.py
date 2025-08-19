@@ -139,11 +139,14 @@ def add_OfficeGraph_args(parser):
     #  Forecast Arguments
     ##############################
     # Feature engineering
+    ## Short-term: recent lags (1–8) mirror the forecast horizon (horizon=8) 
+    ##            + previous-day lag (48, same-time-yesterday)
+    ## Long-term: half-day (24) and full-day (48) moving averages
     parser.add_argument('--lags', type=int, nargs='+',
-                        default=[1, 2, 3, 24],
+                        default=[1, 2, 3, 4, 5, 6, 7, 8, 24, 48],
                         help='A space-separated list of lag features to create (e.g., --lags 1 2 8 24).')
     parser.add_argument('--windows', type=int, nargs='+',
-                        default=[3, 6, 12, 24],
+                        default=[3, 6, 12, 24, 48],
                         help='A space-separated list of window sizes for moving averages (e.g., --windows 3 6 12).')
     parser.add_argument('--shift_amount', type=int,
                         default=1,
