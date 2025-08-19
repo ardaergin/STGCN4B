@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 from copy import deepcopy
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Tuple, Optional
 from argparse import Namespace
 from collections import defaultdict
 from abc import ABC, abstractmethod
@@ -778,7 +778,13 @@ class Heterogeneous(STGCNExperimentRunner):
         ))  # shape (2, E)
         logger.info(f"Added {len(room_idx)} weighted outside-to-room edges")
         return edge_index, edge_weights
-        
+    
+    @staticmethod
+    def freeze(x: Optional[torch.Tensor]) -> Optional[torch.Tensor]:
+        if x is None:
+            return None
+        return x.clone().detach().requires_grad_(False)
+    
     def _setup_model(
             self, 
             args: Any
@@ -816,14 +822,14 @@ class Heterogeneous(STGCNExperimentRunner):
             # Outside to Room edges
             elif edge_type == ('outside', 'influences', 'room'):
                 static_edges_base[edge_type] = {
-                    'index': outside_edge_index.to(device),
-                    'weight': outside_edge_weight.to(device)
+                    'index': self.freeze(outside_edge_index.to(device)),
+                    'weight': self.freeze(outside_edge_weight.to(device))
                 }
             # All other edges (all of them are non-weighted)
             else:
                 edge_store = base_graph[edge_type]
                 static_edges_base[edge_type] = {
-                    'index': edge_store.edge_index.to(device),
+                    'index': self.freeze(edge_store.edge_index.to(device)),
                     'weight': None
                 }
         
@@ -837,10 +843,16 @@ class Heterogeneous(STGCNExperimentRunner):
             edges_for_this_block = deepcopy(static_edges_base)
             # Room edges: Horizontal
             ei_h, ew_h = gso_h[i]
-            edges_for_this_block[('room', 'adjacent_horizontal', 'room')] = {'index': ei_h, 'weight': ew_h}
+            edges_for_this_block[('room', 'adjacent_horizontal', 'room')] = {
+                'index': self.freeze(ei_h),
+                'weight': self.freeze(ew_h)
+            }
             # Room edges: Vertical
             ei_v, ew_v = gso_v[i]
-            edges_for_this_block[('room', 'adjacent_vertical', 'room')] = {'index': ei_v, 'weight': ew_v}
+            edges_for_this_block[('room', 'adjacent_vertical', 'room')] = {
+                'index': self.freeze(ei_v),
+                'weight': self.freeze(ew_v)
+            }
             
             all_edges_by_block.append(edges_for_this_block)
         
