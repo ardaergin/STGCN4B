@@ -639,13 +639,14 @@ class TemporalBuilderMixin:
                 
         return df
     
-    @staticmethod
     def drop_high_missingness(
+            self,
             df: pd.DataFrame, 
             threshold: float = 0.75
     ) -> pd.DataFrame:
         """
-        Drop device–property combinations that exceed a missingness threshold.
+        Drop device–property combinations that exceed a missingness threshold,
+        with logging by property type and by floor.
         """
         if not {"device_uri_str", "property_type", "mean"}.issubset(df.columns):
             raise ValueError("df must contain 'device_uri_str', 'property_type', and 'mean' columns")
@@ -682,7 +683,25 @@ class TemporalBuilderMixin:
         for prop, cnt in df_filtered.groupby("property_type")["device_uri_str"].nunique().items():
             logger.info(f"  - {prop}: {cnt} devices")
 
-        # === Extra Logging: measurement counts ===
+        # === Logging: devices per floor ===
+        dev_to_room = {
+            dev: self.office_graph._map_device_uri_str_to_room_uri_str(dev)
+            for dev in df_filtered["device_uri_str"].unique()
+        }
+        dev_to_floor = {
+            dev: self.office_graph._map_floor_uri_str_to_floor_number(
+                self.office_graph._map_room_uri_str_to_floor_uri_str(room)
+            )
+            for dev, room in dev_to_room.items()
+        }
+        df_filtered["floor_number"] = df_filtered["device_uri_str"].map(dev_to_floor)
+
+        logger.info("[Device counts per floor AFTER filtering]")
+        per_floor = df_filtered.groupby("floor_number")["device_uri_str"].nunique()
+        for floor, cnt in per_floor.items():
+            logger.info(f"  - Floor {floor}: {cnt} devices")
+        
+        # === Logging: measurement counts ===
         total_rows = len(df_filtered)
         if "count" in df_filtered.columns:
             count_zero = (df_filtered['count'] == 0).sum()
@@ -704,7 +723,6 @@ class TemporalBuilderMixin:
             )
             logger.info("-" * 60)
 
-            # === Extra Logging: total measurements left ===
             total_measurements = df_filtered['count'].sum()
             logger.info(f"Total measurements remaining: {int(total_measurements):,}")
 
@@ -717,7 +735,7 @@ class TemporalBuilderMixin:
             logger.info("=" * 60)
 
         return df_filtered
-
+    
     ##############################
     # Room-level DataFrame
     ##############################
