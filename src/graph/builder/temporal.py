@@ -908,17 +908,17 @@ class TemporalBuilderMixin:
             n_active_col = f"{prop}_n_active_devices"
             if n_active_col in expanded_df.columns:
                 expanded_df[n_active_col] = expanded_df[n_active_col].fillna(0.0)
-
+        
         # 5. Update the class attribute
         self.room_level_df_expanded = expanded_df
-
+        
         n_rows, n_cols = expanded_df.shape
         logger.info(f"DataFrame expanded. New shape: {n_rows} rows, {n_cols} columns.")
         logger.info(f"Grid covers {len(all_room_uri_strs)} rooms × {len(all_bucket_indices)} buckets "
                     f"= {len(all_room_uri_strs) * len(all_bucket_indices)} theoretical rows.")
         
         return None
-
+    
     def build_static_room_features_df(self) -> None:
         """
         Builds a DataFrame of static room features and stores it in the instance.
@@ -951,21 +951,21 @@ class TemporalBuilderMixin:
         logger.info(f"Successfully built and stored `static_room_features_df`. Shape: {self.static_room_features_df.shape}")
         
         return None
-
+    
     def add_static_room_features_to_df(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Enriches the df with static attributes for each room.
-
+        
         This method creates a DataFrame of static room properties. 
         It then merges this static data into the main `room_level_df` based on the room's URI.
-
+        
         Args:
             df: either the original or the expanded room_level_df DataFrame.
         """
         if not hasattr(self, 'static_room_features_df'):
             raise ValueError("Static room features DataFrame not found. Run build_static_room_features_df() first.")
         static_df = self.static_room_features_df.copy()
-
+        
         merged_df = pd.merge(
             df.copy(), 
             static_df.reset_index(), 
@@ -980,7 +980,7 @@ class TemporalBuilderMixin:
     ##############################
     # Floor-level DataFrame
     ##############################
-
+    
     def build_floor_level_df(self) -> None:
         """
         Builds a wide-format feature DataFrame with one row per time bucket.
@@ -999,7 +999,7 @@ class TemporalBuilderMixin:
         
         logger.info("Building wide-format, floor-aggregated DataFrame (one row per bucket)...")
         df = self.room_level_df.copy()
-
+        
         # 1) Add floor_number mapping to the room-level data
         room_to_floor_map = {
             room_uri_str: self.office_graph._map_floor_uri_str_to_floor_number(
@@ -1009,11 +1009,11 @@ class TemporalBuilderMixin:
         }
         df['floor_number'] = df['room_uri_str'].map(room_to_floor_map)
         df['floor_number'] = df['floor_number'].astype(int)
-
+        
         # For later use
         property_types = self.used_property_types
         floor_numbers = df['floor_number'].unique()
-
+        
         # 2) First, aggregate from rooms to floors using groupby.
         # This creates an intermediate "long" DataFrame (one row per floor per bucket).
         agg_spec = {}
@@ -1028,13 +1028,13 @@ class TemporalBuilderMixin:
                 agg_spec[col] = 'max'
             elif col.endswith('_min'):
                 agg_spec[col] = 'min'
-
+            
             elif col.endswith('_average_intra_device_variation'):
                 agg_spec[col] = 'mean'
-
+            
             elif col.endswith('_has_measurement'):
                 agg_spec[col] = ['sum', 'max'] # sum -> n_active_rooms, max -> has_measurement flag
-
+            
             elif col.endswith('_mean'):
                 agg_spec[col] = ['mean', 'std']
             elif col.endswith('_std'):
@@ -1042,9 +1042,9 @@ class TemporalBuilderMixin:
             
             else:
                 raise ValueError(f"Unexpected column name: {col}")
-
+        
         long_floor_df = df.groupby(['floor_number', 'bucket_idx']).agg(agg_spec)
-
+        
         # 3) Now, pivot the intermediate DataFrame to get the desired wide format
         wide = long_floor_df.pivot_table(
             index='bucket_idx',
@@ -1069,21 +1069,21 @@ class TemporalBuilderMixin:
                     final_stat_name = 'n_active_rooms'
                 else: # agg_func == 'max'
                     final_stat_name = 'has_measurement'
-                    
+            
             # Special case: mean
             elif stat_suffix == 'mean':
                 final_stat_name = agg_func
-
+            
             # Special case: std
             elif stat_suffix == 'std': 
                 final_stat_name = f"average_intra_room_variation"
-
+            
             # The standard case
             else:
                 final_stat_name = stat_suffix
             
             new_column_names.append(f"F{floor}_{prop}_{final_stat_name}")
-
+        
         wide.columns = new_column_names
         wide = wide.reset_index()
         
@@ -1183,19 +1183,26 @@ class TemporalBuilderMixin:
         logger.info(f"Successfully built building-level DataFrame. Shape: {self.building_level_df.shape}")
         
         return None
-
+    
     ##############################
     # Additional features
     ##############################
     
     def add_time_features_to_df(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add cyclical time-based features onto a DataFrame on bucket_idx."""
+        """
+        Add cyclical time-based features onto a DataFrame on bucket_idx.
+        
+        Features added:
+            - Hour of day (sin, cos)
+            - Day of week (sin, cos)
+            - Week of year (sin, cos)
+        """
         if not hasattr(self, 'time_buckets'):
             raise ValueError("Time buckets not found. Call initialize_time_parameters() first.")
         if 'bucket_idx' not in df.columns:
             raise ValueError("Input DataFrame must contain a 'bucket_idx' column.")
         
-        logger.info("Adding cyclical time features (hour, day of week)...")
+        logger.info("Adding cyclical time features: hour of day, day of week, week of year.")
         
         # Create a mapping from bucket index to its start timestamp
         ts_map = {i: tb[0] for i, tb in enumerate(self.time_buckets)}
@@ -1213,6 +1220,11 @@ class TemporalBuilderMixin:
         dows = dt.dt.dayofweek  # Monday=0, Sunday=6
         df['dow_sin'] = np.sin(2 * np.pi * dows / 7)
         df['dow_cos'] = np.cos(2 * np.pi * dows / 7)
+        
+        # Week of Year
+        woy = dt.dt.isocalendar().week.astype(int)  # 1–53
+        df['woy_sin'] = np.sin(2 * np.pi * woy / 53)
+        df['woy_cos'] = np.cos(2 * np.pi * woy / 53)
         
         logger.info("Successfully added time features.")
         return df
@@ -1271,14 +1283,22 @@ class TemporalBuilderMixin:
             raise AttributeError("time_buckets not initialised; call initialize_time_parameters() first.")
         if not hasattr(self, "workhour_labels_df"):
             raise AttributeError("workhour_labels_df not found; run get_workhour_labels() first.")
-
+        
         # 1) make a scaffold with all bucket indices
         df = pd.DataFrame({"bucket_idx": range(len(self.time_buckets))})
         df = self.add_time_features_to_df(df)
         df = self.add_workhour_labels_to_df(df)
-        self.time_feature_names = ["hour_sin", "hour_cos", "dow_sin", "dow_cos", "is_workhour"]
-        self.time_features_df = df.set_index("bucket_idx")[self.time_feature_names]
-
+        
+        hour_of_day     = ['hour_sin', 'hour_cos']
+        day_of_week     = ['dow_sin', 'dow_cos']
+        week_of_year    = ['woy_sin', 'woy_cos']
+        workhour        = ["is_workhour"]
+        all_features    = hour_of_day + day_of_week + week_of_year + workhour
+        
+        self.time_features_df = df.set_index("bucket_idx")[all_features]
+        
+        self.time_feature_names = all_features
+        
         logger.info(
             "Built time_features_df with %d buckets and features %s",
             len(self.time_features_df),
