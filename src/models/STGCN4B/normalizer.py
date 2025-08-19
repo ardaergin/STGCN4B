@@ -1,8 +1,9 @@
 from abc import ABC, abstractmethod
-from typing import Union, List, Dict, Any
+from typing import Union, List, Dict
 import numpy as np
 import torch
 from torch_geometric.data import HeteroData
+from sklearn.preprocessing import StandardScaler, RobustScaler
 
 import logging; logger = logging.getLogger(__name__)
 
@@ -16,19 +17,34 @@ class STGCNNormalizer(ABC):
     graph types.
     """
     def __init__(self):
-        # Targets (implemented in base class)
-        self.target_center = None
-        self.target_scale = None
-
-        # Features (implemented in subclasses)
-        self.feature_center = None
-        self.feature_scale = None
+        self.target_scaler = None
+        self.feature_scalers = None
+    
+    @staticmethod
+    def _get_scaler(method: str):
+        """
+        Factory function that returns a new scaler instance based on the method.
+        
+        Args:
+            method (str): 
+                - 'mean' for StandardScaler, 
+                - 'median' for RobustScaler.
+        
+        Returns:
+            An un-fitted sklearn scaler instance.
+        """
+        if method == "mean":
+            return StandardScaler(with_mean=True, with_std=True)
+        elif method == "median":
+            return RobustScaler(with_centering=True, with_scaling=True, quantile_range=(25, 75))
+        else:
+            raise ValueError(f"Unknown scaling method: {method}. Choose 'mean' or 'median'.")
     
     @abstractmethod
     def fit_features(self):
         """Abstract method to calculate feature statistics from training data."""
         pass
-
+    
     @abstractmethod
     def transform_features(self):
         """Abstract method to apply feature transformation."""
@@ -36,80 +52,63 @@ class STGCNNormalizer(ABC):
     
     def fit_target(
             self, 
-            train_targets: np.ndarray, 
-            train_mask: np.ndarray = None,
-            method: str = 'median'
+            y_train:        np.ndarray, 
+            y_train_mask:   np.ndarray = None,
+            method:         str = 'median'
     ) -> "STGCNNormalizer":
         """
-        Calculates target statistics from the training data using the specified method.
-        
         Args:
-            train_targets (np.ndarray): Training target array.
+            y_train (np.ndarray): Training target array.
             train_mask (np.ndarray, optional): Mask to select valid targets.
             method (str): The scaling method to use: 'mean' or 'median'.
         """
-        if train_mask is not None:
-            # Ensure mask is boolean for indexing
-            valid_targets = train_targets[train_mask.astype(bool)]
+        if y_train_mask is not None:
+            valid_targets = y_train[y_train_mask.astype(bool)]
         else:
-            valid_targets = train_targets
-        
+            valid_targets = y_train
         if valid_targets.size == 0:
-            self.target_center, self.target_scale = 0.0, 1.0
-            logger.warning("No valid targets found for fitting the scaler. Using default values (0, 1).")
-            return self
-
-        if method == 'mean':
-            self.target_center = np.mean(valid_targets)
-            self.target_scale = np.std(valid_targets)
-            log_method = "Mean"
-        elif method == 'median':
-            self.target_center = np.median(valid_targets)
-            q25 = np.percentile(valid_targets, 25)
-            q75 = np.percentile(valid_targets, 75)
-            self.target_scale = q75 - q25
-            log_method = "Median/IQR"
-        else:
-            raise ValueError(f"Unknown scaling method for target: {method}. Choose 'mean' or 'median'.")
+            raise ValueError("No valid targets found for fitting the scaler.")
         
-        # Avoid division by zero if target is constant
-        if self.target_scale == 0:
-            self.target_scale = 1.0
-            
-        logger.info(f"Fitted target processor using {log_method} scaling. Center: {self.target_center:.4f}, Scale: {self.target_scale:.4f}")
+        self.target_scaler = self._get_scaler(method=method)
+        self.target_scaler.fit(valid_targets.reshape(-1, 1))
+        
+        logger.info(f"Fitted target scaler using method={method}.")
         return self
-
+    
     def transform_target(
             self, 
             targets: np.ndarray
     ) -> np.ndarray:
         """Normalizes the target array using the fitted target scaler."""
-        if self.target_center is None:
+        if self.target_scaler is None:
             raise RuntimeError("Must call fit_target() before transforming.")
-        return (targets - self.target_center) / self.target_scale
+        return self.target_scaler.transform(targets.reshape(-1, 1)).reshape(-1)
     
     def inverse_transform_target(
             self, 
             predictions: Union[np.ndarray, torch.Tensor]
     ) -> Union[np.ndarray, torch.Tensor]:
         """Inverse-transforms predictions back to the original scale. This is crucial for evaluation."""
-        if self.target_center is None:
+        if self.target_scaler is None:
             raise RuntimeError("Must call fit_target() before inverse transforming.")
-        return (predictions * self.target_scale) + self.target_center
-
+        return self.target_scaler.inverse_transform(
+            predictions.reshape(-1, 1)
+        ).reshape(-1)
 
 
 class Homogeneous(STGCNNormalizer):
     """
-    Normalizer for homogeneous graph data represented by a single feature tensor.
+    Normalizer for homogeneous graph data.
     
-    Note that the Homogeneous normalizer does not affect the underlying data 
-    because basic arithmetic operations in NumPy create new arrays by default.
+    Notes:
+    - The input features are a 3D tensor: (T, R, F), F is the feature dimension.
+    - Data contains NaNs, zero-imputation is handled later.
+    - Data is on CPU, batches are loaded to GPU later in training.
     """
-    def __init__(self, args: Any):
+    
+    def __init__(self):
         super().__init__()
-        self.feature_center = None
-        self.feature_scale = None
+        self.feature_scalers: List[Union[StandardScaler, RobustScaler]] = []
         
     def fit_features(
             self, 
@@ -128,32 +127,21 @@ class Homogeneous(STGCNNormalizer):
             features_to_skip_norm (List[str], optional): List of substrings for features to skip.
         """
         logger.info("Fitting homogeneous normalizer.")
-        if method == 'mean':
-            self.feature_center = np.nanmean(train_data, axis=(0, 1))
-            self.feature_scale = np.nanstd(train_data, axis=(0, 1))
-            logger.info("Using mean-based (Z-score) scaling.")
-        elif method == 'median':
-            self.feature_center = np.nanmedian(train_data, axis=(0, 1))
-            q25 = np.nanpercentile(train_data, 25, axis=(0, 1))
-            q75 = np.nanpercentile(train_data, 75, axis=(0, 1))
-            self.feature_scale = q75 - q25
-            logger.info("Using median-based (Robust) scaling.")
-        else:
-            raise ValueError(f"Unknown scaling method: {method}. Choose 'mean' or 'median'.")
-        
+                
         # Identify and handle features to skip (this logic is the same)
-        if features_to_skip_norm:
-            skip_indices = [i for i, name in enumerate(feature_names) if any(s in name for s in features_to_skip_norm)]
-            if skip_indices:
-                skipped_feature_names = [feature_names[i] for i in skip_indices]
-                logger.info(f"Skipping normalization for {len(skip_indices)} features: {skipped_feature_names}")
-                self.feature_center[skip_indices] = 0.0
-                self.feature_scale[skip_indices] = 1.0
-        
-        # Avoid division by zero for constant features
-        self.feature_scale[self.feature_scale == 0] = 1.0
-        
-        logger.info("Fitted feature processor.")
+        self.feature_scalers = []
+        for i, fname in enumerate(feature_names):
+            if features_to_skip_norm and any(s in fname for s in features_to_skip_norm):
+                logger.info(f"Skipping normalization for feature '{fname}'")
+                self.feature_scalers.append(None)  # identity transform
+            else:
+                scaler = self._get_scaler(method=method)
+                # collapse T,R into one axis
+                vals = train_data[..., i].reshape(-1, 1)
+                scaler.fit(vals)
+                self.feature_scalers.append(scaler)
+                
+        logger.info(f"Fitted feature processor using method={method}.")
         return self
     
     def transform_features(
@@ -161,52 +149,30 @@ class Homogeneous(STGCNNormalizer):
             all_data: np.ndarray
     ) -> np.ndarray:
         """Applies transformation to the full (T, R, F) numpy array."""
-        if self.feature_center is None:
+        if not self.feature_scalers:
             raise RuntimeError("Must call fit_features() before transforming.")
-        return (all_data - self.feature_center) / self.feature_scale
-
+        out = all_data.copy()
+        for i, scaler in enumerate(self.feature_scalers):
+            if scaler is not None:
+                vals = out[..., i].reshape(-1, 1)
+                out[..., i] = scaler.transform(vals).reshape(out[..., i].shape)
+        return out
 
 
 class Heterogeneous(STGCNNormalizer):
-    """Normalizer for heterogeneous graph data stored in HeteroData snapshots."""
+    """
+    Normalizer for heterogeneous graph data.
+
+    Notes:
+    - The input features are HeteroData snapshots: Dict[int, HeteroData].
+    - Data contains NaNs, zero-imputation is handled later.
+    - Data is on CPU, batches are loaded to GPU later in training.
+    """
     
-    def __init__(self, args: Any):
+    def __init__(self):
         super().__init__()
-        self.feature_center: Dict[str, torch.Tensor] = {}
-        self.feature_scale: Dict[str, torch.Tensor] = {}
-                
-        # Config
-        self.eps_scale = float(args.norm_eps_scale)
-        self.log1p_feature_keys = tuple(k.lower() for k in args.norm_log1p_feature_keys)
-        self.alpha_wide_spread = float(args.norm_alpha_wide_spread)
-
-        # clip config (guard against None -> float(None) crash)
-        if args.norm_clip_value is None:
-            self.clip_value = None
-        else:
-            self.clip_value = float(args.norm_clip_value)
-
-        if self.clip_value is not None:
-            logger.info(f"Heterogeneous normalizer will clip features to [{-self.clip_value}, {self.clip_value}].")
-
-        # per-node-type masks for log1p columns (built in fit, reused in transform)
-        self._log1p_mask: Dict[str, torch.BoolTensor] = {}
+        self.feature_scalers: Dict[str, List[Union[StandardScaler, RobustScaler]]] = {}
         
-    @staticmethod
-    def _nanquantile_torch(x: torch.Tensor, q: float) -> torch.Tensor:
-        """
-        torch.nanquantile is available from PyTorch 2.2.  If the user sits on an
-        older version we emulate it (feature‑wise) via masking.
-        """
-        if hasattr(torch, "nanquantile"):
-            return torch.nanquantile(x, q, dim=0)
-        valid = ~torch.isnan(x)
-        # need at least one valid value per feature
-        x_safe = torch.where(valid, x, torch.tensor(float("nan"), device=x.device))
-        return torch.tensor(
-            [torch.nanquantile(col, q).item() for col in x_safe.T], device=x.device
-        )
-    
     def fit_features(
             self,
             train_data: Dict[int, HeteroData],
@@ -215,70 +181,33 @@ class Heterogeneous(STGCNNormalizer):
             features_to_skip_norm: List[str] | None = None,
     ) -> "Heterogeneous":
         logger.info("Fitting heterogeneous normalizer (no NaN imputation).")
-
-        # 1. collect node‑wise feature matrices
+        
+        # 1. Collect node‑wise feature matrices
         collector: Dict[str, List[torch.Tensor]] = {nt: [] for nt in feature_names}
         for snap in train_data.values():
             for nt in snap.node_types:
                 if "x" in snap[nt]:
-                    collector[nt].append(snap[nt].x.float())
-
-        # 2. compute stats
+                    collector[nt].append(snap[nt].x.float().cpu().numpy())
+        
+        # 2. Fit & Skip‑normalisation handling
         for nt, tensors in collector.items():
             if not tensors:
                 continue
-            joined = torch.cat(tensors, 0)  # (N_total, C)
-            
-            ## log1p pre-transform on selected feature columns
+            joined = np.concatenate(tensors, axis=0)  # (N_total, C)
             names = feature_names.get(nt, [])
-            if names:
-                mask = torch.tensor(
-                    [any(key in n.lower() for key in self.log1p_feature_keys) for n in names],
-                    device=joined.device, dtype=torch.bool
-                )
-            else:
-                mask = torch.zeros(joined.shape[1], dtype=torch.bool, device=joined.device)
-            if mask.any():
-                joined[:, mask] = torch.log1p(torch.clamp_min(joined[:, mask], 0.0))
-            self._log1p_mask[nt] = mask
+            self.feature_scalers[nt] = []
             
-            ## Statistics ignoring NaNs
-            if method == "mean":
-                self.feature_center[nt] = torch.nanmean(joined, dim=0)
-                self.feature_scale[nt] = torch.nanstd(joined,  dim=0)
-            elif method == "median":
-                self.feature_center[nt] = torch.nanmedian(joined, dim=0).values
-                q25 = self._nanquantile_torch(joined, 0.25)
-                q75 = self._nanquantile_torch(joined, 0.75)
-                iqr = q75 - q25
-                
-                # Add wide-spread floor using (q95 - q05)
-                q05 = self._nanquantile_torch(joined, 0.05)
-                q95 = self._nanquantile_torch(joined, 0.95)
-                wide = q95 - q05
-
-                scale = torch.maximum(iqr, self.alpha_wide_spread * wide)
-
-                # eps floor
-                self.feature_scale[nt] = torch.clamp(scale, min=self.eps_scale)
-            else:
-                raise ValueError("method must be 'mean' or 'median'")
-
-            # 3. Skip‑normalisation handling
-            if features_to_skip_norm:
-                names = feature_names.get(nt, [])
-                skip_indices = [i for i, n in enumerate(names)
-                        if any(s in n for s in features_to_skip_norm)]
-                if skip_indices:
-                    skipped_feature_names = [names[i] for i in skip_indices]
-                    logger.info(f"Node type '{nt}': Skipping normalization for {len(skip_indices)} features: {skipped_feature_names}")
-                    self.feature_center[nt][skip_indices] = 0.0
-                    self.feature_scale[nt][skip_indices] = 1.0
-            
-            # 4. avoid divide-by-zero
-            self.feature_scale[nt][self.feature_scale[nt] == 0] = 1.0
-            self.feature_scale[nt] = torch.clamp(self.feature_scale[nt], min=self.eps_scale)
+            for i, fname in enumerate(names):
+                if features_to_skip_norm and any(s in fname for s in features_to_skip_norm):
+                    logger.info(f"Node type '{nt}': skipping '{fname}'")
+                    self.feature_scalers[nt].append(None)
+                else:
+                    scaler = self._get_scaler(method=method)
+                    vals = joined[:, i].reshape(-1, 1)
+                    scaler.fit(vals)
+                    self.feature_scalers[nt].append(scaler)
         
+        logger.info(f"Fitted feature processor using method={method}.")
         return self
     
     def transform_features(
@@ -286,29 +215,20 @@ class Heterogeneous(STGCNNormalizer):
             all_data: Dict[int, HeteroData]
     ) -> Dict[int, HeteroData]:
         """Applies the transformation to all snapshots in-place."""
-        if not self.feature_center:
+        if not self.feature_scalers:
             raise RuntimeError("Must call fit_features() before transforming.")
         
         norm_data = {}
         for t, snapshot in all_data.items():
             norm_snapshot = snapshot.clone()
             for nt in norm_snapshot.node_types:
-                if 'x' in norm_snapshot[nt]:
-                    x = norm_snapshot[nt].x
-
-                    # Apply same log1p pre-transform on selected columns
-                    mask = self._log1p_mask.get(nt, None)
-                    if mask is not None and mask.any():
-                        x = x.clone()  # avoid in-place on shared tensors
-                        x[:, mask] = torch.log1p(torch.clamp_min(x[:, mask], 0.0))
-                    
-                    # Normalization
-                    x = (x - self.feature_center[nt]) / self.feature_scale[nt]
-
-                    # Clipping (if enabled)
-                    if self.clip_value is not None:
-                        torch.clamp_(x, min=-self.clip_value, max=self.clip_value)
-
-                    norm_snapshot[nt].x = x
+                if "x" in norm_snapshot[nt]:
+                    arr = norm_snapshot[nt].x.cpu().numpy()
+                    scalers = self.feature_scalers[nt]
+                    for i, scaler in enumerate(scalers):
+                        if scaler is not None:
+                            vals = arr[:, i].reshape(-1, 1)
+                            arr[:, i] = scaler.transform(vals).reshape(-1)
+                    norm_snapshot[nt].x = torch.tensor(arr, device=norm_snapshot[nt].x.device, dtype=norm_snapshot[nt].x.dtype)
             norm_data[t] = norm_snapshot
         return norm_data
