@@ -1,9 +1,13 @@
 from abc import ABC, abstractmethod
-from typing import Union, List, Dict
+from typing import Union, List, Dict, Optional
 import numpy as np
 import torch
 from torch_geometric.data import HeteroData
-from sklearn.preprocessing import StandardScaler, RobustScaler
+from sklearn.base import BaseEstimator
+from sklearn.preprocessing import (
+    StandardScaler, RobustScaler, MinMaxScaler,
+    MaxAbsScaler, QuantileTransformer, PowerTransformer
+)
 
 import logging; logger = logging.getLogger(__name__)
 
@@ -18,27 +22,59 @@ class STGCNNormalizer(ABC):
     """
     def __init__(self):
         self.target_scaler = None
-        self.feature_scalers = None
-    
+        
     @staticmethod
     def _get_scaler(method: str):
         """
         Factory function that returns a new scaler instance based on the method.
-        
-        Args:
-            method (str): 
-                - 'mean' for StandardScaler, 
-                - 'median' for RobustScaler.
-        
+                
         Returns:
             An un-fitted sklearn scaler instance.
         """
-        if method == "mean":
+        if method == "standard":
             return StandardScaler(with_mean=True, with_std=True)
-        elif method == "median":
+        elif method == "robust":
             return RobustScaler(with_centering=True, with_scaling=True, quantile_range=(25, 75))
+        elif method == "minmax":
+            return MinMaxScaler(feature_range=(0, 1))
+        elif method == "maxabs":
+            return MaxAbsScaler()
+        elif method == "quantile_uniform":
+            return QuantileTransformer(n_quantiles=1000, output_distribution="uniform", subsample=10000, random_state=0)
+        elif method == "quantile_normal":
+            return QuantileTransformer(n_quantiles=1000, output_distribution="normal", subsample=10000, random_state=0)
+        elif method == "power_yeojohnson":
+            return PowerTransformer(method="yeo-johnson", standardize=True)
+        elif method == "power_boxcox":
+            return PowerTransformer(method="box-cox", standardize=True)
         else:
-            raise ValueError(f"Unknown scaling method: {method}. Choose 'mean' or 'median'.")
+            raise ValueError(f"Unknown scaling method: {method}.")
+    
+    @staticmethod
+    def apply_log1p_safe(vals: np.ndarray, feature_name: str, context: str = "") -> np.ndarray:
+        """
+        Safely apply log1p to an array, clipping negatives to 0 and logging if clipping occurs.
+        
+        Args:
+            vals: Input values (reshaped column).
+            feature_name: Name of the feature for logging.
+            context: Extra string to indicate 'fit' or 'transform'.
+            method: Optional name of the scaler used.
+
+        Returns:
+            Transformed values (with log1p).
+        """
+        neg_mask = vals < 0
+        if np.any(neg_mask):
+            n_neg = np.sum(neg_mask)
+            min_val = vals.min()
+            logger.warning(
+                f"[{context}] Feature '{feature_name}': {n_neg} negatives detected "
+                f"(min={min_val:.3f}), clipped to 0 before log1p."
+            )
+        vals = np.log1p(np.clip(vals, a_min=0, a_max=None))
+        logger.info(f"[{context}] Feature '{feature_name}': log1p applied.")
+        return vals
     
     @abstractmethod
     def fit_features(self):
@@ -53,14 +89,14 @@ class STGCNNormalizer(ABC):
     def fit_target(
             self, 
             y_train:        np.ndarray, 
-            y_train_mask:   np.ndarray = None,
-            method:         str = 'median'
+            y_train_mask:   np.ndarray      = None,
+            method:         str             = 'robust'
     ) -> "STGCNNormalizer":
         """
         Args:
             y_train (np.ndarray): Training target array.
             train_mask (np.ndarray, optional): Mask to select valid targets.
-            method (str): The scaling method to use: 'mean' or 'median'.
+            method (str): The scaling method to use.
         """
         if y_train_mask is not None:
             valid_targets = y_train[y_train_mask.astype(bool)]
@@ -110,40 +146,67 @@ class Homogeneous(STGCNNormalizer):
     
     def __init__(self):
         super().__init__()
-        self.feature_scalers: List[Union[StandardScaler, RobustScaler]] = []
-        
+        self.feature_names:     List[str] = []
+        self.feature_scalers:   List[Union[BaseEstimator, None]] = []
+        self.feature_log_flags: List[bool] = []
+
     def fit_features(
             self, 
             x_train:                np.ndarray, 
             feature_names:          List[str], 
-            method:                 str = 'median',
-            features_to_skip_norm:  List[str] = None
+            features_to_skip_norm:  List[str]           = None,
+            default_method:         str                 = 'robust',
+            scaler_map:             Dict[str, str]      = None,
+            log_features:           List[str]           = None
     ) -> "Homogeneous":
         """
-        Calculates feature statistics from the training data slice.
-
+        Fit scalers to each feature.
+        
         Args:
-            x_train (np.ndarray): A 3D array of shape (T_train, R, F).
-            feature_names (List[str]): A list of length F with feature names.
-            method (str): The scaling method to use: 'mean' for Z-score or 'median' for Robust Scaling.
-            features_to_skip_norm (List[str], optional): List of substrings for features to skip.
+            x_train: np.ndarray of shape (T_train, R, F).
+            feature_names: list of feature names (length F).
+            features_to_skip_norm: skip normalization if any substring matches.
+            default_method: fallback method if no match is found.
+            scaler_map: dict {substring -> scaler_method}.
         """
         logger.info("Fitting homogeneous normalizer.")
-                
-        # Identify and handle features to skip (this logic is the same)
-        self.feature_scalers = []
-        for i, fname in enumerate(feature_names):
-            if features_to_skip_norm and any(s in fname for s in features_to_skip_norm):
-                logger.info(f"Skipping normalization for feature '{fname}'")
-                self.feature_scalers.append(None)  # identity transform
-            else:
-                scaler = self._get_scaler(method=method)
-                # collapse T,R into one axis
-                vals = x_train[..., i].reshape(-1, 1)
-                scaler.fit(vals)
-                self.feature_scalers.append(scaler)
-                
-        logger.info(f"Fitted feature processor using method={method}.")
+        self.feature_names = feature_names
+        scaler_map = scaler_map or {}
+        log_features = log_features or []
+        
+        for i, feature_name in enumerate(feature_names):
+            # Get values
+            vals = x_train[..., i].reshape(-1, 1)
+            
+            # Log rule
+            # - NOTE: This can be independent of 'features_to_skip_norm', so comes before.
+            apply_log = any(s in feature_name for s in log_features)
+            self.feature_log_flags.append(apply_log)
+            if apply_log:
+                vals = self.apply_log1p_safe(vals=vals, feature_name=feature_name, context="fit")
+            
+            # Skip rule
+            if features_to_skip_norm and any(s in feature_name for s in features_to_skip_norm):
+                logger.info(f"Skipping normalization for feature '{feature_name}'")
+                self.feature_scalers.append(None)
+                continue
+                        
+            # Scaler map lookup (substring match)
+            method = None
+            for substr, scaler_name in scaler_map.items():
+                if substr in feature_name:
+                    method = scaler_name
+                    logger.info(f"Feature '{feature_name}': matched on '{substr}' -> '{method}'")
+                    break
+            if method is None:
+                method = default_method
+            
+            # Get and fit scaler
+            scaler = self._get_scaler(method=method)  
+            scaler.fit(vals)
+            self.feature_scalers.append(scaler)
+                        
+        logger.info("Finished fitting homogeneous normalizer.")
         return self
     
     def transform_features(self, x: np.ndarray) -> np.ndarray:
@@ -151,10 +214,20 @@ class Homogeneous(STGCNNormalizer):
         if not self.feature_scalers:
             raise RuntimeError("Must call fit_features() before transforming.")
         out = x.copy()
-        for i, scaler in enumerate(self.feature_scalers):
+        for i, (scaler, do_log) in enumerate(zip(self.feature_scalers, self.feature_log_flags)):
+            # Get values
+            vals = out[..., i].reshape(-1, 1)
+            # Log transform
+            if do_log:
+                vals = self.apply_log1p_safe(
+                    vals=vals,
+                    feature_name=self.feature_names[i],
+                    context="transform"
+                )
+            # Apply scaler
             if scaler is not None:
-                vals = out[..., i].reshape(-1, 1)
-                out[..., i] = scaler.transform(vals).reshape(out[..., i].shape)
+                vals = scaler.transform(vals)
+            out[..., i] = vals.reshape(out[..., i].shape)
         return out
 
 
@@ -170,17 +243,35 @@ class Heterogeneous(STGCNNormalizer):
     
     def __init__(self):
         super().__init__()
-        self.feature_scalers: Dict[str, List[Union[StandardScaler, RobustScaler]]] = {}
-        
+        self.feature_names:     Dict[str, List[str]] = {}
+        self.feature_scalers:   Dict[str, List[Union[BaseEstimator, None]]] = {}
+        self.feature_log_flags: Dict[str, List[bool]] = {}
+    
     def fit_features(
             self,
             x_train:                Dict[int, HeteroData],
             feature_names:          Dict[str, List[str]],
-            method:                 str = "median",
-            features_to_skip_norm:  List[str] | None = None,
+            features_to_skip_norm:  List[str]               = None,
+            default_method:         str                     = 'robust',
+            scaler_map:             Dict[str, str]          = None,
+            log_features:           List[str]               = None,
     ) -> "Heterogeneous":
+        """
+        Fit scalers per node type and feature.
+
+        Args:
+            x_train: Dict[int, HeteroData] snapshots.
+            feature_names: {node_type -> [feature_name1, feature_name2, ...]}.
+            default_method: scaler method used if not matched.
+            features_to_skip_norm: list of substrings; skip if any matches.
+            scaler_map: {substring -> scaler_method}.
+            log_features: list of substrings; apply log1p if any matches.
+        """
         logger.info("Fitting heterogeneous normalizer (no NaN imputation).")
-        
+        self.feature_names = feature_names
+        scaler_map = scaler_map or {}
+        log_features = log_features or []
+                
         # 1. Collect node‑wise feature matrices
         collector: Dict[str, List[torch.Tensor]] = {nt: [] for nt in feature_names}
         for snap in x_train.values():
@@ -195,18 +286,39 @@ class Heterogeneous(STGCNNormalizer):
             joined = np.concatenate(tensors, axis=0)  # (N_total, C)
             names = feature_names.get(nt, [])
             self.feature_scalers[nt] = []
+            self.feature_log_flags[nt] = []
             
-            for i, fname in enumerate(names):
-                if features_to_skip_norm and any(s in fname for s in features_to_skip_norm):
-                    logger.info(f"Node type '{nt}': skipping '{fname}'")
+            for i, feature_name in enumerate(names):
+                # Get values
+                vals = joined[:, i].reshape(-1, 1)
+                
+                # Log rule
+                apply_log = any(s in feature_name for s in log_features)
+                self.feature_log_flags[nt].append(apply_log)
+                if apply_log:
+                    vals = self.apply_log1p_safe(vals=vals, feature_name=feature_name, context="fit")
+                
+                # Skip rule
+                if features_to_skip_norm and any(s in feature_name for s in features_to_skip_norm):
+                    logger.info(f"Node '{nt}', feature '{feature_name}': skipped")
                     self.feature_scalers[nt].append(None)
-                else:
-                    scaler = self._get_scaler(method=method)
-                    vals = joined[:, i].reshape(-1, 1)
-                    scaler.fit(vals)
-                    self.feature_scalers[nt].append(scaler)
+                    continue
+                
+                # Scaler map lookup (substring match)
+                method = None
+                for substr, scaler_name in scaler_map.items():
+                    if substr in feature_name:
+                        method = scaler_name
+                        logger.info(f"Node '{nt}', feature '{feature_name}': matched on '{substr}' -> '{method}'")
+                        break
+                if method is None:
+                    method = default_method
+                
+                scaler = self._get_scaler(method=method)
+                scaler.fit(vals)
+                self.feature_scalers[nt].append(scaler)
         
-        logger.info(f"Fitted feature processor using method={method}.")
+        logger.info("Finished fitting heterogeneous normalizer.")
         return self
     
     def transform_features(self, x: Dict[int, HeteroData]) -> Dict[int, HeteroData]:
@@ -221,10 +333,28 @@ class Heterogeneous(STGCNNormalizer):
                 if "x" in norm_snapshot[nt]:
                     arr = norm_snapshot[nt].x.cpu().numpy()
                     scalers = self.feature_scalers[nt]
-                    for i, scaler in enumerate(scalers):
+                    log_flags = self.feature_log_flags[nt]
+                    
+                    for i, (scaler, do_log) in enumerate(zip(scalers, log_flags)):
+                        # Get values
+                        vals = arr[:, i].reshape(-1, 1)
+                        # Log transform
+                        if do_log:
+                            vals = self.apply_log1p_safe(
+                                vals=vals,
+                                feature_name=self.feature_names[nt][i],
+                                context="transform"
+                            )
+                        # Apply scaler
                         if scaler is not None:
-                            vals = arr[:, i].reshape(-1, 1)
-                            arr[:, i] = scaler.transform(vals).reshape(-1)
-                    norm_snapshot[nt].x = torch.tensor(arr, device=norm_snapshot[nt].x.device, dtype=norm_snapshot[nt].x.dtype)
+                            vals = scaler.transform(vals)
+                            
+                        arr[:, i] = vals.reshape(-1)
+                    
+                    norm_snapshot[nt].x = torch.tensor(
+                        data=arr,
+                        device=norm_snapshot[nt].x.device,
+                        dtype=norm_snapshot[nt].x.dtype
+                    )
             norm_data[t] = norm_snapshot
         return norm_data
