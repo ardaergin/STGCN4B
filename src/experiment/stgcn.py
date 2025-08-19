@@ -114,6 +114,7 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
             method            = 'median'
         )
         norm_target = normalizer.transform_target(y=self.input_dict["target_array"])
+        logger.info(f"Normalized target shape: {norm_target.shape}")
         
         return norm_features, norm_target, normalizer
     
@@ -355,6 +356,7 @@ class Homogeneous(STGCNExperimentRunner):
     
     def _log_normalization_stats(self, x: np.ndarray):
         """Logs per-feature statistics for the normalized homogeneous feature array."""
+        logger.info(f"Normalized features shape: {x.shape}")  
         logger.info("Normalized homogeneous features stats (per-feature):")
         
         feature_names_list = self.input_dict["feature_names"]
@@ -553,6 +555,11 @@ class Heterogeneous(STGCNExperimentRunner):
     
     def _log_normalization_stats(self, x: Dict[int, HeteroData]):
         """Logs per-feature statistics for the normalized heterogeneous graph snapshots."""
+        for t, snap in x.items():
+            for nt in snap.node_types:
+                if "x" in snap[nt]:
+                    logger.info(f"[t={t}] Node type '{nt}' feature shape: {snap[nt].x.shape}")
+        
         logger.info("Normalized heterogeneous features stats (per-feature):")
         tensors_by_nodetype = defaultdict(list)
         for snapshot in x.values():

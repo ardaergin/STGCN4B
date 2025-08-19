@@ -79,7 +79,8 @@ class STGCNNormalizer(ABC):
         """Normalizes the target array using the fitted target scaler."""
         if self.target_scaler is None:
             raise RuntimeError("Must call fit_target() before transforming.")
-        return self.target_scaler.transform(y.reshape(-1, 1)).reshape(-1)
+        orig_shape = y.shape
+        return self.target_scaler.transform(y.reshape(-1, 1)).reshape(orig_shape)
     
     def inverse_transform_target(
             self, 
@@ -88,9 +89,13 @@ class STGCNNormalizer(ABC):
         """Inverse-transforms predictions back to the original scale. This is crucial for evaluation."""
         if self.target_scaler is None:
             raise RuntimeError("Must call fit_target() before inverse transforming.")
-        return self.target_scaler.inverse_transform(
+        orig_shape = predictions.shape
+        out = self.target_scaler.inverse_transform(
             predictions.reshape(-1, 1)
-        ).reshape(-1)
+        ).reshape(orig_shape)
+        if isinstance(predictions, torch.Tensor):
+            out = torch.as_tensor(out, device=predictions.device, dtype=predictions.dtype)
+        return out
 
 
 class Homogeneous(STGCNNormalizer):
