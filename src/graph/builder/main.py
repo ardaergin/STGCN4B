@@ -253,7 +253,97 @@ class OfficeGraphBuilder(
         logger.info("========== Finished the temporal pipeline. ==========")
         return None
     
-    
+    def run_visualizer_pipeline(self) -> None:
+        """
+        Runs a series of visualizations on the generated temporal dataframes
+        and saves them to categorized subdirectories in the plots directory.
+        """
+        logger.info("========== Running the visualizer pipeline... ==========")
+        
+        df_configs = [
+            {'name': 'device_level', 'df': getattr(self, 'device_level_df', None)},
+            {'name': 'room_level', 'df': getattr(self, 'room_level_df', None)}
+        ]
+
+        # --- Loop over workhour/all-hour modes ---
+        for workhours_only in [True, False]:
+            workhours_suffix = "_workhours_only" if workhours_only else "_all_hours"
+            logger.info(f"--- Generating plots for mode: {workhours_suffix.replace('_',' ')} ---")
+
+            # --- A) Generate plots for each dataframe type (device, room) ---
+            for config in df_configs:
+                df_name = config['name']
+                df = config['df']
+
+                if df is None or df.empty:
+                    logger.warning(f"Skipping plots for {df_name} as its dataframe is missing or empty.")
+                    continue
+                
+                logger.info(f"Generating plots for {df_name} dataframe...")
+
+                # 1. Property Distributions
+                plot_subdir = "distributions"
+                fname = f"distributions_{df_name}{workhours_suffix}.png"
+                save_path = os.path.join(self.plots_dir, plot_subdir, fname)
+                self.plot_property_distributions(df=df, workhours_only=workhours_only, save_path=save_path)
+
+                # 2. Monthly Daily Trends
+                plot_subdir = "monthly_trends"
+                fname = f"monthly_trends_{df_name}{workhours_suffix}.png"
+                save_path = os.path.join(self.plots_dir, plot_subdir, fname)
+                self.plot_monthly_daily_trends(df=df, workhours_only=workhours_only, save_path=save_path)
+
+                # 3. Optimal Range Summary
+                plot_subdir = "optimal_range"
+                fname = f"optimal_range_{df_name}{workhours_suffix}.png"
+                save_path = os.path.join(self.plots_dir, plot_subdir, fname)
+                self.plot_optimal_range_summary(df=df, workhours_only=workhours_only, save_path=save_path)
+                
+                # 4. Correlation Heatmap
+                plot_subdir = "correlation_heatmap"
+                fname = f"correlation_heatmap_{df_name}{workhours_suffix}.png"
+                save_path = os.path.join(self.plots_dir, plot_subdir, fname)
+                self.plot_correlation_heatmap(df=df, workhours_only=workhours_only, save_path=save_path)
+                
+                # 5. Missing Data Pattern
+                plot_subdir = "missing_data_pattern"
+                fname = f"missing_data_{df_name}{workhours_suffix}.png"
+                save_path = os.path.join(self.plots_dir, plot_subdir, fname)
+                self.plot_missing_data_pattern(df=df, workhours_only=workhours_only, save_path=save_path)
+
+            # --- B) Generate all distributions plot for room_level_df only ---
+            room_df = getattr(self, 'room_level_df', None)
+            if room_df is not None and not room_df.empty:
+                logger.info(f"Generating all-distributions plot for room_level_df...")
+                plot_subdir = "all_distributions"
+                output_dir = os.path.join(self.plots_dir, plot_subdir, f"room_level{workhours_suffix}")
+                pdf_name = f"all_distributions_room_level{workhours_suffix}.pdf"
+                
+                self.plot_all_distributions_for_room_level_df(
+                    df=room_df,
+                    output_dir=output_dir,
+                    workhours_only=workhours_only,
+                    pdf_name=pdf_name
+                )
+        
+        # --- Post-loop plots that specifically compare workhours vs non-workhours ---
+        logger.info("--- Generating workhour comparison plots ---")
+        for config in df_configs:
+            df_name = config['name']
+            df = config['df']
+            if df is None or df.empty:
+                continue
+
+            # 6. Workhour vs Non-Workhour Distribution Comparison
+            plot_subdir = "workhour_comparison"
+            fname = f"workhour_comparison_{df_name}.png"
+            save_path = os.path.join(self.plots_dir, plot_subdir, fname)
+            self.compare_workhours_distributions(df=df, save_path=save_path)
+
+        logger.info("========== Finished the visualizer pipeline. ==========")
+        return None
+
+
     def run_tabular_pipeline(self, args) -> None:
         logger.info("========== Running the tabular pipeline... ==========")
 
@@ -408,6 +498,8 @@ def main():
     # Running the pipelines
     builder.run_spatial_pipeline(args=args)
     builder.run_temporal_pipeline(args=args)
+    if args.make_and_save_plots:
+        builder.run_visualizer_pipeline()
     builder.run_tabular_pipeline(args=args)
     builder.run_homograph_pipeline(args=args)
     builder.run_heterograph_pipeline(args=args)
