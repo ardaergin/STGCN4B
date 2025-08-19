@@ -206,8 +206,8 @@ class OfficeGraphBuilder(
         self.build_property_level_df()
         self.build_device_level_df()
 
-        # Interim anomaly cleaning
-        # NOTE: Only appropriate for (for now):
+        # === Cleaning === #
+        # NOTE: For now, only appropriate for:
         # - interval=30min 
         # - use_sundays=False
         logger.info("Cleaning anomalies from device-level DataFrame...")
@@ -225,9 +225,10 @@ class OfficeGraphBuilder(
         
         if args.drop_high_missingness:
             self.device_level_df = self.drop_high_missingness(
-                df=self.device_level_df,
-                threshold=args.missingness_threshold,
+                df                  = self.device_level_df,
+                threshold           = args.missingness_threshold,
             )
+        # === End of Cleaning === #
         
         self.build_room_level_df()
         self.build_floor_level_df()
@@ -340,13 +341,12 @@ class OfficeGraphBuilder(
             horizontal_adj_matrix   = adj["horizontal_adj_matrix"],
             vertical_adj_matrix     = adj["vertical_adj_matrix"],
             outside_adj_vector      = adj["outside_adj_vector"],
-            hetero_prop_features    = args.hetero_prop_features
         )
         
         self.build_hetero_temporal_graphs()
         hetero_input = self.prepare_hetero_stgcn_input()
         
-        fname_base = get_data_filename(file_type="hetero_input", interval=args.interval, hetero_mode=args.hetero_mode)
+        fname_base = get_data_filename(file_type="hetero_input", interval=args.interval)
         self.save_hetero_input(hetero_input, file_name=f"{fname_base}.joblib")
         
         logger.info("========== Finished the heterogeneous graph pipeline. ==========")

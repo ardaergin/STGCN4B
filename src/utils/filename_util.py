@@ -9,7 +9,6 @@ def get_data_filename(
         weather_mode:   Optional[Literal['node', 'feature']]                                  = None,
         model_family:   Optional[Literal['graph', 'tabular']]                                 = None,
         task_type:      Optional[Literal['consumption_forecast', 'measurement_forecast']]     = None,
-        hetero_mode:    Optional[Literal['full', 'minimal']]                                  = None,
     ) -> str:
     """
     Generates a data filename based on the pipeline's output logic.
@@ -20,7 +19,6 @@ def get_data_filename(
         weather_mode (str): for homogenous stgcn, (options: 'node' or 'feature').
         model_family (str): The family of the model ('graph', 'tabular').
         task_type (str): The overall task ('consumption_forecast', or 'measurement_forecast').
-        hetero_mode (str): The mode for heterogeneous data (options: 'full' or 'minimal').
     
     Returns:
         str: The base filename without an extension.
@@ -52,7 +50,7 @@ def get_data_filename(
             raise ValueError(f"Invalid model_family provided: '{model_family}'")
     
     elif file_type == 'hetero_input':
-        return f"hetero_input_{interval}_{hetero_mode}"
+        return f"hetero_input_{interval}"
     
     else:
         raise ValueError(f"Invalid file_type provided: '{file_type}'")

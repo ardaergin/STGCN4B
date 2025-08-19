@@ -616,9 +616,8 @@ class Heterogeneous(STGCNDataPreparer):
 
         # MetaData
         hetero_fname_base = get_data_filename(
-            file_type       = "hetero_input", 
-            interval        = self.args.interval, 
-            hetero_mode     = self.args.hetero_mode,
+            file_type       = "hetero_input",
+            interval        = self.args.interval,
         )
         hetero_file_path = os.path.join(self.args.processed_data_dir, f"{hetero_fname_base}.joblib")
         logger.info(f"Loading heterogeneous graph data from {hetero_file_path}")

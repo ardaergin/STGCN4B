@@ -174,37 +174,20 @@ def add_OfficeGraph_args(parser):
                         dest="mask_workhours",
                         help="Disable work-hour masking. By default, masking is enabled."
     )
-
-    parser.add_argument("--hetero_prop_features", type=str,
-        nargs="+",
-        default=["mean", "std", "max", "min", "count", "has_measurement"],
-        help=(
-            "Subset of property-level temporal features to use in heterogeneous graphs. "
-            "Default is the full set: mean, std, max, min, count, has_measurement."
-        ),
-    )
-    parser.add_argument("--hetero_mode", type=str,
-        default="full",
-        choices=["full", "minimal"],
-        help="Mode for heterogeneous graph construction. Specifies the feature set to use."
-        "Minimal if 'mean' + 'has_measurement', full if all features."
-    )
-
-    parser.add_argument(
-        "--clear_high_counts",
-        action="store_true",
-        help="If set, clears all rows where count > 1 and drops std/max/min/count columns (keeps only mean + has_measurement)."
-    )
-
-    parser.add_argument(
-        "--drop_high_missingness",
-        action="store_true",
-        help=(
-            "Drop device–property pairs with high missingness (default threshold 75%). "
-            "If not set, only logs missingness statistics."
-        ),
-    )
     
+    # Cleaning arguments
+    parser.add_argument(
+        "--do_not_clear_high_counts",
+        action="store_false",
+        dest="clear_high_counts",
+        help="Do not clear all rows where count > 1 and drop std/max/min/count columns (keeping only mean + has_measurement)."
+    )
+    parser.add_argument(
+        "--do_not_drop_high_missingness",
+        action="store_false",
+        dest="drop_high_missingness",
+        help=("Do not drop device–property pairs with high missingness."),
+    )
     parser.add_argument(
         "--missingness_threshold",
         type=float,
