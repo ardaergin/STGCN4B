@@ -637,61 +637,7 @@ class Heterogeneous(STGCNDataPreparer):
             logger.warning("'feature_names' dictionary not found in loaded data.")
     
     def _drop_requested_features(self) -> None:
-        """
-        Drop features from the HeteroData objects based on substrings.
-
-        This method iterates through the base graph and all temporal snapshots.
-        For each node type, it identifies features whose names contain any of the
-        substrings in `self.args.features_to_drop`, removes them from the
-        feature tensor (`.x`), and updates the corresponding feature name list.
-        """
-        if not self.args.features_to_drop:
-            logger.info("No features requested to be dropped. Skipping.")
-            return
-
-        substrings_to_drop = self.args.features_to_drop
-        logger.info(f"Attempting to drop features containing substrings: {substrings_to_drop}")
-
-        # A helper function to process a single graph object (either base or temporal)
-        def _process_graph(graph: 'HeteroData', feature_names_dict: Dict[str, List[str]]):
-            for node_type in graph.node_types:
-                # Check if this node type has features and a corresponding feature name list
-                if 'x' not in graph[node_type] or node_type not in feature_names_dict:
-                    continue
-
-                original_feature_names = feature_names_dict[node_type]
-                
-                # Determine which feature indices to KEEP
-                indices_to_keep = [
-                    i for i, name in enumerate(original_feature_names)
-                    if not any(sub in name for sub in substrings_to_drop)
-                ]
-
-                # If the number of features to keep is the same, no changes needed
-                if len(indices_to_keep) == len(original_feature_names):
-                    continue
-
-                dropped_count = len(original_feature_names) - len(indices_to_keep)
-                if dropped_count > 0:
-                    logger.info(f"Node type '{node_type}': Dropping {dropped_count} features.")
-                    
-                    # 1. Slice the feature tensor to keep only the desired columns
-                    graph[node_type].x = graph[node_type].x[:, indices_to_keep]
-
-                    # 2. Update the feature names list in the central dictionary
-                    feature_names_dict[node_type] = [original_feature_names[i] for i in indices_to_keep]
-
-        # Process the base graph first
-        logger.debug("Processing base_graph for feature dropping...")
-        _process_graph(self.hetero_input["base_graph"], self.hetero_input["feature_names"])
-        
-        # Process all temporal graph snapshots
-        logger.debug(f"Processing {len(self.hetero_input['temporal_graphs'])} temporal graphs for feature dropping...")
-        for bucket_idx, temporal_graph in self.hetero_input["temporal_graphs"].items():
-            # Note: The feature name dictionary is shared, so we pass the same one
-            _process_graph(temporal_graph, self.hetero_input["feature_names"])
-            
-        logger.info("Finished dropping requested features from all heterogeneous graphs.")
+        raise NotImplementedError("Feature dropping not implemented for Heterogeneous-STGCNDataPreparer.")
     
     def _prepare_features(self) -> None:
         """HeteroData snapshot already has the features prepared. They are already nicely tensorized."""
