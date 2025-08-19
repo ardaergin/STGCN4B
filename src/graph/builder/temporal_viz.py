@@ -479,95 +479,6 @@ class TemporalVisualizerMixin:
         else:
             plt.show()
     
-    def plot_correlation_heatmap(
-            self,
-            df: Optional[pd.DataFrame] = None,
-            properties: List[str] = ["Temperature", "Humidity", "CO2Level"],
-            stats_to_correlate: List[str] = ["mean", "std"],
-            workhours_only: bool = False,
-            save_path: Optional[str] = None
-    ) -> None:
-        """
-        Plots a correlation heatmap between sensor properties.
-        
-        Args:
-            df: DataFrame to analyze. If None, uses device_level_df.
-            properties: Properties to include in correlation.
-            stats_to_correlate: Statistics to correlate.
-            workhours_only: If True, only analyze workhours.
-            save_path: If provided, saves the plot to this path instead of displaying it.
-        """
-        if df is None:
-            if hasattr(self, 'device_level_df'):
-                df = self.device_level_df
-            else:
-                raise ValueError("No DataFrame provided and device_level_df not available.")
-        
-        df_type = self._get_dataframe_type(df)
-        df = self._filter_workhours(df, workhours_only)
-        
-        if df_type == 'device':
-            # Filter and aggregate device-level data
-            df_filtered = df[df['property_type'].isin(properties)][
-                ['bucket_idx', 'property_type'] + stats_to_correlate
-            ]
-            df_aggregated = df_filtered.groupby(['bucket_idx', 'property_type']).mean().reset_index()
-            
-            # Pivot to wide format
-            df_wide = df_aggregated.pivot(
-                index='bucket_idx',
-                columns='property_type',
-                values=stats_to_correlate
-            )
-            df_wide.columns = [f'{col[1]}_{col[0]}' for col in df_wide.columns]
-            
-        else:  # room-level
-            # For room-level, collect relevant columns
-            columns_to_use = ['bucket_idx']
-            column_labels = []
-            
-            for prop in properties:
-                col_map = self._get_property_columns(df, prop, df_type)
-                for stat in stats_to_correlate:
-                    if stat in col_map:
-                        columns_to_use.append(col_map[stat])
-                        # Use simpler labels for room-level
-                        if stat == 'std':
-                            column_labels.append(f'{prop}_intra_device_var')
-                        else:
-                            column_labels.append(f'{prop}_{stat}')
-            
-            # Aggregate across rooms for each bucket
-            df_wide = df[columns_to_use].groupby('bucket_idx').mean()
-            df_wide.columns = column_labels
-        
-        # Calculate correlation
-        corr_matrix = df_wide.corr()
-        
-        # Plot
-        plt.figure(figsize=(10, 8))
-        
-        workhour_text = " (Workhours Only)" if workhours_only else ""
-        df_type_text = "Device-Level" if df_type == 'device' else "Room-Level"
-        
-        sns.heatmap(corr_matrix, annot=True, fmt=".2f", cmap='vlag',
-                   vmin=-1, vmax=1, square=True)
-        
-        plt.title(f'{df_type_text} Correlation Matrix of Sensor Properties{workhour_text}',
-                 fontsize=16, pad=20)
-        plt.xticks(rotation=45, ha='right')
-        plt.yticks(rotation=0)
-        plt.tight_layout()
-        
-        if save_path:
-            if os.path.dirname(save_path):
-                os.makedirs(os.path.dirname(save_path), exist_ok=True)
-            plt.savefig(save_path, dpi=300, bbox_inches='tight')
-            logger.info(f"Plot saved to {save_path}")
-            plt.close()
-        else:
-            plt.show()
-
     def plot_missing_data_pattern(
             self,
             df: Optional[pd.DataFrame] = None,
@@ -754,7 +665,7 @@ class TemporalVisualizerMixin:
         else:
             plt.show()
     
-    def plot_full_correlation_heatmap(
+    def plot_correlation_heatmap(
             self,
             df: Optional[pd.DataFrame] = None,
             workhours_only: bool = False,
