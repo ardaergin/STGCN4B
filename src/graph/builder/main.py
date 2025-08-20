@@ -333,12 +333,15 @@ class OfficeGraphBuilder(
                     pdf_name        = pdf_name
                 )
             
-            logger.info(f"Generating log1p-transformed distributions for positive features in room_level_df...")
+            logger.info("Generating log1p-transformed distributions for non-negative features in room_level_df...")
             log_df = full_room_df.copy()
             
             # Select strictly positive numeric columns
             numeric_cols = log_df.select_dtypes(include=[np.number]).columns
-            positive_cols = [c for c in numeric_cols if (log_df[c] > 0).all()]
+            positive_cols = [
+                c for c in numeric_cols
+                if (log_df[c].dropna() >= 0).all()
+            ]
             
             if positive_cols:
                 log_df[positive_cols] = np.log1p(log_df[positive_cols])
@@ -354,7 +357,7 @@ class OfficeGraphBuilder(
                     pdf_name        = pdf_name
                 )
             else:
-                logger.info("No strictly positive numeric features found for log1p transformation.")
+                logger.info("No non-negative numeric features found for log1p transformation.")
         
         # --- Post-loop plots that specifically compare workhours vs non-workhours ---
         logger.info("--- Generating workhour comparison plots ---")
