@@ -463,29 +463,48 @@ class TemporalVisualizerMixin:
         pivot_df = results_df.pivot(index='property', columns='status', values='percentage')
         pivot_df = pivot_df[['In Range', 'Out of Range']]
         
-        fig, ax = plt.subplots(figsize=(10, 7))
-        colors = {'In Range': '#2ca02c', 'Out of Range': '#d62728'}
+        fig, ax = plt.subplots(figsize=(9, 6))
+        colors = {'In Range': '#4CAF50', 'Out of Range': '#E57373'}  # softer green/red
         
-        pivot_df.plot(kind='bar', stacked=True, ax=ax,
-                     color=[colors.get(c, '#333333') for c in pivot_df.columns])
+        pivot_df.plot(
+            kind='barh', 
+            stacked=True, 
+            ax=ax,
+            color=[colors.get(c, '#333333') for c in pivot_df.columns],
+            edgecolor="white"
+        )
         
-        # Add percentage labels
+        # Add percentage labels inside bars
         for container in ax.containers:
-            ax.bar_label(container, label_type='center', fmt='%.1f%%',
-                        color='white', weight='bold')
+            ax.bar_label(container, 
+                         label_type='center', 
+                         fmt='%.1f%%',
+                         fontsize=10,
+                         color='white', 
+                         weight='bold')
         
         # Title and labels
         workhour_text = " (Workhours Only)" if workhours_only else ""
         df_type_text = "Device-Level" if df_type == 'device' else "Room-Level"
         ax.set_title(f'{df_type_text} Compliance with Optimal Environmental Ranges{workhour_text}',
-                    fontsize=16, pad=20)
-        ax.set_ylabel('Percentage of Time (%)', fontsize=12)
-        ax.set_xlabel('')
-        ax.set_ylim(0, 100)
-        plt.xticks(rotation=0, ha='center', fontsize=12)
-        ax.legend(title='Status', bbox_to_anchor=(1.02, 1), loc='upper left')
+                     fontsize=14, pad=15, weight='bold')
         
-        plt.tight_layout(rect=[0, 0, 0.85, 1])
+        ax.set_xlabel('Percentage of Time (%)', fontsize=12)
+        ax.set_ylabel('')
+        ax.set_xlim(0, 100)
+        
+        # Grid for readability
+        ax.xaxis.grid(True, linestyle='--', alpha=0.6)
+        ax.set_axisbelow(True)
+        
+        # Ticks
+        plt.xticks(fontsize=11)
+        plt.yticks(fontsize=11)
+        
+        # Legend inside plot
+        ax.legend(title='Status', loc='lower right', fontsize=10, frameon=True)
+        
+        plt.tight_layout()
         
         if save_path:
             if os.path.dirname(save_path):
@@ -495,7 +514,7 @@ class TemporalVisualizerMixin:
             plt.close()
         else:
             plt.show()
-    
+        
     def plot_missing_data_pattern(
             self,
             df:                     Optional[pd.DataFrame] = None,
