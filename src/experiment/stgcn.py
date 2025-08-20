@@ -114,12 +114,12 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
                 "Humidity_mean":        "standard",
                 "Humidity_max":         "standard",
                 "Humidity_min":         "standard",
-                "CO2Level_mean":        "power_yeojohnson",
-                "CO2Level_max":         "power_yeojohnson",
-                "CO2Level_min":         "power_yeojohnson",
-                "Temperature_mean":     "power_yeojohnson",
-                "Temperature_max":      "power_yeojohnson",
-                "Temperature_min":      "power_yeojohnson",
+                "CO2Level_mean":        "robust",
+                "CO2Level_max":         "robust",
+                "CO2Level_min":         "robust",
+                "Temperature_mean":     "robust",
+                "Temperature_max":      "robust",
+                "Temperature_min":      "robust",
                 # Weather
                 "cloud_cover":          "robust",   # Percentage (range: 0-100)
                 "precipitation":        "robust",   # Heavily zero-inflated, left-skewed (range: 0-100)
@@ -144,7 +144,7 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         normalizer.fit_target(
             y_train           = train_target_slice, 
             y_train_mask      = train_mask_slice,
-            method            = "power_yeojohnson"
+            method            = "robust"
         )
         norm_target = normalizer.transform_target(y=self.input_dict["target_array"])
         logger.info(f"Normalized target shape: {norm_target.shape}")
