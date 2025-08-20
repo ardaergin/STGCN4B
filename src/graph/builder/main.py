@@ -2,6 +2,7 @@ import os
 import joblib
 import torch
 import pandas as pd
+import numpy as np
 from typing import Dict, Any
 
 from ..officegraph  import OfficeGraph
@@ -331,6 +332,29 @@ class OfficeGraphBuilder(
                     workhours_only  = workhours_only,
                     pdf_name        = pdf_name
                 )
+            
+            logger.info(f"Generating log1p-transformed distributions for positive features in room_level_df...")
+            log_df = full_room_df.copy()
+            
+            # Select strictly positive numeric columns
+            numeric_cols = log_df.select_dtypes(include=[np.number]).columns
+            positive_cols = [c for c in numeric_cols if (log_df[c] > 0).all()]
+            
+            if positive_cols:
+                log_df[positive_cols] = np.log1p(log_df[positive_cols])
+                
+                plot_subdir = "all_distributions_log1p"
+                output_dir = os.path.join(self.plots_dir, plot_subdir, f"room_level{workhours_suffix}")
+                pdf_name = f"all_distributions_room_level_log1p{workhours_suffix}.pdf"
+                
+                self.plot_all_distributions_for_room_level_df(
+                    df              = log_df[positive_cols + ["bucket_idx", "room_uri_str"]],
+                    output_dir      = output_dir,
+                    workhours_only  = workhours_only,
+                    pdf_name        = pdf_name
+                )
+            else:
+                logger.info("No strictly positive numeric features found for log1p transformation.")
         
         # --- Post-loop plots that specifically compare workhours vs non-workhours ---
         logger.info("--- Generating workhour comparison plots ---")
