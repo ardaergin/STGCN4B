@@ -50,32 +50,6 @@ class STGCNNormalizer(ABC):
         else:
             raise ValueError(f"Unknown scaling method: {method}.")
     
-    @staticmethod
-    def apply_log1p_safe(vals: np.ndarray, feature_name: str, context: str = "") -> np.ndarray:
-        """
-        Safely apply log1p to an array, clipping negatives to 0 and logging if clipping occurs.
-        
-        Args:
-            vals: Input values (reshaped column).
-            feature_name: Name of the feature for logging.
-            context: Extra string to indicate 'fit' or 'transform'.
-            method: Optional name of the scaler used.
-
-        Returns:
-            Transformed values (with log1p).
-        """
-        neg_mask = vals < 0
-        if np.any(neg_mask):
-            n_neg = np.sum(neg_mask)
-            min_val = vals.min()
-            logger.warning(
-                f"[{context}] Feature '{feature_name}': {n_neg} negatives detected "
-                f"(min={min_val:.3f}), clipped to 0 before log1p."
-            )
-        vals = np.log1p(np.clip(vals, a_min=0, a_max=None))
-        logger.info(f"[{context}] Feature '{feature_name}': log1p applied.")
-        return vals
-    
     @abstractmethod
     def fit_features(self):
         """Abstract method to calculate feature statistics from training data."""
@@ -148,7 +122,6 @@ class Homogeneous(STGCNNormalizer):
         super().__init__()
         self.feature_names:     List[str] = []
         self.feature_scalers:   List[Union[BaseEstimator, None]] = []
-        self.feature_log_flags: List[bool] = []
 
     def fit_features(
             self, 
@@ -157,7 +130,6 @@ class Homogeneous(STGCNNormalizer):
             features_to_skip_norm:  List[str]           = None,
             default_method:         str                 = 'robust',
             scaler_map:             Dict[str, str]      = None,
-            log_features:           List[str]           = None
     ) -> "Homogeneous":
         """
         Fit scalers to each feature.
@@ -172,19 +144,11 @@ class Homogeneous(STGCNNormalizer):
         logger.info("Fitting homogeneous normalizer.")
         self.feature_names = feature_names
         scaler_map = scaler_map or {}
-        log_features = log_features or []
         
         for i, feature_name in enumerate(feature_names):
             # Get values
             vals = x_train[..., i].reshape(-1, 1)
-            
-            # Log rule
-            # - NOTE: This can be independent of 'features_to_skip_norm', so comes before.
-            apply_log = any(s in feature_name for s in log_features)
-            self.feature_log_flags.append(apply_log)
-            if apply_log:
-                vals = self.apply_log1p_safe(vals=vals, feature_name=feature_name, context="fit")
-            
+                        
             # Skip rule
             if features_to_skip_norm and any(s in feature_name for s in features_to_skip_norm):
                 logger.info(f"Skipping normalization for feature '{feature_name}'")
@@ -214,20 +178,10 @@ class Homogeneous(STGCNNormalizer):
         if not self.feature_scalers:
             raise RuntimeError("Must call fit_features() before transforming.")
         out = x.copy()
-        for i, (scaler, do_log) in enumerate(zip(self.feature_scalers, self.feature_log_flags)):
-            # Get values
-            vals = out[..., i].reshape(-1, 1)
-            # Log transform
-            if do_log:
-                vals = self.apply_log1p_safe(
-                    vals=vals,
-                    feature_name=self.feature_names[i],
-                    context="transform"
-                )
-            # Apply scaler
+        for i, scaler in enumerate(self.feature_scalers):
             if scaler is not None:
-                vals = scaler.transform(vals)
-            out[..., i] = vals.reshape(out[..., i].shape)
+                col_data = out[..., i].reshape(-1, 1)
+                out[..., i] = scaler.transform(col_data).reshape(out[..., i].shape)
         return out
 
 
@@ -245,7 +199,6 @@ class Heterogeneous(STGCNNormalizer):
         super().__init__()
         self.feature_names:     Dict[str, List[str]] = {}
         self.feature_scalers:   Dict[str, List[Union[BaseEstimator, None]]] = {}
-        self.feature_log_flags: Dict[str, List[bool]] = {}
     
     def fit_features(
             self,
@@ -254,7 +207,6 @@ class Heterogeneous(STGCNNormalizer):
             features_to_skip_norm:  List[str]               = None,
             default_method:         str                     = 'robust',
             scaler_map:             Dict[str, str]          = None,
-            log_features:           List[str]               = None,
     ) -> "Heterogeneous":
         """
         Fit scalers per node type and feature.
@@ -265,13 +217,11 @@ class Heterogeneous(STGCNNormalizer):
             default_method: scaler method used if not matched.
             features_to_skip_norm: list of substrings; skip if any matches.
             scaler_map: {substring -> scaler_method}.
-            log_features: list of substrings; apply log1p if any matches.
         """
         logger.info("Fitting heterogeneous normalizer (no NaN imputation).")
         self.feature_names = feature_names
         scaler_map = scaler_map or {}
-        log_features = log_features or []
-                
+                        
         # 1. Collect node‑wise feature matrices
         collector: Dict[str, List[torch.Tensor]] = {nt: [] for nt in feature_names}
         for snap in x_train.values():
@@ -286,17 +236,10 @@ class Heterogeneous(STGCNNormalizer):
             joined = np.concatenate(tensors, axis=0)  # (N_total, C)
             names = feature_names.get(nt, [])
             self.feature_scalers[nt] = []
-            self.feature_log_flags[nt] = []
-            
+                        
             for i, feature_name in enumerate(names):
                 # Get values
                 vals = joined[:, i].reshape(-1, 1)
-                
-                # Log rule
-                apply_log = any(s in feature_name for s in log_features)
-                self.feature_log_flags[nt].append(apply_log)
-                if apply_log:
-                    vals = self.apply_log1p_safe(vals=vals, feature_name=feature_name, context="fit")
                 
                 # Skip rule
                 if features_to_skip_norm and any(s in feature_name for s in features_to_skip_norm):
@@ -330,31 +273,27 @@ class Heterogeneous(STGCNNormalizer):
         for t, snapshot in x.items():
             norm_snapshot = snapshot.clone()
             for nt in norm_snapshot.node_types:
-                if "x" in norm_snapshot[nt]:
-                    arr = norm_snapshot[nt].x.cpu().numpy()
+                if "x" in norm_snapshot[nt] and nt in self.feature_scalers:
+                    original_tensor = norm_snapshot[nt].x
+                    arr = original_tensor.cpu().numpy()
                     scalers = self.feature_scalers[nt]
-                    log_flags = self.feature_log_flags[nt]
-                    
-                    for i, (scaler, do_log) in enumerate(zip(scalers, log_flags)):
-                        # Get values
+                         
+                    # Process each column and store it in a list to avoid dtype issues
+                    processed_cols = []
+                    for i, scaler in enumerate(scalers):
                         vals = arr[:, i].reshape(-1, 1)
-                        # Log transform
-                        if do_log:
-                            vals = self.apply_log1p_safe(
-                                vals=vals,
-                                feature_name=self.feature_names[nt][i],
-                                context="transform"
-                            )
-                        # Apply scaler
                         if scaler is not None:
                             vals = scaler.transform(vals)
-                            
-                        arr[:, i] = vals.reshape(-1)
+                        
+                        processed_cols.append(vals)
                     
+                    # Combine processed columns into a new array and create a tensor
+                    new_arr = np.hstack(processed_cols).astype(np.float32)
                     norm_snapshot[nt].x = torch.tensor(
-                        data=arr,
-                        device=norm_snapshot[nt].x.device,
-                        dtype=norm_snapshot[nt].x.dtype
+                        data=new_arr,
+                        device=original_tensor.device,
+                        dtype=torch.float32
                     )
+            
             norm_data[t] = norm_snapshot
         return norm_data

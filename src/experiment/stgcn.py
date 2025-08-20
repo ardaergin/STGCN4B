@@ -128,10 +128,6 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
                 "wind_speed_10m":       "robust",
                 "wind_speed_80m":       "robust"
             },
-            log_features            = [
-                "_std",
-                "precipitation"
-            ]
         )
         norm_features = normalizer.transform_features(x=self.all_X)
         
