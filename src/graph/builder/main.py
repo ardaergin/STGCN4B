@@ -319,11 +319,17 @@ class OfficeGraphBuilder(
                 output_dir = os.path.join(self.plots_dir, plot_subdir, f"room_level{workhours_suffix}")
                 pdf_name = f"all_distributions_room_level{workhours_suffix}.pdf"
                 
+                full_room_df = (
+                    self.room_level_df_expanded
+                    .pipe(self.add_static_room_features_to_df)
+                    .pipe(self.add_time_features_to_df)
+                    .pipe(self.add_workhour_labels_to_df)
+                )
                 self.plot_all_distributions_for_room_level_df(
-                    df=room_df,
-                    output_dir=output_dir,
-                    workhours_only=workhours_only,
-                    pdf_name=pdf_name
+                    df              = full_room_df,
+                    output_dir      = output_dir,
+                    workhours_only  = workhours_only,
+                    pdf_name        = pdf_name
                 )
         
         # --- Post-loop plots that specifically compare workhours vs non-workhours ---
