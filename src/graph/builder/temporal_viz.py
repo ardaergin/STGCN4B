@@ -269,7 +269,8 @@ class TemporalVisualizerMixin:
             properties:             List[str] = ["Temperature", "Humidity", "CO2Level"],
             workhours_only:         bool = False,
             aggregate_rooms:        bool = True,
-            save_path:              Optional[str] = None
+            save_path:              Optional[str] = None,
+            y_ranges:               Optional[Dict[str, Tuple[float, float]]] = None
     ) -> None:
         """
         Visualizes the average daily trend for each month.
@@ -303,6 +304,18 @@ class TemporalVisualizerMixin:
         
         workhour_text = " (Workhours Only)" if workhours_only else ""
         df_type_text = "Device-Level" if df_type == 'device' else "Room-Level"
+        
+        # Default y-ranges
+        default_y_ranges = {
+            "CO2Level": (400, 650),
+            "Humidity": (30, 60),
+            "Temperature": (18, 25)
+        }
+        if y_ranges is None:
+            y_ranges = default_y_ranges
+        else:
+            # Merge defaults with user-specified, user overrides defaults
+            y_ranges = {**default_y_ranges, **y_ranges}
         
         for prop in properties:
             # Get data and column mapping
@@ -356,6 +369,10 @@ class TemporalVisualizerMixin:
                 
                 ax.grid(True, which='both', linestyle='--', linewidth=0.5)
                 ax.set_xlim(0, 23)
+                
+                # Apply y-range if available
+                if prop in y_ranges:
+                    ax.set_ylim(y_ranges[prop])
                 
                 # Add labels to outer plots only
                 row = (month - 1) // 4
