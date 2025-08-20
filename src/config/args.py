@@ -295,7 +295,7 @@ def add_base_modelling_args(parser):
     parser.add_argument(
         '--default_norm_method', 
         type=str,
-        default='median',
+        default='robust',
         choices=[
             "standard", "robust", "minmax", "maxabs", 
             "quantile_uniform", "quantile_normal", 
