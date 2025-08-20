@@ -453,6 +453,7 @@ class Homogeneous(STGCNExperimentRunner):
         # Model architecture
         trial_args.gso_type             = trial.suggest_categorical("gso_type", ["rw_renorm_adj", "col_renorm_adj"])
         trial_args.transpose_gso        = True
+        trial_args.use_only_h_adj       = trial.suggest_categorical("use_only_h_adj", [True, False])
         trial_args.stblock_num          = trial.suggest_int("stblock_num", 2, 4)
         trial_args.Kt                   = 3
         trial_args.n_his                = 48
@@ -499,8 +500,12 @@ class Homogeneous(STGCNExperimentRunner):
         if args.drop_spatial_layer:
             gso = None
         else:
-            A = self.input_dict["f_adj_mat_tensor"]
-            M = self.input_dict["f_masked_adj_mat_tensors"]
+            if args.use_only_h_adj: # only horizontal adjacency
+                A = self.input_dict["h_adj_mat_tensor"]
+                M = self.input_dict["h_masked_adj_mat_tensors"]
+            else: # horizontal + vertical
+                A = self.input_dict["f_adj_mat_tensor"]
+                M = self.input_dict["f_masked_adj_mat_tensors"]
             gso = create_gso(
                 args                = args,
                 device              = device,

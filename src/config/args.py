@@ -131,6 +131,9 @@ def add_OfficeGraph_args(parser):
                         default='weighted',
                         help='Type of adjacency: binary or weighted')
 
+    parser.add_argument('--use_only_h_adj', action='store_true',
+                        help='Use only horizontal adjacency, instead of horizontal + vertical.')
+
     parser.add_argument('--distance_threshold', type=float,
                         default=5.0,
                         help='Distance threshold for room adjacency')
