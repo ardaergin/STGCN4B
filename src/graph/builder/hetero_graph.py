@@ -587,15 +587,25 @@ class HeteroGraphBuilderMixin:
         Returns:
             Dictionary containing all hetero STGCN inputs
         """
-        if not hasattr(self, 'hetero_temporal_graphs') or not self.hetero_temporal_graphs:
+        if not hasattr(self, 'hetero_temporal_graphs'):
             raise ValueError("Temporal hetero graphs not available. Run build_hetero_temporal_graphs first.")
+        
+        # For downstream ease, rename features for property type nodes to unique names
+        # e.g., instead of just "mean" under "CO2Level" nodes --> "CO2Level_mean"
+        feature_names = {k: v.copy() for k, v in self.feature_names.items()}
+        for prop_type in self.used_property_types:
+            prop_node_type = f'prop_{prop_type}'
+            if prop_node_type in feature_names:
+                feature_names[prop_node_type] = [
+                    f"{prop_type}_{feat}" for feat in feature_names[prop_node_type]
+                ]
         
         hetero_stgcn_input = {
             "base_graph": self.base_hetero_graph,
             "temporal_graphs": self.hetero_temporal_graphs,
             "node_mappings": self.node_mappings,
             "reverse_node_mappings": self.reverse_node_mappings,
-            "feature_names": self.feature_names,
+            "feature_names": feature_names,
             "property_types": self.used_property_types,
             "num_devices": len(self.node_mappings['device']),
         }
