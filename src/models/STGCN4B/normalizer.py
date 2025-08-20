@@ -40,9 +40,9 @@ class STGCNNormalizer(ABC):
         elif method == "maxabs":
             return MaxAbsScaler()
         elif method == "quantile_uniform":
-            return QuantileTransformer(n_quantiles=1000, output_distribution="uniform", subsample=10000, random_state=0)
+            return QuantileTransformer(n_quantiles=5000, output_distribution="uniform", subsample=500000, random_state=0)
         elif method == "quantile_normal":
-            return QuantileTransformer(n_quantiles=1000, output_distribution="normal", subsample=10000, random_state=0)
+            return QuantileTransformer(n_quantiles=5000, output_distribution="normal", subsample=500000, random_state=0)
         elif method == "power_yeojohnson":
             return PowerTransformer(method="yeo-johnson", standardize=True)
         elif method == "power_boxcox":

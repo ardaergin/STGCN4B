@@ -97,8 +97,41 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         normalizer.fit_features(
             x_train                 = train_feature_slice,
             feature_names           = self.input_dict["feature_names"],
-            method                  = args.normalization_method,
-            features_to_skip_norm   = args.skip_normalization_for
+            features_to_skip_norm   = [
+                '_sin', '_cos', # general
+                'is_workhour', # binary
+                'wc_', # weather code
+                'has_measurement', # binary (temporal)
+                'hasWindows', 'has_multiple_windows', 'isProperRoom', # binary (spatial)
+                'norm_areas_minmax', 'norm_areas_prop', # already normalized
+                'embedding_index', # device
+            ],
+            default_method          = args.default_norm_method,
+            scaler_map              = {
+                # Main IoT measurements
+                "_n_active_devices":    "minmax",   # Count variable, (range: 0-4)
+                "_std":                 "minmax",   # heavily zero-inflated, left-skewed (range differs per property)
+                "Humidity_mean":        "standard",
+                "Humidity_max":         "standard",
+                "Humidity_min":         "standard",
+                "CO2Level_mean":        "quantile_normal",
+                "CO2Level_max":         "quantile_normal",
+                "CO2Level_min":         "quantile_normal",
+                "Temperature_mean":     "quantile_normal",
+                "Temperature_max":      "quantile_normal",
+                "Temperature_min":      "quantile_normal",
+                # Weather
+                "cloud_cover":          "robust",   # Percentage (range: 0-100)
+                "precipitation":        "robust",   # Heavily zero-inflated, left-skewed (range: 0-100)
+                "relative_humidity_2m": "robust",   # Percentage (range: 0-100)
+                "temperature_2m":       "robust",
+                "wind_speed_10m":       "robust",
+                "wind_speed_80m":       "robust"
+            },
+            log_features            = [
+                "_std",
+                "precipitation"
+            ]
         )
         norm_features = normalizer.transform_features(x=self.all_X)
         
@@ -111,7 +144,7 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         normalizer.fit_target(
             y_train           = train_target_slice, 
             y_train_mask      = train_mask_slice,
-            method            = 'median'
+            method            = "quantile_normal"
         )
         norm_target = normalizer.transform_target(y=self.input_dict["target_array"])
         logger.info(f"Normalized target shape: {norm_target.shape}")

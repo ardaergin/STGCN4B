@@ -267,39 +267,43 @@ def add_base_modelling_args(parser):
                         help='Number of blocks per stratum for the data splitter.')
 
     # Normalization
-    parser.add_argument('--normalization_method', type=str,
-                        default='median',
-                        choices=['mean', 'median'],
-                        help='Normalization method')
-    parser.add_argument('--skip_normalization_for', nargs='*', 
-                        default=['_sin', '_cos', 'wc_',
-                                'has_measurement',
-                                'hasWindows', 'has_multiple_windows', 
-                                'window_direction_sin', 'window_direction_cos', 
-                                'isProperRoom', 'norm_areas_minmax',
-                                'norm_area_minmax', 'norm_area_prop',
-                                'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos', 'is_workhour', # time
-                                'embedding_index', # device
-                                ],
-                        help='List of (sub-)strings for feature names that should NOT be normalized.')
+    parser.add_argument(
+        '--skip_normalization_for', 
+        nargs='*', 
+        default=[
+            '_sin', '_cos', # general
+            'is_workhour', # binary
+            'wc_', # weather code
+            'has_measurement', # binary (temporal)
+            'hasWindows', 'has_multiple_windows', 'isProperRoom', # binary (spatial)
+            'norm_areas_minmax', 'norm_areas_prop', # already normalized
+            'embedding_index', # device
+        ],
+        help='List of (sub-)strings for feature names that should NOT be normalized.'
+    )
+    parser.add_argument(
+        "--y_norm_method",
+        type=str,
+        default="robust",
+        choices=[
+            "standard", "robust", "minmax", "maxabs", 
+            "quantile_uniform", "quantile_normal", 
+            "power_yeojohnson", "power_boxcox"
+        ],
+        help="Normalization method for the target variable."
+    )
+    parser.add_argument(
+        '--default_norm_method', 
+        type=str,
+        default='median',
+        choices=[
+            "standard", "robust", "minmax", "maxabs", 
+            "quantile_uniform", "quantile_normal", 
+            "power_yeojohnson", "power_boxcox"
+        ],
+        help='Default normalization method to be used if a scale_map is not specified.'
+    )
 
-    parser.add_argument('--norm_clip_value', type=float, 
-                        default=10.0,
-                        help='Value to clip normalized features to. E.g., 10.0 means features will be in [-10, 10].')
-
-    parser.add_argument('--norm_eps_scale', type=float, 
-                        default=1e-6,
-                        help='Small epsilon value to use as a minimum scale (denominator) to prevent division by zero.')
-    
-    parser.add_argument('--norm_log1p_feature_keys', nargs='*', 
-                        default=["count", "std"],
-                        help='List of substrings (e.g., "count", "std") to identify features that should be log1p transformed before normalization.')
-    
-    parser.add_argument('--norm_alpha_wide_spread', type=float, 
-                        default=0.3,
-                        help='Mixture coefficient for the wide-spread percentile range in the robust scaler. A value between 0 and 1.')
-    
-    
     # Features to drop
     parser.add_argument('--features_to_drop', type=str, nargs='*',
                         default=[],
