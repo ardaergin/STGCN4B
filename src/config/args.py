@@ -650,7 +650,6 @@ def build_scaler_map(args) -> dict:
             "CO2Level_mean", "CO2Level_max", "CO2Level_min",
             "Temperature_mean", "Temperature_max", "Temperature_min",
             "cloud_cover",              # Percentage (range: 0-100)
-            "precipitation",            # Heavily zero-inflated, left-skewed (range: 0-100)
             "relative_humidity_2m",     # Percentage (range: 0-100)
             "temperature_2m", 
             "wind_speed_10m", "wind_speed_80m"
@@ -658,6 +657,7 @@ def build_scaler_map(args) -> dict:
         "minmax": [
             "_n_active_devices",        # Count variable, (range: 0-4)
             "_std"                      # heavily zero-inflated, left-skewed (range differs per property)
+            "precipitation",            # Heavily zero-inflated, left-skewed (range: 0-100)
         ],
         "maxabs": [],
         "quantile_uniform": [],
