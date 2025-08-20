@@ -1,29 +1,31 @@
 import os
-import logging
+from typing import Dict
+import numpy as np
 import pandas as pd
 from shapely.geometry import Polygon
 import matplotlib.pyplot as plt
 from matplotlib.colors import Normalize
-import numpy as np
-from rdflib import URIRef
-from typing import Dict, Any, List, Tuple
-from collections import defaultdict
-import networkx as nx
+import plotly.graph_objects as go
+from plotly.colors import sample_colorscale
 
-logger = logging.getLogger(__name__)
+
+import logging; logger = logging.getLogger(__name__)
+
 
 class SpatialVisualizerMixin:
 
     ##############################
-    # Floor plan Plotting
+    # Floor plan plotting
     ##############################
 
-    def plot_floor_plan(self, 
-                    floor_number,
-                    normalization='min_max',
-                    show_room_ids=True,
-                    figsize=(12, 10), 
-                    colormap='turbo'):
+    def plot_floor_plan(
+            self, 
+            floor_number,
+            normalization       = 'min_max',
+            show_room_ids       = True,
+            figsize             = (12, 10), 
+            colormap            = 'turbo'
+    ):
         """
         Plot the floor plan for a specific floor with rooms colored according to their normalized areas.
         
@@ -37,37 +39,20 @@ class SpatialVisualizerMixin:
         Returns:
             matplotlib.figure.Figure: The figure object
         """
-        
-        # Check if we have the required data
-        if not hasattr(self, 'polygons') or not self.polygons:
-            logger.error("No polygons available for plotting. Call initialize_room_polygons first.")
-            return None
-        
-        # Check if floor exists
+        if not hasattr(self, 'polygons'):
+            raise ValueError("No polygons available for plotting. Call initialize_room_polygons first.")
         if floor_number not in self.polygons:
             available_floors = list(self.polygons.keys())
-            logger.error(f"Floor {floor_number} not found. Available floors: {available_floors}")
-            return None
+            raise ValueError(f"Floor {floor_number} not found. Available floors: {available_floors}")
         
         # Get rooms for this floor
         rooms_to_plot = self.polygons[floor_number]
-        
         if not rooms_to_plot:
-            logger.error(f"No rooms found on floor {floor_number}")
-            return None
-            
+            raise ValueError(f"No rooms found on floor {floor_number}")
+                    
         # Check if normalized areas are calculated
-        if not hasattr(self, 'norm_areas_minmax') or not self.norm_areas_minmax:
-            logger.info("Calculating area normalizations...")
-            self.normalize_room_areas()
-        
-        # Create figure and axis
-        fig, ax = plt.subplots(figsize=figsize)
-        
-        # Get the color map
-        cmap = plt.get_cmap(colormap)
-        
-        # Determine which normalization to use
+        if not hasattr(self, 'norm_areas_minmax'):
+            raise ValueError("Normalized areas not calculated. Call calculate_normalized_areas first.")
         if normalization == 'min_max':
             normalized_areas = self.norm_areas_minmax
         elif normalization == 'proportion':
@@ -76,20 +61,19 @@ class SpatialVisualizerMixin:
             logger.warning(f"Unknown normalization type: {normalization}. Using 'min_max'.")
             normalized_areas = self.norm_areas_minmax
         
+        # Create figure and axis
+        fig, ax = plt.subplots(figsize=figsize)
+        
+        # Get the color map
+        cmap = plt.get_cmap(colormap)
+        
         # Plot each room on this floor
-        for room_uri, polygon in rooms_to_plot.items():
+        for room_uri_str, polygon in rooms_to_plot.items():
             # Get room color based on normalized area (default to 0.5 if missing)
-            norm_value = normalized_areas.get(floor_number, {}).get(room_uri, 0.5)
-            
+            norm_value = normalized_areas.get(floor_number, {}).get(room_uri_str, 0.5)
+
             # Get room ID for display
-            if hasattr(self.office_graph, 'rooms') and room_uri in self.office_graph.rooms:
-                room = self.office_graph.rooms[room_uri]
-                display_id = room.room_number or str(room_uri).split('/')[-1]
-            else:
-                # Extract just the room number part if it's prefixed
-                display_id = str(room_uri).split('/')[-1]
-                if 'roomname_' in display_id:
-                    display_id = display_id.split('roomname_')[-1]
+            display_id = self.room_names.get(room_uri_str)
             
             # Plot the polygon
             color = cmap(norm_value)
@@ -136,104 +120,57 @@ class SpatialVisualizerMixin:
         
         plt.tight_layout()
         return fig
-
-    #############################
-    # Horizontal Adjacency
-    #############################
-
-    def plot_horizontal_adjacency_matrix(self, figsize=(10, 8), title=None, show_room_ids=True, cmap='Blues'):
-        """
-        Plot the room-to-room adjacency matrix as a heatmap.
-        
-        Args:
-            figsize (tuple): Figure size
-            title (str, optional): Plot title. If None, a default title is used
-            show_room_ids (bool): Whether to show room IDs on axes
-            cmap (str): Matplotlib colormap name
-            
-        Returns:
-            matplotlib.figure.Figure: The figure object
-        """
-        
-        if not hasattr(self, 'room_to_room_adj_matrix') or self.room_to_room_adj_matrix is None:
-            raise ValueError("No room-to-room adjacency matrix found. Make sure to call build_horizontal_adjacency().")
-        
-        if not hasattr(self, 'adj_matrix_room_URIs_str') or self.adj_matrix_room_URIs_str is None:
-            raise ValueError("Room URIs in adjacency matrix order not found. Make sure to call build_horizontal_adjacency().")
-        
-        fig = plt.figure(figsize=figsize)
-        plt.imshow(self.room_to_room_adj_matrix, cmap=cmap)
-        
-        # Add colorbar with label based on adjacency type
-        if hasattr(self, 'adjacency_type') and self.adjacency_type == 'weighted':
-            plt.colorbar(label='Proportion of shared boundary')
-        else:
-            plt.colorbar(label='Connection strength')
-        
-        # Use pre-stored room names for labels
-        if show_room_ids and len(self.adj_matrix_room_URIs_str) <= 50:  # Only show labels if not too many rooms
-            labels = [self.room_names.get(uri, str(uri)) for uri in self.adj_matrix_room_URIs_str]
-            plt.xticks(range(len(self.adj_matrix_room_URIs_str)), labels, rotation=90)
-            plt.yticks(range(len(self.adj_matrix_room_URIs_str)), labels)
-        elif not show_room_ids:
-            plt.xticks([])
-            plt.yticks([])
-        else:
-            # Too many rooms, just show indices
-            plt.xticks(range(0, len(self.adj_matrix_room_URIs_str), 5))
-            plt.yticks(range(0, len(self.adj_matrix_room_URIs_str), 5))
-        
-        # Set title
-        if title is None:
-            if hasattr(self, 'adjacency_type'):
-                title = f"Room Adjacency Matrix ({self.adjacency_type})"
-            else:
-                title = "Room Adjacency Matrix"
-        plt.title(title)
-        
-        # Add axis labels
-        plt.xlabel("Room")
-        plt.ylabel("Room")
-        
-        plt.tight_layout()
-
+    
+    
     #############################
     # Information propagation
     #############################
+    
 
-    def create_single_floor_propagation_visualization(self, output_file='output/builder/propagation_visualization.html'):
+    def create_single_floor_propagation_visualization(
+            self, 
+            floor_number:                   int,
+            masked_adjacency_matrices:      Dict[int, np.ndarray],
+            output_file:                    str = 'output/builder/propagation_visualization.html'
+    ):
         """
-        Create an interactive Plotly visualization of information propagation
-        and export it to a standalone HTML file.
-        
-        Device rooms are colored green at Step 0, and subsequent information propagation
-        is shown in shades of blue.
+        Create an interactive Plotly visualization of information propagation for a single floor.
         
         Args:
-            output_file: Path to save the HTML output file
+            floor_number (int): The floor to visualize.
+            masked_adjacency_matrices (dict): Dictionary of {step: matrix} for the whole building.
+            output_file (str): Path to save the HTML output file.
             
         Returns:
-            Plotly figure object
+            go.Figure: The Plotly figure object.
         """
-        import plotly.graph_objects as go
-        from plotly.subplots import make_subplots
-        import numpy as np
-        
-        if not hasattr(self, 'masked_adjacency_matrices') or not self.masked_adjacency_matrices:
-            raise ValueError("Masked adjacency matrices not found. Run build_masked_adjacency_matrices first.")
-            
-        if not hasattr(self, 'room_polygons') or not self.room_polygons:
+        if not hasattr(self, 'polygons'):
             raise ValueError("Room polygons not found. Run initialize_room_polygons first.")
         
-        # Define the number of steps
-        n_steps = len(self.masked_adjacency_matrices)
+        masks = masked_adjacency_matrices
         
-        # Extract information about which rooms can pass info at each step
-        room_info_by_step = {}
-        for step in range(n_steps):
-            mask = self.masked_adjacency_matrices[step]
-            can_pass_info = mask.sum(axis=1) > 0  # Rooms that can pass info
-            room_info_by_step[step] = can_pass_info
+        # The number of steps is the highest key + 1
+        n_steps = max(masks.keys()) + 1 if masks else 0
+        if n_steps == 0:
+            logger.warning("No propagation steps to visualize.")
+            return go.Figure()
+        
+        # Get rooms and their master indices for only the specified floor
+        floor_rooms_uri = self.floor_to_rooms.get(floor_number, [])
+        if not floor_rooms_uri:
+            logger.warning(f"No rooms found for floor {floor_number}.")
+            return go.Figure()
+        
+        # Pre-calculate activation steps for all rooms to speed up frame generation
+        activation_step = {}
+        for step in sorted(masks.keys()):
+            can_pass_info = masks[step].sum(axis=0) > 0
+            for master_idx, is_active in enumerate(can_pass_info):
+                uri = self.room_URIs_str[master_idx]
+                if is_active and uri not in activation_step:
+                    activation_step[uri] = step
+        
+        device_rooms = {uri for uri, step in activation_step.items() if step == 0}
         
         # Define colors
         device_color = '#2ca02c'  # Forest green for device rooms
@@ -243,74 +180,46 @@ class SpatialVisualizerMixin:
         
         # Create a plotly figure with steps as frames
         fig = go.Figure()
-        
-        # Add frames for each step
         frames = []
         for step in range(n_steps):
             frame_data = []
-            
-            # For each room polygon
-            for i, room_uri in enumerate(self.adj_matrix_room_URIs_str):
-                if room_uri in self.room_polygons:
-                    polygon = self.room_polygons[room_uri]
-                    
-                    # Extract polygon coordinates
-                    x, y = polygon.exterior.xy
-                    
-                    # Check if this is a device room (active at step 0)
-                    is_device_room = room_info_by_step[0][i]
-                    
-                    # Determine when this room gets activated
-                    activation_step = n_steps  # Default: not activated
-                    for s in range(n_steps):
-                        if room_info_by_step[s][i]:
-                            activation_step = s
-                            break
-                    
-                    # Determine color based on activation status for this step
-                    if activation_step <= step:
-                        # Room is active at this step
-                        if is_device_room:
-                            # Device rooms always show in green
-                            color = device_color
-                        else:
-                            # Non-device rooms show in blue based on when they were activated
-                            blue_idx = min(activation_step - 1, len(propagation_colors) - 1)
-                            color = propagation_colors[blue_idx]
+            rooms_active_this_frame = 0
+
+            for room_uri in floor_rooms_uri:
+                poly = self.polygons[floor_number][room_uri]
+                room_act_step = activation_step.get(room_uri, n_steps)
+
+                if room_act_step <= step:
+                    rooms_active_this_frame += 1
+                    if room_uri in device_rooms:
+                        color = device_color
                     else:
-                        # Not yet activated
-                        color = inactive_color
-                    
-                    # Create room label
-                    room_id = self.room_names.get(room_uri, str(room_uri).split('/')[-1])
-                    if is_device_room:
-                        room_id = f"{room_id}*"  # Mark device rooms
-                    
-                    # Create a polygon for this room
-                    room_trace = go.Scatter(
-                        x=list(x) + [x[0]],  # Close the polygon
-                        y=list(y) + [y[0]],
-                        fill='toself',
-                        fillcolor=color,
-                        line=dict(color='black', width=1),
-                        text=room_id,
-                        hoverinfo='text',
-                        showlegend=False
-                    )
-                    
-                    frame_data.append(room_trace)
-            
-            # Create frame for this step
+                        color_idx = min(room_act_step - 1, len(propagation_colors) - 1)
+                        color = propagation_colors[color_idx]
+                else:
+                    color = inactive_color
+                
+                room_id = self.room_names.get(room_uri, room_uri.split('/')[-1])
+                hover_text = f"<b>{room_id}</b><br>Activates at Step: {room_act_step if room_act_step < n_steps else 'N/A'}"
+                if room_uri in device_rooms:
+                    hover_text += " (Device)"
+
+                x, y = poly.exterior.xy
+                frame_data.append(go.Scatter(
+                    x=list(x), y=list(y), fill='toself',
+                    fillcolor=color, line=dict(color='black', width=1.5),
+                    text=hover_text, # <-- Use the detailed hover_text
+                    hoverinfo='text',
+                    showlegend=False
+                ))
+
             frame = go.Frame(
                 data=frame_data,
                 name=f"Step {step}",
-                layout=go.Layout(
-                    title=f"Information Propagation - Step {step}: "
-                        f"{np.sum(room_info_by_step[step])}/{len(self.adj_matrix_room_URIs_str)} rooms can pass information"
-                )
+                layout=go.Layout(title_text=f"Floor {floor_number} Propagation - Step {step} ({rooms_active_this_frame}/{len(floor_rooms_uri)} active)")
             )
             frames.append(frame)
-        
+                
         # Add the initial data (step 0)
         fig.add_traces(frames[0].data)
         fig.frames = frames
@@ -455,64 +364,66 @@ class SpatialVisualizerMixin:
         return fig
     
     def create_building_propagation_visualization(
-        self,
-        output_file: str = "output/builder/propagation_3D.html",
-        thickness: float = None,
-        marker_size: int = 4
+            self,
+            masked_adjacency_matrices:      Dict[int, np.ndarray],
+            output_file:                    str = "output/builder/propagation_3D.html",
+            thickness:                      float = None,
     ):
         """
-        Interactive 3D Plotly visualization with room‐shaped extrusions.
-        
+        Interactive 3D Plotly visualization of propagation with room-shaped extrusions.
+
         Args:
-            output_file: path for standalone HTML
-            thickness: vertical thickness of each room (if None, auto = floor_sep/10)
-            marker_size: size of centroid markers (optional)
+            masked_adjacency_matrices (dict): A dictionary of {step: masked_adj_matrix}.
+            output_file (str): Path for standalone HTML file.
+            thickness (float): Vertical thickness of each room. If None, it's calculated automatically.
+        
         Returns:
-            Plotly Figure
+            go.Figure: The Plotly Figure object.
         """
-        import numpy as np
-        import plotly.graph_objects as go
-        from shapely.geometry import Polygon
+        if not hasattr(self, 'polygons'):
+            raise ValueError("Room polygons not found. Run initialize_room_polygons first.")
         
-        # --- ensure adjacency masks exist ---
-        if not hasattr(self, "masked_adjacency_matrices"):
-            self.build_masked_adjacency_matrices()
-        masks = self.masked_adjacency_matrices
-        n_steps = len(masks)
+        masks = masked_adjacency_matrices
         
-        # --- gather centroids, floor info and room labels ---
+        # The number of steps is the highest key + 1
+        n_steps = max(masks.keys()) + 1 if masks else 0
+        if n_steps == 0:
+            logger.warning("No propagation steps to visualize.")
+            return go.Figure()
+        
+        # Gather centroids, floor info and room labels
         centroids, raw_zs, room_ids = [], [], []
-        for uri in self.adj_matrix_room_URIs_str:
-            poly: Polygon = self.polygons[self.room_to_floor[uri]][uri]
+        for room_uri_str in self.room_URIs_str:
+            floor = self.room_to_floor[room_uri_str]
+            poly: Polygon = self.polygons[floor][room_uri_str]
             x, y = poly.centroid.coords[0]
             centroids.append((x, y))
-            raw_zs.append(self.room_to_floor[uri])
-            room_ids.append(self.room_names.get(uri, str(uri)))
+            raw_zs.append(floor)
+            room_ids.append(self.room_names.get(room_uri_str))
         
         xs = np.array([c[0] for c in centroids])
         ys = np.array([c[1] for c in centroids])
         raw_zs = np.array(raw_zs, dtype=float)
         
-        # --- compute floor separation & thickness ---
+        # Compute floor separation & thickness
         floors = np.unique(raw_zs)
         n_floors = len(floors)
-        # footprint extent
         footprint = max(xs.max() - xs.min(), ys.max() - ys.min())
-        floor_sep = footprint / max(n_floors, 1)
+        floor_sep = footprint / max(n_floors - 1, 1) if n_floors > 1 else 5.0
         if thickness is None:
-            thickness = floor_sep / 5.0  # arbitrary small slab thickness
+            thickness = floor_sep / 5.0  # Arbitrary small slab thickness
         
-        # scale z so each floor is separated
+        # Scale z so each floor is separated
         floor_min = floors.min()
         zs = (raw_zs - floor_min) * floor_sep
         
-        # --- activation step per room ---
+        # Activation step per room
         activation = np.full(len(xs), n_steps, dtype=int)
-        for step in range(n_steps):
-            active = masks[step].sum(axis=1) > 0
+        for step in sorted(masks.keys()):
+            active = masks[step].sum(axis=0) > 0
             activation[active & (activation == n_steps)] = step
         
-        # --- color mapping ---
+        # Color mapping
         device_color = "#2ca02c"
         inactive_color = "#cccccc"
         propagation_colors = ["#c6dbef", "#6baed6", "#2171b5", "#08306b"]
@@ -524,40 +435,39 @@ class SpatialVisualizerMixin:
             else:
                 return propagation_colors[min(step-1, len(propagation_colors)-1)]
         
-        # --- build mesh & edges for each room once ---
+        # Build mesh & edges for each room once
         room_meshes = []
         room_edge_traces = []
-        for idx, uri in enumerate(self.adj_matrix_room_URIs_str):
-            poly: Polygon = self.polygons[self.room_to_floor[uri]][uri]
-            coords = list(poly.exterior.coords)[:-1]  # drop closing point
+        for idx, room_uri_str in enumerate(self.room_URIs_str):
+            poly: Polygon = self.polygons[self.room_to_floor[room_uri_str]][room_uri_str]
+            coords = list(poly.exterior.coords)[:-1]  # Drop closing point
             N = len(coords)
             x2d, y2d = zip(*coords)
             z0 = zs[idx]
-            # lower ring
-            x_low = np.array(x2d)
-            y_low = np.array(y2d)
-            z_low = np.full(N, z0)
-            # upper ring
-            x_up = x_low
-            y_up = y_low
-            z_up = np.full(N, z0 + thickness)
-            # vertices
+
+            # Lower and upper rings
+            x_low, y_low, z_low = np.array(x2d), np.array(y2d), np.full(N, z0)
+            x_up, y_up, z_up    = x_low, y_low, np.full(N, z0 + thickness)
+            
+            # Vertices
             xv = np.concatenate([x_low, x_up])
             yv = np.concatenate([y_low, y_up])
             zv = np.concatenate([z_low, z_up])
-            # faces (triangulation)
+
+            # Faces (triangulation)
             i, j, k = [], [], []
-            # top face (fan)
+
+            # Top face (fan)
             for t in range(1, N-1):
                 i += [N,   N + t,   N + t + 1]
                 j += [N + t, N + t + 1, N]
                 k += [N + t + 1, N,   N + t]
-            # bottom face
+            # Bottom face
             for t in range(1, N-1):
                 i += [0, t + 1, t]
                 j += [t + 1, t, 0]
                 k += [t, 0, t + 1]
-            # side faces
+            # Side faces
             for t in range(N):
                 nt = (t + 1) % N
                 # lower t, lower nt, upper nt
@@ -570,20 +480,20 @@ class SpatialVisualizerMixin:
                 k += [N + t, t, N + nt]
             room_meshes.append((xv, yv, zv, i, j, k))
             
-            # edges (just top‐face boundary)
+            # Edges (just top‐face boundary)
             edge_x = list(x_up) + [x_up[0]]
             edge_y = list(y_up) + [y_up[0]]
             edge_z = list(z_up) + [z_up[0]]
             room_edge_traces.append((edge_x, edge_y, edge_z))
         
-        # --- build frames ---
+        # Build frames
         frames = []
         for step in range(n_steps):
             data = []
             for idx in range(len(xs)):
                 col = color_for(activation[idx]) if activation[idx] <= step else inactive_color
                 xv, yv, zv, i, j, k = room_meshes[idx]
-                # mesh
+                # Mesh
                 data.append(
                     go.Mesh3d(
                         x=xv, y=yv, z=zv,
@@ -594,7 +504,7 @@ class SpatialVisualizerMixin:
                         name=""
                     )
                 )
-                # edges
+                # Edges
                 ex, ey, ez = room_edge_traces[idx]
                 data.append(
                     go.Scatter3d(
@@ -608,7 +518,7 @@ class SpatialVisualizerMixin:
                 )
             frames.append(go.Frame(data=data, name=f"Step {step}"))
         
-        # --- initial figure & animation controls ---
+        # Initial figure & animation controls
         fig = go.Figure(data=frames[0].data, frames=frames)
         steps = [
             dict(
@@ -631,7 +541,7 @@ class SpatialVisualizerMixin:
                                      args=[[None],{"frame":{"duration":0,"redraw":False},"mode":"immediate"}])
                             ])]
         
-        # --- final layout ---
+        # Final layout
         fig.update_layout(
             scene=dict(
                 xaxis=dict(visible=False),
@@ -649,823 +559,294 @@ class SpatialVisualizerMixin:
             logger.info(f"Saved 3D polygon propagation viz to {output_file}")
         return fig
     
-
-
+    
+    
     #############################
     # Outside Adjacency
     #############################
-
+    
     
     def create_building_outside_adjacency_visualization(
-        self,
-        output_file: str = "output/builder/outside_adjacency_3D.html",
-        thickness: float = None,
-        marker_size: int = 4,
-        colormap: str = "YlOrRd"
+            self,
+            outside_adjacency:      np.ndarray,
+            output_file:            str = "output/builder/outside_adjacency_3D.html",
+            thickness:              float = None,
+            colormap:               str = "YlOrRd"
     ):
         """
-        Interactive 3D Plotly visualization with room‐shaped extrusions,
-        colored by each room’s outside‐adjacency weight.
-
+        Interactive 3D Plotly visualization colored by outside-adjacency weight.
+        
         Args:
-            output_file: path for standalone HTML export
-            thickness: vertical thickness of each room extrusion (if None, auto = floor_sep/10)
-            marker_size: size of centroid markers (optional)
-            colormap: Plotly continuous colorscale name for mapping weights (0.0–1.0)
+            outside_adjacency (np.ndarray): Vector of outside-adjacency weights for each room.
+            output_file (str): Path for standalone HTML export.
+            thickness (float): Vertical thickness of each room extrusion.
+            colormap (str): Plotly continuous colorscale name.
+        
         Returns:
-            Plotly Figure
+            go.Figure: The Plotly Figure object.
         """
-        import numpy as np
-        import plotly.graph_objects as go
-        from shapely.geometry import Polygon
-        from matplotlib import cm
-
-        # --- ensure outside adjacency is computed ---
-        if not hasattr(self, "room_to_outside_adjacency") or self.room_to_outside_adjacency is None:
-            raise ValueError("Outside adjacency not found. Call calculate_outside_adjacency() first.")
-        weights = np.array(self.room_to_outside_adjacency, dtype=float)
-        uris = self.adj_matrix_room_URIs_str
-
-        # --- gather centroids, floors and labels ---
-        centroids = []
-        floors_raw = []
-        labels = []
-        for uri in uris:
-            floor = self.room_to_floor[uri]
-            poly: Polygon = self.polygons[floor][uri]
-            x, y = poly.centroid.x, poly.centroid.y
-            centroids.append((x, y))
+        weights = outside_adjacency
+        uris = self.room_URIs_str
+        
+        # Gather centroids, floors and labels
+        centroids, floors_raw, labels = [], [], []
+        for room_uri_str in uris:
+            floor = self.room_to_floor[room_uri_str]
+            poly: Polygon = self.polygons[floor][room_uri_str]
+            centroids.append(poly.centroid.coords[0])
             floors_raw.append(floor)
-            # label fallback
-            labels.append(self.office_graph.rooms.get(uri, {}).room_number or str(uri).split("/")[-1])
+            labels.append(self.room_names.get(room_uri_str))
 
         xs = np.array([c[0] for c in centroids])
         ys = np.array([c[1] for c in centroids])
         floors = np.array(floors_raw, dtype=float)
-
-        # --- compute vertical separation & thickness ---
+        
+        # Compute vertical separation & thickness
         unique_floors = np.unique(floors)
         n_floors = len(unique_floors)
         extent = max(xs.max() - xs.min(), ys.max() - ys.min())
-        floor_sep = extent / max(n_floors, 1)
+        floor_sep = extent / max(n_floors - 1, 1) if n_floors > 1 else 5.0
         if thickness is None:
             thickness = floor_sep / 10.0
-
-        # shift floors so lowest starts at z=0
+        
         z0s = (floors - unique_floors.min()) * floor_sep
-
-        # --- colormap setup via matplotlib, sampling at weight values ---
-        cmap_mpl = cm.get_cmap(colormap)
-        w_min, w_max = weights.min(), weights.max()
-        if w_max > w_min:
-            norm_w = (weights - w_min) / (w_max - w_min)
-        else:
-            norm_w = weights
-        colors = [f"rgb{tuple(int(255*c) for c in cmap_mpl(w0)[:3])}"
-                  for w0 in norm_w
-                  ]
-
-        # --- build meshes & edge traces ---
+        
+        # Build meshes
         meshes = []
-        edges = []
-        for idx, uri in enumerate(uris):
-            poly: Polygon = self.polygons[self.room_to_floor[uri]][uri]
+        for idx, room_uri_str in enumerate(uris):
+            poly: Polygon = self.polygons[self.room_to_floor[room_uri_str]][room_uri_str]
             coords = list(poly.exterior.coords)[:-1]
             N = len(coords)
             x2d, y2d = zip(*coords)
-
-            # lower & upper rings
-            x_low = np.array(x2d);   y_low = np.array(y2d);   z_low = np.full(N, z0s[idx])
-            x_up  = x_low;           y_up  = y_low;           z_up  = np.full(N, z0s[idx] + thickness)
-
-            # vertices and faces
+            
+            x_low, y_low, z_low = np.array(x2d), np.array(y2d), np.full(N, z0s[idx])
+            x_up, y_up, z_up = x_low, y_low, np.full(N, z0s[idx] + thickness)
+            
             xv = np.concatenate([x_low, x_up])
             yv = np.concatenate([y_low, y_up])
             zv = np.concatenate([z_low, z_up])
-
+            
             i, j, k = [], [], []
-            # top face fan
-            for t in range(1, N-1):
-                i += [N,   N + t,   N + t + 1]
-                j += [N + t, N + t + 1, N]
-                k += [N + t + 1, N,   N + t]
-            # bottom face fan
-            for t in range(1, N-1):
-                i += [0, t + 1, t]
-                j += [t + 1, t, 0]
-                k += [t, 0, t + 1]
-            # side faces
+            # Top and bottom faces
+            for t in range(1, N - 1):
+                i.extend([N, 0]); j.extend([N + t, t + 1]); k.extend([N + t + 1, t])
+            # Side faces
             for t in range(N):
                 nt = (t + 1) % N
-                # quad split into two triangles
-                i += [t, nt, N + nt];        j += [nt, N + nt, t];         k += [N + nt, t, N + t]
-                i += [t, N + nt, N + t];      j += [N + nt, N + t, t];      k += [N + t, t, N + nt]
+                i.extend([t, t]); j.extend([nt, N + nt]); k.extend([N + nt, N + t])
 
             meshes.append(
                 go.Mesh3d(
-                    x=xv, y=yv, z=zv,
-                    i=i, j=j, k=k,
-                    color=colors[idx],
-                    opacity=1.0,
-                    flatshading=True,
-                    showscale=False,
-                    # <-- add these two lines:
-                    hovertemplate=f"{labels[idx]}<br>Outside‐adj: {weights[idx]:.2f}<extra></extra>",
-                    # remove any hoverinfo="skip"
+                    x=xv, y=yv, z=zv, i=i, j=j, k=k,
+                    intensity=np.full(len(xv), weights[idx]),
+                    colorscale=colormap, cmin=0.0, cmax=1.0,
+                    opacity=1.0, flatshading=True, name="",
+                    hovertemplate=f"<b>{labels[idx]}</b><br>Outside Adjacency: {weights[idx]:.3f}<extra></extra>"
                 )
             )
 
-            # edge trace for hover
-            edge_x = list(x_up) + [x_up[0]]
-            edge_y = list(y_up) + [y_up[0]]
-            edge_z = list(z_up) + [z_up[0]]
-            edges.append(
-                go.Scatter3d(
-                    x=edge_x, y=edge_y, z=edge_z,
-                    mode="lines",
-                    line=dict(color="black", width=2),
-                    hoverinfo="text",
-                    text=[f"{labels[idx]}: {weights[idx]:.2f}"],
-                    showlegend=False
-                )
-            )
-
-        # --- assemble figure ---
-        fig = go.Figure(data=meshes + edges)
+        # Assemble figure
+        fig = go.Figure(data=meshes)
         fig.update_layout(
+            title="3D Outside-Adjacency Visualization",
             scene=dict(
-                xaxis=dict(visible=False),
-                yaxis=dict(visible=False),
-                zaxis=dict(visible=True, title="Floor")
+                xaxis=dict(visible=False), yaxis=dict(visible=False),
+                zaxis=dict(title="Floor"), aspectmode='data'
             ),
             margin=dict(l=0, r=0, b=0, t=50),
-            title="3D Outside‐Adjacency Visualization"
-        )
-
-        # add a colorbar manually
-        # Map weights 0→1 into colorscale for legend
-        fig.update_traces(
-            selector=dict(type="mesh3d"),
-            coloraxis="coloraxis"
-        )
-        fig.update_layout(
             coloraxis=dict(
-                colorscale=colormap,
-                cmin=0, cmax=1,
-                colorbar=dict(title="Outside Adjacency")
+                colorscale=colormap, cmin=0.0, cmax=1.0,
+                colorbar=dict(title="Adjacency<br>Weight")
             )
         )
-
+        
         if output_file:
             fig.write_html(output_file)
-            logger.info(f"Saved 3D outside‐adjacency viz to {output_file}")
-
+            logger.info(f"Saved 3D outside-adjacency visualization to {output_file}")
         return fig
-
-
+    
+    
     #############################
-    # Network Graph (Homogeneous)
+    # Measurement visualization
     #############################
-
-    def build_homogeneous_graph(self, static_room_attributes: List[str] = None) -> nx.DiGraph:
-        """
-        Build a directed graph (nx.DiGraph) whose nodes are rooms,
-        edges are taken from self.room_to_room_adj_matrix (directed),
-        and node attributes come from self.static_room_attributes.
-        """
-        # 1) Preconditions
-        if not hasattr(self, "room_to_room_adj_matrix"):
-            raise ValueError(
-                "room_to_room_adj_matrix not found. "
-                "Run build_combined_room_to_room_adjacency() first."
-            )
-        if not hasattr(self, "adj_matrix_room_URIs_str"):
-            raise ValueError(
-                "adj_matrix_room_URIs_str not found. It must list URIs in the same "
-                "order as rows/cols of room_to_room_adj_matrix."
-            )
-
-
-        # 2) Optionally override static attributes
-        if static_room_attributes is not None:
-            self.static_room_attributes = static_room_attributes
-
-
-        # 3) If normalized‐area attrs are requested but not yet computed, compute them
-        if (
-            ("norm_areas_minmax" in self.static_room_attributes or
-            "norm_areas_prop" in self.static_room_attributes)
-            and (
-                not hasattr(self, "norm_areas_minmax") or
-                not self.norm_areas_minmax or
-                not hasattr(self, "norm_areas_prop") or
-                not self.norm_areas_prop
-            )
-        ):
-            logger.info("Computing normalized room areas for node attributes...")
-            self.normalize_room_areas()
-
-
-        # 4) Create a directed graph
-        G = nx.DiGraph()
-
-
-        # 5) Add each room URI as a node, copying requested static attributes
-        for room_uri in self.adj_matrix_room_URIs_str:
-            room_obj = self.office_graph.rooms.get(room_uri)
-            if room_obj is None:
-                raise KeyError(f"Room {room_uri} not found in office_graph.rooms")
-
-
-            node_attrs: Dict[str, Any] = {}
-            node_attrs["devices"] = list(getattr(room_obj, "devices", []))
-
-
-            for attr in self.static_room_attributes:
-                if attr == "norm_areas_minmax":
-                    for floor_num, room_map in getattr(self, "norm_areas_minmax", {}).items():
-                        if room_uri in room_map:
-                            node_attrs["norm_areas_minmax"] = room_map[room_uri]
-                            break
-                elif attr == "norm_areas_prop":
-                    for floor_num, room_map in getattr(self, "norm_areas_prop", {}).items():
-                        if room_uri in room_map:
-                            node_attrs["norm_areas_prop"] = room_map[room_uri]
-                            break
-                elif "." in attr:
-                    container, key = attr.split(".", 1)
-                    if hasattr(room_obj, container):
-                        container_obj = getattr(room_obj, container)
-                        if isinstance(container_obj, dict) and key in container_obj:
-                            node_attrs[f"{container}.{key}"] = container_obj[key]
-                elif hasattr(room_obj, attr):
-                    node_attrs[attr] = getattr(room_obj, attr)
-
-
-            G.add_node(room_uri, **node_attrs)
-
-        # 6) Add directed edges for every non‐zero entry in the adjacency matrix
-        adj = self.room_to_room_adj_matrix
-        uris = self.adj_matrix_room_URIs_str
-        n = len(uris)
-        for i in range(n):
-            u = uris[i]
-            for j in range(n):
-                if i == j:
-                    continue
-                v = uris[j]
-                weight = float(adj[i, j])
-                if weight != 0.0:
-                    G.add_edge(u, v, weight=weight)
-
-        self.homogeneous_graph = G
-        logger.info(
-            f"Built homogeneous DiGraph with {G.number_of_nodes()} nodes "
-            f"and {G.number_of_edges()} directed edges"
-        )
-        return G
-
-    def plot_network_graph(self,
-                        graph=None,
-                        figsize=(12, 10),
-                        layout='spring',
-                        node_size_based_on='area',
-                        node_size_factor=1000,
-                        node_color='lightblue',
-                        device_node_color='salmon',
-                        edge_width=1.0,
-                        show_room_ids=True):
-        """
-        Plot the room adjacency as a network graph.
-        
-        Args:
-            graph (nx.Graph, optional): The networkx graph to plot. If None, uses 
-                                    the graph from build_simple_homogeneous_graph()
-            figsize (tuple): Figure size
-            layout (str): Graph layout type ('spring', 'kamada_kawai', 'planar', 'spatial')
-            node_size_based_on (str): 'area' or 'degree' to determine node sizes
-            node_size_factor (float): Factor to control node sizes
-            node_color (str): Color of nodes without devices
-            device_node_color (str): Color of nodes with devices
-            edge_width (float): Width of edges
-            show_room_ids (bool): Whether to show room IDs in the plot
-            
-        Returns:
-            matplotlib.figure.Figure: The figure object
-        """        
-        # Use provided graph or build a new one if not available
-        if self.base_graph is None:
-            raise ValueError("Build homogeneous graph first.")
-        else:
-            graph = self.base_graph
-
-        # Create figure
-        fig, ax = plt.subplots(figsize=figsize)
-        
-        # Get positions for nodes based on chosen layout
-        if layout == 'spring':
-            pos = nx.spring_layout(graph)
-        elif layout == 'kamada_kawai':
-            pos = nx.kamada_kawai_layout(graph)
-        elif layout == 'planar':
-            # Try planar layout, but fall back to spring if not possible
-            try:
-                pos = nx.planar_layout(graph)
-            except nx.NetworkXException:
-                logger.warning("Planar layout not possible. Falling back to spring layout.")
-                pos = nx.spring_layout(graph)
-        elif layout == 'spatial':
-            # Use actual spatial positions from room polygons if available
-            if hasattr(self, 'room_polygons') and self.room_polygons:
-                pos = {}
-                for node in graph.nodes():
-                    if node in self.room_polygons:
-                        centroid = self.room_polygons[node].centroid
-                        pos[node] = (centroid.x, centroid.y)
-                    else:
-                        logger.warning(f"No polygon found for room {node}. Using centroid (0,0).")
-                        pos[node] = (0, 0)
-            else:
-                logger.warning("Spatial layout requested but no room polygons available. Using spring layout.")
-                pos = nx.spring_layout(graph)
-        else:
-            logger.warning(f"Unknown layout: {layout}. Using spring layout.")
-            pos = nx.spring_layout(graph)
-        
-        # Get node sizes based on selected criteria
-        node_sizes = []
-        
-        if node_size_based_on == 'area':
-            # Use room areas if available
-            if hasattr(self, 'areas') and self.areas:
-                max_area = max(self.areas.values()) if self.areas else 1.0
-                for node in graph.nodes():
-                    # Get the area, defaulting to median if not found
-                    if node in self.areas:
-                        area = self.areas[node]
-                        node_size = area * node_size_factor / max_area
-                    else:
-                        # Use median value if area not found
-                        area = np.median(list(self.areas.values()))
-                        node_size = area * node_size_factor / max_area
-                    node_sizes.append(node_size)
-            else:
-                # If no areas available, use degree centrality instead
-                logger.warning("Room areas not available. Using node degrees for sizing.")
-                degrees = dict(graph.degree())
-                max_degree = max(degrees.values()) if degrees else 1
-                node_sizes = [degrees[node] * node_size_factor / max_degree for node in graph.nodes()]
-        elif node_size_based_on == 'degree':
-            # Size based on node degree (number of connections)
-            degrees = dict(graph.degree())
-            max_degree = max(degrees.values()) if degrees else 1
-            node_sizes = [degrees[node] * node_size_factor / max_degree for node in graph.nodes()]
-        else:
-            # Default size if no valid option
-            logger.warning(f"Unknown node_size_based_on value: {node_size_based_on}. Using constant size.")
-            node_sizes = [node_size_factor * 0.3] * len(graph.nodes())
-        
-        # Separate nodes with and without devices
-        nodes_with_devices = []
-        nodes_without_devices = []
-        
-        for node in graph.nodes():
-            if 'devices' in graph.nodes[node] and graph.nodes[node]['devices']:
-                nodes_with_devices.append(node)
-            else:
-                nodes_without_devices.append(node)
-        
-        # Draw nodes without devices
-        if nodes_without_devices:
-            nx.draw_networkx_nodes(graph, pos, 
-                            nodelist=nodes_without_devices,
-                            node_size=[node_sizes[i] for i, node in enumerate(graph.nodes()) if node in nodes_without_devices],
-                            node_color=node_color, 
-                            alpha=0.8, 
-                            ax=ax)
-        
-        # Draw nodes with devices
-        if nodes_with_devices:
-            nx.draw_networkx_nodes(graph, pos, 
-                            nodelist=nodes_with_devices,
-                            node_size=[node_sizes[i] for i, node in enumerate(graph.nodes()) if node in nodes_with_devices],
-                            node_color=device_node_color, 
-                            alpha=0.8, 
-                            ax=ax)
-        
-        # Draw edges with weight consideration if available
-        if nx.get_edge_attributes(graph, 'weight'):
-            weights = [graph[u][v]['weight'] for u, v in graph.edges()]
-            # Normalize weights for visualization
-            if weights:
-                max_weight = max(weights)
-                min_weight = min(weights)
-                if max_weight > min_weight:
-                    norm_weights = [(w - min_weight) / (max_weight - min_weight) * 2 + 0.5 for w in weights]
-                    nx.draw_networkx_edges(graph, pos, width=norm_weights, alpha=0.6, ax=ax)
-                else:
-                    nx.draw_networkx_edges(graph, pos, width=edge_width, alpha=0.5, ax=ax)
-            else:
-                nx.draw_networkx_edges(graph, pos, width=edge_width, alpha=0.5, ax=ax)
-        else:
-            nx.draw_networkx_edges(graph, pos, width=edge_width, alpha=0.5, ax=ax)
-        
-        # Draw labels if requested - now using the pre-stored room names
-        if show_room_ids:
-            labels = {node: self.room_names.get(node, str(node)) for node in graph.nodes()}
-            nx.draw_networkx_labels(graph, pos, labels=labels, font_size=8, ax=ax)
-        
-        # Add title based on adjacency type
-        title = "Room Adjacency Graph"
-        if hasattr(self, 'adjacency_type'):
-            title += f" ({self.adjacency_type})"
-        plt.title(title)
-        
-        # Add legend for node colors
-        legend_elements = [
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=node_color, markersize=10, label='Rooms without devices'),
-            plt.Line2D([0], [0], marker='o', color='w', markerfacecolor=device_node_color, markersize=10, label='Rooms with devices')
-        ]
-        plt.legend(handles=legend_elements, loc='upper right')
-        
-        # Add legend for node sizes
-        if node_size_based_on == 'area':
-            legend_text = "Node size proportional to room area"
-        elif node_size_based_on == 'degree':
-            legend_text = "Node size proportional to number of connections"
-        else:
-            legend_text = "Uniform node size"
-        plt.figtext(0.5, 0.01, legend_text, ha='center')
-        
-        plt.axis('off')
-        plt.tight_layout()
-        return fig
-
+    
+    
     def create_daily_temperature_visualization(
             self,
-            output_file: str = "output/builder/temperature_3D.html",
-            day_to_visualize: str = None, # "YYYY-MM-DD", None for random
-            thickness: float = None,
-            colorscale: str = 'RdYlBu_r'
-        ):
-            """
-            Creates an interactive 3D Plotly visualization showing the hourly temperature
-            variation in each room over a single day.
-
-            Args:
-                output_file (str): Path to save the standalone HTML file.
-                day_to_visualize (str, optional): The specific day to visualize in "YYYY-MM-DD" format.
-                                                If None, a random day with data is chosen. Defaults to None.
-                thickness (float, optional): Vertical thickness of each room's extrusion. If None, it's auto-calculated.
-                colorscale (str, optional): The Plotly colorscale to use for temperature. Defaults to 'RdYlBu_r'.
-
-            Returns:
-                plotly.graph_objects.Figure: The generated Plotly figure.
-            """
-            import numpy as np
-            import pandas as pd
-            import plotly.graph_objects as go
-            from plotly.colors import sample_colorscale
-            from shapely.geometry import Polygon
-            
-            # --- 1. Data Preparation ---
-            
-            if not hasattr(self, 'room_level_df'):
-                logger.info("room_level_df not found. Calling build_room_level_df() first.")
-                self.build_room_level_df()
-            
-            bucket_to_time = {i: bucket[0] for i, bucket in enumerate(self.time_buckets)}
-            df = self.room_level_df[['room_uri', 'bucket_idx', 'Temperature_mean']].copy()
-            df = df.dropna(subset=['Temperature_mean'])
-            
-            df['datetime'] = df['bucket_idx'].map(bucket_to_time)
-            df['date'] = df['datetime'].dt.date
-            df['hour'] = df['datetime'].dt.hour
-            
-            available_dates = df['date'].unique()
-            if not available_dates.any():
-                raise ValueError("No temperature data found in room_level_df.")
-
-            if day_to_visualize:
-                selected_date = pd.to_datetime(day_to_visualize).date()
-                if selected_date not in available_dates:
-                    raise ValueError(f"Date {selected_date} not found in the data. Available dates start from {available_dates.min()}.")
-            else:
-                selected_date = np.random.choice(available_dates)
-                logger.info(f"No day specified. Randomly selected: {selected_date}")
-
-            day_df = df[df['date'] == selected_date]
-            if day_df.empty:
-                raise ValueError(f"No temperature data available for the selected date: {selected_date}")
-                
-            temp_pivot = day_df.pivot_table(
-                index='room_uri', columns='hour', values='Temperature_mean'
-            )
-            
-            cmin = temp_pivot.min().min()
-            cmax = temp_pivot.max().max()
-            logger.info(f"Visualizing temperatures for {selected_date}. Range: {cmin:.1f}°C to {cmax:.1f}°C")
-
-            # --- 2. Geometry and Layout Calculation ---
-            
-            centroids, raw_zs, room_ids, room_uris_ordered = [], [], [], []
-            for uri in self.room_uris:
-                room = self.office_graph.rooms.get(uri)
-                if not room: continue
-
-                floor_num = self.room_to_floor.get(uri)
-                if floor_num is None or uri not in self.polygons.get(floor_num, {}):
-                    continue
-
-                poly: Polygon = self.polygons[floor_num][uri]
-                x, y = poly.centroid.coords[0]
-                centroids.append((x, y))
-                raw_zs.append(floor_num)
-                room_ids.append(self.room_names.get(uri, str(uri)))
-                room_uris_ordered.append(uri)
-            
-            xs = np.array([c[0] for c in centroids])
-            ys = np.array([c[1] for c in centroids])
-            raw_zs = np.array(raw_zs, dtype=float)
-            
-            floors = np.unique(raw_zs)
-            n_floors = len(floors)
-            footprint = max(xs.max() - xs.min(), ys.max() - ys.min())
-            floor_sep = footprint / max(n_floors, 1) if n_floors > 1 else footprint
-            if thickness is None:
-                thickness = floor_sep / 5.0
-            
-            floor_min = floors.min()
-            zs = (raw_zs - floor_min) * floor_sep
-            
-            room_meshes, room_edge_traces = [], []
-            for idx, uri in enumerate(room_uris_ordered):
-                poly: Polygon = self.polygons[self.room_to_floor[uri]][uri]
-                coords = list(poly.exterior.coords)[:-1]
-                N = len(coords)
-                x2d, y2d = zip(*coords)
-                z0 = zs[idx]
-                
-                xv = np.concatenate([np.array(x2d), np.array(x2d)])
-                yv = np.concatenate([np.array(y2d), np.array(y2d)])
-                zv = np.concatenate([np.full(N, z0), np.full(N, z0 + thickness)])
-                
-                i, j, k = [], [], []
-                for t in range(1, N - 1): i.extend([N, N + t, N + t + 1]); j.extend([N + t, N + t + 1, N]); k.extend([N + t + 1, N, N + t])
-                for t in range(1, N - 1): i.extend([0, t + 1, t]); j.extend([t + 1, t, 0]); k.extend([t, 0, t + 1])
-                for t in range(N): nt = (t + 1) % N; i.extend([t, nt, N + nt]); j.extend([nt, N + nt, t]); k.extend([N + nt, t, N + t]); i.extend([t, N + nt, N + t]); j.extend([N + nt, N + t, t]); k.extend([N + t, t, N + nt])
-                
-                room_meshes.append((xv, yv, zv, i, j, k))
-                
-                edge_x = list(xv[N:]) + [xv[N]]
-                edge_y = list(yv[N:]) + [yv[N]]
-                edge_z = list(zv[N:]) + [zv[N]]
-                room_edge_traces.append((edge_x, edge_y, edge_z))
-
-            # --- 3. Build Animation Frames ---
-            
-            frames = []
-            for hour in range(24):
-                data = []
-                for idx, uri in enumerate(room_uris_ordered):
-                    
-                    # ***** THE FIX IS HERE *****
-                    # Use .loc for proper row/column lookup in the DataFrame
-                    if uri in temp_pivot.index and hour in temp_pivot.columns:
-                        temp = temp_pivot.loc[uri, hour]
-                    else:
-                        temp = np.nan
-                    # ***** END OF FIX *****
-
-                    if pd.isna(temp):
-                        mesh_color = "#cccccc"
-                        hover_text = f"<b>{room_ids[idx]}</b><br>Hour: {hour}<br>No data"
-                    else:
-                        norm_temp = (temp - cmin) / (cmax - cmin) if (cmax - cmin) > 0 else 0.5
-                        mesh_color = sample_colorscale(colorscale, norm_temp)[0]
-                        hover_text = f"<b>{room_ids[idx]}</b><br>Hour: {hour}<br>Temp: {temp:.1f}°C"
-
-                    xv, yv, zv, i, j, k = room_meshes[idx]
-                    data.append(go.Mesh3d(x=xv, y=yv, z=zv, i=i, j=j, k=k, color=mesh_color, opacity=1.0, flatshading=True, showscale=False, hoverinfo="skip"))
-                    
-                    ex, ey, ez = room_edge_traces[idx]
-                    data.append(go.Scatter3d(x=ex, y=ey, z=ez, mode="lines", line=dict(color="black", width=1.5), hoverinfo="text", text=hover_text, showlegend=False))
-                
-                frames.append(go.Frame(data=data, name=f"Hour {hour}"))
-
-            # --- 4. Assemble Figure ---
-            
-            fig = go.Figure(data=frames[0].data, frames=frames)
-
-            fig.add_trace(go.Scatter3d(
-                x=[None], y=[None], z=[None], mode='markers',
-                marker=dict(
-                    colorscale=colorscale, cmin=cmin, cmax=cmax,
-                    colorbar=dict(title='Temperature (°C)', thickness=20, len=0.75, y=0.5),
-                    showscale=True
-                ),
-                hoverinfo='none', showlegend=False
-            ))
-            
-            sliders = [dict(
-                active=0, pad={"t": 50}, currentvalue={"prefix": "Hour: "},
-                steps=[dict(method="animate", label=str(h), args=[[f"Hour {h}"], dict(mode="immediate", frame=dict(duration=300, redraw=True))]) for h in range(24)]
-            )]
-            updatemenus = [dict(
-                type="buttons", showactive=False, y=0, x=1.0, xanchor="right", yanchor="top", pad={"t": 20, "r": 20},
-                buttons=[
-                    dict(label="Play", method="animate", args=[None, {"frame": {"duration": 500, "redraw": True}, "fromcurrent": True}]),
-                    dict(label="Pause", method="animate", args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}])
-                ]
-            )]
-            
-            fig.update_layout(
-                title=f"Hourly Room Temperature Visualization ({selected_date})",
-                scene=dict(
-                    xaxis=dict(visible=False), yaxis=dict(visible=False), zaxis=dict(visible=False),
-                    aspectmode='data'
-                ),
-                margin=dict(l=0, r=0, b=0, t=40),
-                sliders=sliders,
-                updatemenus=updatemenus
-            )
-            
-            if output_file:
-                os.makedirs(os.path.dirname(output_file), exist_ok=True)
-                fig.write_html(output_file)
-                logger.info(f"Saved 3D temperature visualization to {output_file}")
-                
-            return fig
-
-    def create_temperature_variation_visualization_2(
-        self,
-        day: str,
-        output_file: str = "output/builder/temperature_day_3D.html",
-        thickness: float = None,
-        marker_size: int = 4,
-        colorscale: list = None,
+            output_file:            str = "output/builder/temperature_3D.html",
+            day_to_visualize:       str = None, # "YYYY-MM-DD", None for random
+            thickness:              float = None,
+            colorscale:             str = 'RdYlBu_r'
     ):
         """
-        Interactive 3D Plotly animation showing room temperature variation over 24 hours.
+        Creates an interactive 3D Plotly visualization showing the hourly temperature
+        variation in each room over a single day.
 
         Args:
-            day: Date string "YYYY-MM-DD" for which to visualize (must be within your time_buckets).
-            output_file: Path to save standalone HTML.
-            thickness: Vertical thickness of each room (if None, auto = floor_sep/10).
-            marker_size: Size of centroid markers (unused here but kept for consistency).
-            colorscale: Plotly colorscale name or list (default Viridis).
+            output_file (str): Path to save the standalone HTML file.
+            day_to_visualize (str, optional): The specific day to visualize in "YYYY-MM-DD" format.
+                                            If None, a random day with data is chosen. Defaults to None.
+            thickness (float, optional): Vertical thickness of each room's extrusion. If None, it's auto-calculated.
+            colorscale (str, optional): The Plotly colorscale to use for temperature. Defaults to 'RdYlBu_r'.
+
         Returns:
-            plotly.graph_objects.Figure
+            plotly.graph_objects.Figure: The generated Plotly figure.
         """
-        import numpy as np
-        import plotly.graph_objects as go
-        from shapely.geometry import Polygon
-        from datetime import datetime
+        if not hasattr(self, 'room_level_df'):
+            raise ValueError("room_level_df not found. Run build_room_level_df() first.")
+        
+        bucket_to_time = {i: bucket[0] for i, bucket in enumerate(self.time_buckets)}
+        df = self.room_level_df[['room_uri', 'bucket_idx', 'Temperature_mean']].copy()
+        df = df.dropna(subset=['Temperature_mean'])
+        
+        df['datetime'] = df['bucket_idx'].map(bucket_to_time)
+        df['date'] = df['datetime'].dt.date
+        df['hour'] = df['datetime'].dt.hour
+        
+        available_dates = df['date'].unique()
+        if not available_dates.any():
+            raise ValueError("No temperature data found in room_level_df.")
 
-        # default colorscale
-        if colorscale is None:
-            colorscale = "Viridis"
+        if day_to_visualize:
+            selected_date = pd.to_datetime(day_to_visualize).date()
+            if selected_date not in available_dates:
+                raise ValueError(f"Date {selected_date} not found in the data. Available dates start from {available_dates.min()}.")
+        else:
+            selected_date = np.random.choice(available_dates)
+            logger.info(f"No day specified. Randomly selected: {selected_date}")
 
-        # -- prepare the 24 bucket indices for this day --
-        target_date = datetime.strptime(day, "%Y-%m-%d").date()
-        hour_to_bucket = {}
-        for idx, (start, end) in enumerate(self.time_buckets):
-            if start.date() == target_date:
-                hour_to_bucket[start.hour] = idx
-        if len(hour_to_bucket) != 24:
-            raise ValueError(f"Expected 24 hourly buckets on {day}, found {len(hour_to_bucket)}")
+        day_df = df[df['date'] == selected_date]
+        if day_df.empty:
+            raise ValueError(f"No temperature data available for the selected date: {selected_date}")
+            
+        temp_pivot = day_df.pivot_table(
+            index='room_uri', columns='hour', values='Temperature_mean'
+        )
+        
+        cmin = temp_pivot.min().min()
+        cmax = temp_pivot.max().max()
+        logger.info(f"Visualizing temperatures for {selected_date}. Range: {cmin:.1f}°C to {cmax:.1f}°C")
 
-        # -- gather centroids, floors, and room labels --
-        centroids, raw_zs, room_ids = [], [], []
-        for uri in self.adj_matrix_room_URIs_str:
-            poly: Polygon = self.polygons[self.room_to_floor[uri]][uri]
+        # Geometry and Layout Calculation
+        centroids, raw_zs, room_ids, room_uris_ordered = [], [], [], []
+        for room_uri_str in self.room_uris:
+            room = self.office_graph.rooms.get(room_uri_str)
+            if not room: continue
+
+            floor_num = self.room_to_floor.get(room_uri_str)
+            if floor_num is None or room_uri_str not in self.polygons.get(floor_num, {}):
+                continue
+
+            poly: Polygon = self.polygons[floor_num][room_uri_str]
             x, y = poly.centroid.coords[0]
             centroids.append((x, y))
-            raw_zs.append(self.room_to_floor[uri])
-            room_ids.append(self.room_names.get(uri, str(uri)))
+            raw_zs.append(floor_num)
+            room_ids.append(self.room_names.get(room_uri_str, str(room_uri_str)))
+            room_uris_ordered.append(room_uri_str)
+        
         xs = np.array([c[0] for c in centroids])
         ys = np.array([c[1] for c in centroids])
         raw_zs = np.array(raw_zs, dtype=float)
-
-        # -- floor separation & thickness --
+        
         floors = np.unique(raw_zs)
         n_floors = len(floors)
         footprint = max(xs.max() - xs.min(), ys.max() - ys.min())
-        floor_sep = footprint / max(n_floors, 1)
+        floor_sep = footprint / max(n_floors, 1) if n_floors > 1 else footprint
         if thickness is None:
             thickness = floor_sep / 5.0
+        
         floor_min = floors.min()
         zs = (raw_zs - floor_min) * floor_sep
-
-        # -- precompute each room mesh once --
-        room_meshes = []
-        for idx, uri in enumerate(self.adj_matrix_room_URIs_str):
-            poly: Polygon = self.polygons[self.room_to_floor[uri]][uri]
+        
+        room_meshes, room_edge_traces = [], []
+        for idx, room_uri_str in enumerate(room_uris_ordered):
+            poly: Polygon = self.polygons[self.room_to_floor[room_uri_str]][room_uri_str]
             coords = list(poly.exterior.coords)[:-1]
             N = len(coords)
             x2d, y2d = zip(*coords)
             z0 = zs[idx]
-            x_low = np.array(x2d)
-            y_low = np.array(y2d)
-            z_low = np.full(N, z0)
-            x_up = x_low
-            y_up = y_low
-            z_up = np.full(N, z0 + thickness)
-            xv = np.concatenate([x_low, x_up])
-            yv = np.concatenate([y_low, y_up])
-            zv = np.concatenate([z_low, z_up])
-
-            # build faces
+            
+            xv = np.concatenate([np.array(x2d), np.array(x2d)])
+            yv = np.concatenate([np.array(y2d), np.array(y2d)])
+            zv = np.concatenate([np.full(N, z0), np.full(N, z0 + thickness)])
+            
             i, j, k = [], [], []
-            # top
-            for t in range(1, N-1):
-                i += [N, N + t, N + t + 1]
-                j += [N + t, N + t + 1, N]
-                k += [N + t + 1, N, N + t]
-            # bottom
-            for t in range(1, N-1):
-                i += [0, t + 1, t]
-                j += [t + 1, t, 0]
-                k += [t, 0, t + 1]
-            # sides
-            for t in range(N):
-                nt = (t + 1) % N
-                i += [t, nt, N + nt, t, N + nt, N + t]
-                j += [nt, N + nt, t, N + nt, N + t, t]
-                k += [N + nt, t, N + t, N + t, t, N + nt]
+            for t in range(1, N - 1): i.extend([N, N + t, N + t + 1]); j.extend([N + t, N + t + 1, N]); k.extend([N + t + 1, N, N + t])
+            for t in range(1, N - 1): i.extend([0, t + 1, t]); j.extend([t + 1, t, 0]); k.extend([t, 0, t + 1])
+            for t in range(N): nt = (t + 1) % N; i.extend([t, nt, N + nt]); j.extend([nt, N + nt, t]); k.extend([N + nt, t, N + t]); i.extend([t, N + nt, N + t]); j.extend([N + nt, N + t, t]); k.extend([N + t, t, N + nt])
+            
             room_meshes.append((xv, yv, zv, i, j, k))
+            
+            edge_x = list(xv[N:]) + [xv[N]]
+            edge_y = list(yv[N:]) + [yv[N]]
+            edge_z = list(zv[N:]) + [zv[N]]
+            room_edge_traces.append((edge_x, edge_y, edge_z))
 
-        # -- build frames --
+        # Build Animation Frames
         frames = []
         for hour in range(24):
-            bucket_idx = hour_to_bucket[hour]
-            # extract temperatures
-            temps = self.room_level_df.loc[
-                self.room_level_df["bucket_idx"] == bucket_idx, "Temperature_mean"
-            ].values
-            # normalize intensities per room for Mesh3d
-            # replicate per-vertex
-            step_data = []
-            for idx in range(len(xs)):
+            data = []
+            for idx, room_uri_str in enumerate(room_uris_ordered):
+                if room_uri_str in temp_pivot.index and hour in temp_pivot.columns:
+                    temp = temp_pivot.loc[room_uri_str, hour]
+                else:
+                    temp = np.nan
+                
+                if pd.isna(temp):
+                    mesh_color = "#cccccc"
+                    hover_text = f"<b>{room_ids[idx]}</b><br>Hour: {hour}<br>No data"
+                else:
+                    norm_temp = (temp - cmin) / (cmax - cmin) if (cmax - cmin) > 0 else 0.5
+                    mesh_color = sample_colorscale(colorscale, norm_temp)[0]
+                    hover_text = f"<b>{room_ids[idx]}</b><br>Hour: {hour}<br>Temp: {temp:.1f}°C"
+
                 xv, yv, zv, i, j, k = room_meshes[idx]
-                temp = temps[idx]
-                intensity = np.full_like(xv, temp, dtype=float)
-                step_data.append(
-                    go.Mesh3d(
-                        x=xv, y=yv, z=zv,
-                        i=i, j=j, k=k,
-                        intensity=intensity,
-                        colorscale=colorscale,
-                        intensitymode="vertex",
-                        showscale=(idx == 0),
-                        cmin=self.room_level_df["Temperature_mean"].min(),
-                        cmax=self.room_level_df["Temperature_mean"].max(),
-                        name="",
-                        flatshading=True,
-                    )
-                )
-            frames.append(go.Frame(data=step_data, name=f"Hour {hour}"))
+                data.append(go.Mesh3d(x=xv, y=yv, z=zv, i=i, j=j, k=k, color=mesh_color, opacity=1.0, flatshading=True, showscale=False, hoverinfo="skip"))
+                
+                ex, ey, ez = room_edge_traces[idx]
+                data.append(go.Scatter3d(x=ex, y=ey, z=ez, mode="lines", line=dict(color="black", width=1.5), hoverinfo="text", text=hover_text, showlegend=False))
+            
+            frames.append(go.Frame(data=data, name=f"Hour {hour}"))
 
-        # -- initial fig, sliders, buttons --
-        fig = go.Figure(frames[0].data, frames=frames)
-        slider_steps = [
-            dict(
-                method="animate",
-                label=str(h),
-                args=[
-                    [f"Hour {h}"],
-                    dict(mode="immediate", frame=dict(duration=300, redraw=True), transition=dict(duration=300)),
-                ],
-            )
-            for h in range(24)
-        ]
-        sliders = [dict(active=0, pad={"t": 50}, currentvalue={"prefix": "Hour: "}, steps=slider_steps)]
-        updatemenus = [
-            dict(
-                type="buttons",
-                showactive=False,
-                y=0,
-                x=0.1,
-                xanchor="right",
-                yanchor="top",
-                pad={"t": 60, "r": 10},
-                buttons=[
-                    dict(label="Play", method="animate", args=[None, {"frame": {"duration": 500, "redraw": True}, "fromcurrent": True}]),
-                    dict(label="Pause", method="animate", args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}]),
-                ],
-            )
-        ]
+        # Assemble Figure
+        fig = go.Figure(data=frames[0].data, frames=frames)
 
+        fig.add_trace(go.Scatter3d(
+            x=[None], y=[None], z=[None], mode='markers',
+            marker=dict(
+                colorscale=colorscale, cmin=cmin, cmax=cmax,
+                colorbar=dict(title='Temperature (°C)', thickness=20, len=0.75, y=0.5),
+                showscale=True
+            ),
+            hoverinfo='none', showlegend=False
+        ))
+        
+        sliders = [dict(
+            active=0, pad={"t": 50}, currentvalue={"prefix": "Hour: "},
+            steps=[dict(method="animate", label=str(h), args=[[f"Hour {h}"], dict(mode="immediate", frame=dict(duration=300, redraw=True))]) for h in range(24)]
+        )]
+        updatemenus = [dict(
+            type="buttons", showactive=False, y=0, x=1.0, xanchor="right", yanchor="top", pad={"t": 20, "r": 20},
+            buttons=[
+                dict(label="Play", method="animate", args=[None, {"frame": {"duration": 500, "redraw": True}, "fromcurrent": True}]),
+                dict(label="Pause", method="animate", args=[[None], {"frame": {"duration": 0, "redraw": False}, "mode": "immediate"}])
+            ]
+        )]
+        
         fig.update_layout(
-            scene=dict(xaxis=dict(visible=False), yaxis=dict(visible=False), zaxis=dict(visible=False, title="Floors")),
-            margin=dict(l=0, r=0, b=0, t=50),
+            title=f"Hourly Room Temperature Visualization ({selected_date})",
+            scene=dict(
+                xaxis=dict(visible=False), yaxis=dict(visible=False), zaxis=dict(visible=False),
+                aspectmode='data'
+            ),
+            margin=dict(l=0, r=0, b=0, t=40),
             sliders=sliders,
-            updatemenus=updatemenus,
-            title=f"Room Temperatures on {day}",
+            updatemenus=updatemenus
         )
-
+        
         if output_file:
+            os.makedirs(os.path.dirname(output_file), exist_ok=True)
             fig.write_html(output_file)
-            self.logger.info(f"Saved 3D temperature viz for {day} to {output_file}")
-
+            logger.info(f"Saved 3D temperature visualization to {output_file}")
+            
         return fig
