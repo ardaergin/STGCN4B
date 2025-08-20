@@ -340,7 +340,7 @@ class OfficeGraphBuilder(
             numeric_cols = log_df.select_dtypes(include=[np.number]).columns
             positive_cols = [
                 c for c in numeric_cols
-                if (log_df[c].dropna() >= 0).all()
+                if c not in ("bucket_idx", "room_uri_str") and (log_df[c].dropna() >= 0).all()
             ]
             
             if positive_cols:
