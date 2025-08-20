@@ -534,11 +534,13 @@ def main():
         # Spatial visualizer
         adj=builder.run_adjacency_pipeline(args=args, adjacency_type="weighted")
         save_path = os.path.join(builder.plots_dir, "3D", "prop3D.html")
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
         prop_plot = builder.create_building_propagation_visualization(
             masked_adjacency_matrices=adj["full_masked_adj_matrices"],
             output_file=save_path
             )
         save_path = os.path.join(builder.plots_dir, "3D", "outside3D.html")
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
         outside_plot = builder.create_building_outside_adjacency_visualization(
             outside_adjacency=adj["outside_adj_vector"],
             output_file=save_path
