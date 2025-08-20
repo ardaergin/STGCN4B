@@ -657,7 +657,8 @@ class Heterogeneous(STGCNDataPreparer):
             logger.warning("'feature_names' dictionary not found in loaded data.")
     
     def _drop_requested_features(self) -> None:
-        raise NotImplementedError("Feature dropping not implemented for Heterogeneous-STGCNDataPreparer.")
+        """Not implemented yet!"""
+        pass
     
     def _prepare_features(self) -> None:
         """HeteroData snapshot already has the features prepared. They are already nicely tensorized."""
