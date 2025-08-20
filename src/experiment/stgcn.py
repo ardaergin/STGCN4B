@@ -584,10 +584,11 @@ class Heterogeneous(STGCNExperimentRunner):
     
     def _log_normalization_stats(self, x: Dict[int, HeteroData]):
         """Logs per-feature statistics for the normalized heterogeneous graph snapshots."""
-        for t, snap in x.items():
+        logger.info("Normalized feature shapes (sample from first 2 snapshots):")
+        for t, snap in list(x.items())[:2]:
             for nt in snap.node_types:
-                if "x" in snap[nt]:
-                    logger.info(f"[t={t}] Node type '{nt}' feature shape: {snap[nt].x.shape}")
+                if "x" in snap[nt] and snap[nt].x is not None:
+                    logger.info(f"  [t={t}] Node type '{nt}': {snap[nt].x.shape}")
         
         logger.info("Normalized heterogeneous features stats (per-feature):")
         tensors_by_nodetype = defaultdict(list)
