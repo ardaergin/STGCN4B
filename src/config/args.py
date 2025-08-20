@@ -392,7 +392,7 @@ def add_STGCN_args(parser):
                         default=3, 
                         help='Kernel size in temporal convolution')
     parser.add_argument('--Ks', type=int, 
-                        default=3, 
+                        default=2, 
                         help='Kernel size in graph convolution')
     
     parser.add_argument('--stblock_num', type=int, 
