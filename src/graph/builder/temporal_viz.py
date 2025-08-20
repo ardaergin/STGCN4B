@@ -91,12 +91,12 @@ class TemporalVisualizerMixin:
 
     def plot_property_distributions(
             self, 
-            df: Optional[pd.DataFrame] = None,
-            properties: List[str] = ["Temperature", "Humidity", "CO2Level"],
-            stats: List[str] = ["mean", "min", "max", "std", "count"],
-            workhours_only: bool = False,
-            title_suffix: str = "",
-            save_path: Optional[str] = None
+            df:                     Optional[pd.DataFrame] = None,
+            properties:             List[str] = ["Temperature", "Humidity", "CO2Level"],
+            stats:                  List[str] = ["mean", "min", "max", "std", "count"],
+            workhours_only:         bool = False,
+            title_suffix:           str = "",
+            save_path:              Optional[str] = None
     ) -> None:
         """
         Plots the distributions of specified statistics for given property types.
@@ -199,11 +199,11 @@ class TemporalVisualizerMixin:
     
     def plot_all_distributions_for_room_level_df(
             self,
-            df: Optional[pd.DataFrame] = None,
-            output_dir: str = "output/distributions",
-            id_cols: List[str] = ["bucket_idx", "room_uri_str"],
-            workhours_only: bool = False,
-            pdf_name: str = "all_distributions.pdf"
+            df:                     Optional[pd.DataFrame] = None,
+            output_dir:             str = "output/distributions",
+            id_cols:                List[str] = ["bucket_idx", "room_uri_str"],
+            workhours_only:         bool = False,
+            pdf_name:               str = "all_distributions.pdf"
     ) -> None:
         """
         Plot distributions for all non-identifier columns in a DataFrame.
@@ -265,11 +265,11 @@ class TemporalVisualizerMixin:
 
     def plot_monthly_daily_trends(
             self, 
-            df: Optional[pd.DataFrame] = None,
-            properties: List[str] = ["Temperature", "Humidity", "CO2Level"],
-            workhours_only: bool = False,
-            aggregate_rooms: bool = True,
-            save_path: Optional[str] = None
+            df:                     Optional[pd.DataFrame] = None,
+            properties:             List[str] = ["Temperature", "Humidity", "CO2Level"],
+            workhours_only:         bool = False,
+            aggregate_rooms:        bool = True,
+            save_path:              Optional[str] = None
     ) -> None:
         """
         Visualizes the average daily trend for each month.
@@ -384,14 +384,14 @@ class TemporalVisualizerMixin:
     
     def plot_optimal_range_summary(
             self, 
-            df: Optional[pd.DataFrame] = None,
-            optimal_ranges: Dict[str, Tuple[float, float]] = {
-                "Temperature": (21, 24),
-                "Humidity": (40, 60),
-                "CO2Level": (0, 800)
-            },
-            workhours_only: bool = False,
-            save_path: Optional[str] = None
+            df:                     Optional[pd.DataFrame] = None,
+            optimal_ranges:         Dict[str, Tuple[float, float]] = {
+                                        "Temperature": (21, 24),
+                                        "Humidity": (40, 60),
+                                        "CO2Level": (0, 800)
+                                    },
+            workhours_only:         bool = False,
+            save_path:              Optional[str] = None
     ) -> None:
         """
         Plots the percentage of time each property is within optimal range.
@@ -481,10 +481,10 @@ class TemporalVisualizerMixin:
     
     def plot_missing_data_pattern(
             self,
-            df: Optional[pd.DataFrame] = None,
-            properties: List[str] = ["Temperature", "Humidity", "CO2Level"],
-            workhours_only: bool = False,
-            save_path: Optional[str] = None
+            df:                     Optional[pd.DataFrame] = None,
+            properties:             List[str] = ["Temperature", "Humidity", "CO2Level"],
+            workhours_only:         bool = False,
+            save_path:              Optional[str] = None
     ) -> None:
         """
         Visualize missing data patterns over time for each property.
@@ -561,10 +561,10 @@ class TemporalVisualizerMixin:
     
     def compare_workhours_distributions(
             self,
-            df: Optional[pd.DataFrame] = None,
-            properties: List[str] = ["Temperature", "CO2Level"],
-            stat: str = "mean",
-            save_path: Optional[str] = None
+            df:                         Optional[pd.DataFrame] = None,
+            properties:                 List[str] = ["Temperature", "CO2Level"],
+            stat:                       str = "mean",
+            save_path:                  Optional[str] = None
     ) -> None:
         """
         Compare distributions between workhours and non-workhours.
@@ -667,17 +667,17 @@ class TemporalVisualizerMixin:
     
     def plot_correlation_heatmap(
             self,
-            df: Optional[pd.DataFrame] = None,
-            workhours_only: bool = False,
-            method: str = 'pearson',
-            min_correlation: float = 0.0,
-            figsize: Optional[Tuple[int, int]] = None,
-            exclude_columns: Optional[List[str]] = None,
-            include_only_numeric: bool = True,
-            aggregate_by_bucket: bool = True,
-            show_top_n: Optional[int] = None,
-            annot: bool = True,
-            save_path: Optional[str] = None
+            df:                         Optional[pd.DataFrame] = None,
+            workhours_only:             bool = False,
+            method:                     str = 'pearson',
+            min_correlation:            float = 0.0,
+            figsize:                    Optional[Tuple[int, int]] = (15, 15),
+            exclude_columns:            Optional[List[str]] = None,
+            include_only_numeric:       bool = True,
+            aggregate_by_bucket:        bool = True,
+            show_top_n:                 Optional[int] = None,
+            annot:                      bool = True,
+            save_path:                  Optional[str] = None
     ) -> pd.DataFrame:
         """
         Plot a comprehensive correlation heatmap for all numeric columns in the dataframe.
