@@ -35,6 +35,7 @@ from ..models.STGCN4B.optim_utils import create_optimizer, create_scheduler
 # Training
 from ..models.STGCN4B.train import train_model, evaluate_model
 from ..utils.tracking import TrainingResult, TrainingHistory
+from ..config.args import build_scaler_map
 
 import logging; logger = logging.getLogger(__name__)
 
@@ -92,42 +93,15 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         # 3. Fit normalizer and transform
         normalizer_cls = self._get_normalizer_class()
         normalizer = normalizer_cls()
+        scaler_map = build_scaler_map(args)
         
         # Features
         normalizer.fit_features(
             x_train                 = train_feature_slice,
             feature_names           = self.input_dict["feature_names"],
-            features_to_skip_norm   = [
-                '_sin', '_cos', # general
-                'is_workhour', # binary
-                'wc_', # weather code
-                'has_measurement', # binary (temporal)
-                'hasWindows', 'has_multiple_windows', 'isProperRoom', # binary (spatial)
-                'norm_areas_minmax', 'norm_areas_prop', # already normalized
-                'embedding_index', # device
-            ],
+            features_to_skip_norm   = args.features_to_skip_norm,
             default_method          = args.default_norm_method,
-            scaler_map              = {
-                # Main IoT measurements
-                "_n_active_devices":    "minmax",   # Count variable, (range: 0-4)
-                "_std":                 "minmax",   # heavily zero-inflated, left-skewed (range differs per property)
-                "Humidity_mean":        "standard",
-                "Humidity_max":         "standard",
-                "Humidity_min":         "standard",
-                "CO2Level_mean":        "robust",
-                "CO2Level_max":         "robust",
-                "CO2Level_min":         "robust",
-                "Temperature_mean":     "robust",
-                "Temperature_max":      "robust",
-                "Temperature_min":      "robust",
-                # Weather
-                "cloud_cover":          "robust",   # Percentage (range: 0-100)
-                "precipitation":        "robust",   # Heavily zero-inflated, left-skewed (range: 0-100)
-                "relative_humidity_2m": "robust",   # Percentage (range: 0-100)
-                "temperature_2m":       "robust",
-                "wind_speed_10m":       "robust",
-                "wind_speed_80m":       "robust"
-            },
+            scaler_map              = scaler_map,
         )
         norm_features = normalizer.transform_features(x=self.all_X)
         
@@ -140,7 +114,7 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         normalizer.fit_target(
             y_train           = train_target_slice, 
             y_train_mask      = train_mask_slice,
-            method            = "robust"
+            method            = args.y_norm_method
         )
         norm_target = normalizer.transform_target(y=self.input_dict["target_array"])
         logger.info(f"Normalized target shape: {norm_target.shape}")

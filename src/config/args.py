@@ -266,44 +266,6 @@ def add_base_modelling_args(parser):
                         default=5, 
                         help='Number of blocks per stratum for the data splitter.')
 
-    # Normalization
-    parser.add_argument(
-        '--skip_normalization_for', 
-        nargs='*', 
-        default=[
-            '_sin', '_cos', # general
-            'is_workhour', # binary
-            'wc_', # weather code
-            'has_measurement', # binary (temporal)
-            'hasWindows', 'has_multiple_windows', 'isProperRoom', # binary (spatial)
-            'norm_areas_minmax', 'norm_areas_prop', # already normalized
-            'embedding_index', # device
-        ],
-        help='List of (sub-)strings for feature names that should NOT be normalized.'
-    )
-    parser.add_argument(
-        "--y_norm_method",
-        type=str,
-        default="robust",
-        choices=[
-            "standard", "robust", "minmax", "maxabs", 
-            "quantile_uniform", "quantile_normal", 
-            "power_yeojohnson", "power_boxcox"
-        ],
-        help="Normalization method for the target variable."
-    )
-    parser.add_argument(
-        '--default_norm_method', 
-        type=str,
-        default='robust',
-        choices=[
-            "standard", "robust", "minmax", "maxabs", 
-            "quantile_uniform", "quantile_normal", 
-            "power_yeojohnson", "power_boxcox"
-        ],
-        help='Default normalization method to be used if a scale_map is not specified.'
-    )
-
     # Features to drop
     parser.add_argument('--features_to_drop', type=str, nargs='*',
                         default=[],
@@ -600,6 +562,157 @@ def build_channel_dicts(args, property_types: list[str]) -> tuple[dict, dict]:
     return mid, out
 
 
+
+
+
+def add_normalization_args(parser):
+    """Add arguments related to normalizing features."""
+    parser.add_argument(
+        '--features_to_skip_norm', 
+        nargs='*', 
+        default=[
+            '_sin', '_cos', # general
+            'is_workhour', # binary
+            'wc_', # weather code
+            'has_measurement', # binary (temporal)
+            'hasWindows', 'has_multiple_windows', 'isProperRoom', # binary (spatial)
+            'norm_areas_minmax', 'norm_areas_prop', # already normalized
+            'embedding_index', # device
+        ],
+        help='List of (sub-)strings for feature names that should NOT be normalized.'
+    )
+    parser.add_argument(
+        "--y_norm_method",
+        type=str,
+        default="robust",
+        choices=[
+            "standard", "robust", "minmax", "maxabs", 
+            "quantile_uniform", "quantile_normal", 
+            "power_yeojohnson", "power_boxcox"
+        ],
+        help="Normalization method for the target variable."
+    )
+    parser.add_argument(
+        '--default_norm_method', 
+        type=str,
+        default='robust',
+        choices=[
+            "standard", "robust", "minmax", "maxabs", 
+            "quantile_uniform", "quantile_normal", 
+            "power_yeojohnson", "power_boxcox"
+        ],
+        help='Default normalization method to be used if a scale_map is not specified.'
+    )
+
+    # Normalization groups: each method gets its own list of features
+    parser.add_argument(
+        "--standard_features", nargs="*", default=[],
+        help="Override/add features for StandardScaler"
+    )
+    parser.add_argument(
+        "--robust_features", nargs="*", default=[],
+        help="Override/add features for RobustScaler"
+    )
+    parser.add_argument(
+        "--minmax_features", nargs="*", default=[],
+        help="Override/add features for MinMaxScaler"
+    )
+    parser.add_argument(
+        "--maxabs_features", nargs="*", default=[],
+        help="Override/add features for MaxAbsScaler"
+    )
+    parser.add_argument(
+        "--quantile_uniform_features", nargs="*", default=[],
+        help="Override/add features for QuantileTransformer (uniform)"
+    )
+    parser.add_argument(
+        "--quantile_normal_features", nargs="*", default=[],
+        help="Override/add features for QuantileTransformer (normal)"
+    )
+    parser.add_argument(
+        "--power_yeojohnson_features", nargs="*", default=[],
+        help="Override/add features for PowerTransformer (Yeo-Johnson)"
+    )
+    parser.add_argument(
+        "--power_boxcox_features", nargs="*", default=[],
+        help="Override/add features for PowerTransformer (Box-Cox)"
+    )
+
+
+def build_scaler_map(args) -> dict:
+    """Build a mapping from features to their scaling methods based on user arguments."""
+    
+    DEFAULT_SCALER_MAP = {
+        "standard": [
+            "Humidity_mean", "Humidity_max", "Humidity_min"
+        ],
+        "robust": [
+            "CO2Level_mean", "CO2Level_max", "CO2Level_min",
+            "Temperature_mean", "Temperature_max", "Temperature_min",
+            "cloud_cover",              # Percentage (range: 0-100)
+            "precipitation",            # Heavily zero-inflated, left-skewed (range: 0-100)
+            "relative_humidity_2m",     # Percentage (range: 0-100)
+            "temperature_2m", 
+            "wind_speed_10m", "wind_speed_80m"
+        ],
+        "minmax": [
+            "_n_active_devices",        # Count variable, (range: 0-4)
+            "_std"                      # heavily zero-inflated, left-skewed (range differs per property)
+        ],
+        "maxabs": [],
+        "quantile_uniform": [],
+        "quantile_normal": [],
+        "power_yeojohnson": [],
+        "power_boxcox": [],
+    }
+    
+    scaler_map = {method: feats.copy() for method, feats in DEFAULT_SCALER_MAP.items()}
+    
+    method_to_arg = {
+        "standard":             args.standard_features,
+        "robust":               args.robust_features,
+        "minmax":               args.minmax_features,
+        "maxabs":               args.maxabs_features,
+        "quantile_uniform":     args.quantile_uniform_features,
+        "quantile_normal":      args.quantile_normal_features,
+        "power_yeojohnson":     args.power_yeojohnson_features,
+        "power_boxcox":         args.power_boxcox_features,
+    }
+    
+    all_features = [feat for feats in scaler_map.values() for feat in feats]
+    
+    # Apply overrides with exclusivity (support substring match)
+    for method, patterns in method_to_arg.items():
+        for pattern in patterns:
+            # Find all features that contain the pattern
+            matched_feats = [f for f in all_features if pattern in f]
+            
+            if not matched_feats:
+                # If no match, still treat as explicit feature name
+                matched_feats = [pattern]
+            
+            for feat in matched_feats:
+                # Remove from all groups first
+                for other_method in scaler_map:
+                    if feat in scaler_map[other_method]:
+                        scaler_map[other_method].remove(feat)
+                # Add to the new group (deduplicated)
+                if feat not in scaler_map[method]:
+                    scaler_map[method].append(feat)
+    
+    # Convert to {feature: method}
+    flat_map = {}
+    for method, feats in scaler_map.items():
+        for feat in feats:
+            flat_map[feat] = method
+    
+    return flat_map
+
+
+
+
+
+
 def add_LightGBM_args(parser):
     """
     Tabular‐specific arguments for LightGBM training/evaluation.
@@ -687,6 +800,8 @@ def add_LightGBM_args(parser):
 
 
 
+
+
 def parse_args():
     """Parse command-line arguments with model-specific parameters."""
     # Create the parser
@@ -697,6 +812,7 @@ def parse_args():
 
     # Parsing base modelling arguments
     add_base_modelling_args(parser)
+    add_normalization_args(parser)
     
     # Add model-specific arguments based on the model type
     temp_args, _ = parser.parse_known_args()
