@@ -505,7 +505,21 @@ def main():
     builder.run_spatial_pipeline(args=args)
     builder.run_temporal_pipeline(args=args)
     if args.make_and_save_plots:
+        # Temporal visualizer
         builder.run_visualizer_pipeline()
+        # Spatial visualizer
+        adj=builder.run_adjacency_pipeline(args=args, adjacency_type="weighted")
+        save_path = os.path.join(builder.plots_dir, "3D", "prop3D.html")
+        prop_plot = builder.create_building_propagation_visualization(
+            masked_adjacency_matrices=adj["full_masked_adj_matrices"],
+            output_file=save_path
+            )
+        save_path = os.path.join(builder.plots_dir, "3D", "outside3D.html")
+        outside_plot = builder.create_building_outside_adjacency_visualization(
+            outside_adjacency=adj["outside_adj_vector"],
+            output_file=save_path
+        )
+    
     builder.run_tabular_pipeline(args=args)
     builder.run_homograph_pipeline(args=args)
     builder.run_heterograph_pipeline(args=args)
