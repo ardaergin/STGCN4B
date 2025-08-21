@@ -668,7 +668,7 @@ def build_scaler_map(args) -> dict:
         ],
         "minmax": [
             "_n_active_devices",        # Count variable, (range: 0-4)
-            "_std"                      # heavily zero-inflated, left-skewed (range differs per property)
+            "_std",                     # heavily zero-inflated, left-skewed (range differs per property)
             "precipitation",            # Heavily zero-inflated, left-skewed (range: 0-100)
         ],
         "maxabs": [],
