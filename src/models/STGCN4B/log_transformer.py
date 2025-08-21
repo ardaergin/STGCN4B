@@ -94,7 +94,18 @@ class Heterogeneous(STGCNLogTransformer):
             Dict[int, HeteroData]: transformed snapshots.
         """
         log_features = log_features or []
-
+        
+        matched = [
+            fname
+            for names in feature_names.values()
+            for fname in names
+            if any(substr in fname for substr in log_features)
+        ]
+        logger.info(
+            "Log-transform features: %s",
+            matched if matched else "None (no matches found)"
+        )
+        
         out = {}
         for t, snapshot in x.items():
             out_snapshot = snapshot.clone()
@@ -103,24 +114,23 @@ class Heterogeneous(STGCNLogTransformer):
                     continue
                 arr = out_snapshot[nt].x.cpu().numpy()
                 names = feature_names.get(nt, [])
-
+                
                 processed_features = []
                 for i, feature_name in enumerate(names):
                     vals = arr[:, i].reshape(-1, 1)
                     apply_log = any(substr in feature_name for substr in log_features)
                     if apply_log:
                         vals = self.apply_log1p_safe(vals=vals)
-                        logger.info(f"Feature '{feature_name}': log1p applied.")
                     processed_features.append(vals)
-                                
+                
                 new_arr = np.hstack(processed_features).astype(np.float32)
                 out_snapshot[nt].x = torch.tensor(
                     data=new_arr,
                     device=out_snapshot[nt].x.device,
                     dtype=torch.float32
                 )
-
+            
             out[t] = out_snapshot
-
+        
         logger.info("Finished log-transforming heterogeneous features.")
         return out
