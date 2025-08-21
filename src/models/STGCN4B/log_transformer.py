@@ -12,28 +12,9 @@ class STGCNLogTransformer(ABC):
     """An abstract base class to log transform data for STGCN models."""
             
     @staticmethod
-    def apply_log1p_safe(vals: np.ndarray, feature_name: str) -> np.ndarray:
-        """
-        Safely apply log1p to an array, clipping negatives to 0 and logging if clipping occurs.
-        
-        Args:
-            vals: Input values (reshaped column).
-            feature_name: Name of the feature for logging.
-        
-        Returns:
-            Transformed values (with log1p).
-        """
-        neg_mask = vals < 0
-        if np.any(neg_mask):
-            n_neg = np.sum(neg_mask)
-            min_val = vals.min()
-            logger.info(
-                f"Feature '{feature_name}': {n_neg} negatives detected "
-                f"(min={min_val:.3f}), clipped to 0 before log1p."
-            )
-        vals = np.log1p(np.clip(vals, a_min=0, a_max=None))
-        logger.info(f"Feature '{feature_name}': log1p applied.")
-        return vals
+    def apply_log1p_safe(vals: np.ndarray) -> np.ndarray:
+        """Safely apply log1p to an array, clipping negatives to 0."""
+        return np.log1p(np.clip(vals, a_min=0, a_max=None))
 
     @abstractmethod
     def log_transform_features(
@@ -78,10 +59,8 @@ class Homogeneous(STGCNLogTransformer):
             vals = out[..., i].reshape(-1, 1)
             apply_log = any(substr in feature_name for substr in log_features)
             if apply_log:
-                vals = self.apply_log1p_safe(
-                    vals=vals, 
-                    feature_name=feature_name
-                )
+                vals = self.apply_log1p_safe(vals=vals)
+                logger.info(f"Feature '{feature_name}': log1p applied.")
             out[..., i] = vals.reshape(out[..., i].shape)
         logger.info("Finished log-transforming homogeneous features.")
         return out
@@ -130,10 +109,8 @@ class Heterogeneous(STGCNLogTransformer):
                     vals = arr[:, i].reshape(-1, 1)
                     apply_log = any(substr in feature_name for substr in log_features)
                     if apply_log:
-                        vals = self.apply_log1p_safe(
-                            vals=vals,
-                            feature_name=feature_name
-                        )
+                        vals = self.apply_log1p_safe(vals=vals)
+                        logger.info(f"Feature '{feature_name}': log1p applied.")
                     processed_features.append(vals)
                                 
                 new_arr = np.hstack(processed_features).astype(np.float32)
