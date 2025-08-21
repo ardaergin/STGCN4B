@@ -31,6 +31,8 @@ class STGCNNormalizer(ABC):
         Returns:
             An un-fitted sklearn scaler instance.
         """
+        if method == "none":
+            return None # do nothing
         if method == "standard":
             return StandardScaler(with_mean=True, with_std=True)
         elif method == "robust":
@@ -72,6 +74,10 @@ class STGCNNormalizer(ABC):
             train_mask (np.ndarray, optional): Mask to select valid targets.
             method (str): The scaling method to use.
         """
+        if method == "none":
+            self.target_scaler = None
+            logger.info("Target normalization disabled (method=none).")
+            return self
         if y_train_mask is not None:
             valid_targets = y_train[y_train_mask.astype(bool)]
         else:
@@ -88,7 +94,7 @@ class STGCNNormalizer(ABC):
     def transform_target(self, y: np.ndarray) -> np.ndarray:
         """Normalizes the target array using the fitted target scaler."""
         if self.target_scaler is None:
-            raise RuntimeError("Must call fit_target() before transforming.")
+            return y
         orig_shape = y.shape
         return self.target_scaler.transform(y.reshape(-1, 1)).reshape(orig_shape)
     
@@ -98,7 +104,7 @@ class STGCNNormalizer(ABC):
     ) -> Union[np.ndarray, torch.Tensor]:
         """Inverse-transforms predictions back to the original scale. This is crucial for evaluation."""
         if self.target_scaler is None:
-            raise RuntimeError("Must call fit_target() before inverse transforming.")
+            return predictions
         orig_shape = predictions.shape
         out = self.target_scaler.inverse_transform(
             predictions.reshape(-1, 1)

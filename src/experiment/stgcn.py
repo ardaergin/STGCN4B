@@ -140,14 +140,18 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         scaler_map = build_scaler_map(args)
         
         # Features
-        normalizer.fit_features(
-            x_train                 = train_feature_slice,
-            feature_names           = self.input_dict["feature_names"],
-            features_to_skip_norm   = args.features_to_skip_norm,
-            default_method          = args.default_norm_method,
-            scaler_map              = scaler_map,
-        )
-        norm_features = normalizer.transform_features(x=all_X)
+        if args.no_norm_features:
+            logger.info("Feature normalization disabled (no_norm_features=True).")
+            norm_features = all_X
+        else:
+            normalizer.fit_features(
+                x_train                 = train_feature_slice,
+                feature_names           = self.input_dict["feature_names"],
+                features_to_skip_norm   = args.features_to_skip_norm,
+                default_method          = args.default_norm_method,
+                scaler_map              = scaler_map,
+            )
+            norm_features = normalizer.transform_features(x=all_X)
         
         # Subclass-specific logging
         self._log_normalization_stats(x=norm_features)

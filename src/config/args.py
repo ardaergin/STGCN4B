@@ -594,13 +594,21 @@ def add_normalization_args(parser):
         help='List of (sub-)strings for feature names that should NOT be normalized.'
     )
     parser.add_argument(
+        '--no_norm_features',
+        action='store_true',
+        help='If set, disables all feature normalization (overrides --features_to_skip_norm).'
+    )
+
+    parser.add_argument(
         "--y_norm_method",
         type=str,
         default="robust",
         choices=[
-            "standard", "robust", "minmax", "maxabs", 
+            "none",
+            "standard", "robust", 
+            "minmax", "maxabs", 
             "quantile_uniform", "quantile_normal", 
-            "power_yeojohnson", "power_boxcox"
+            "power_yeojohnson", "power_boxcox",
         ],
         help="Normalization method for the target variable."
     )
