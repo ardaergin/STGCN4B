@@ -574,7 +574,7 @@ def add_normalization_args(parser):
     parser.add_argument(
         "--features_to_log_transform",
         nargs="*",
-        default=[],
+        default=["_std", "precipitation"],
         help="List of substrings for feature names to log-transform before normalization."
     )
     
