@@ -570,6 +570,15 @@ def build_channel_dicts(args, property_types: list[str]) -> tuple[dict, dict]:
 
 def add_normalization_args(parser):
     """Add arguments related to normalizing features."""
+    # Log-transform
+    parser.add_argument(
+        "--features_to_log_transform",
+        nargs="*",
+        default=[],
+        help="List of substrings for feature names to log-transform before normalization."
+    )
+    
+    # Normalization
     parser.add_argument(
         '--features_to_skip_norm', 
         nargs='*', 

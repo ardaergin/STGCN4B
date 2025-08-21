@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 from copy import deepcopy
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, List, Tuple, Optional, Union
 from argparse import Namespace
 from collections import defaultdict
 from abc import ABC, abstractmethod
@@ -24,6 +24,11 @@ from ..preparation.preparer import Heterogeneous as HeterogeneousSTGCNDataPrepar
 from ..models.STGCN4B.normalizer import STGCNNormalizer
 from ..models.STGCN4B.normalizer import Homogeneous as HomogeneousSTGCNNormalizer
 from ..models.STGCN4B.normalizer import Heterogeneous as HeterogeneousSTGCNNormalizer
+# Log Transformers
+from ..models.STGCN4B.log_transformer import (
+    Homogeneous as HomogeneousSTGCNLogTransformer,
+    Heterogeneous as HeterogeneousSTGCNLogTransformer
+)
 # Data Loaders
 from ..models.STGCN4B.loader import get_data_loaders
 # Models
@@ -43,15 +48,20 @@ import logging; logger = logging.getLogger(__name__)
 class STGCNExperimentRunner(BaseExperimentRunner, ABC):
     def __init__(self, args: Any):        
         super().__init__(args)
-
+    
     @abstractmethod
     def _get_data_preparer_class(self) -> Any:
         pass
-
+    
+    @abstractmethod
+    def _get_log_transformer_class(self) -> Any:
+        """Return the log-transformer class (Homogeneous or Heterogeneous)."""
+        pass
+    
     @abstractmethod
     def _get_normalizer_class(self) -> Any:
         pass
-
+    
     def _prepare_data(self) -> Dict[str, Any]:
         logger.info("Handling data preparation for STGCN...")
         data_preparer_cls = self._get_data_preparer_class()
@@ -70,14 +80,48 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         pass
 
     @abstractmethod
-    def _slice_train_features(self, train_indices: List[int]) -> Any:
+    def _slice_train_features(
+            self, 
+            all_X: Union[np.ndarray, Dict[int, HeteroData]],
+            train_indices: List[int]
+    ) -> Union[np.ndarray, Dict[int, HeteroData]]:
         """Slices the feature data for training."""
         pass
+    
+    def _log_transform_all_X(
+            self,
+            args: Namespace,
+            all_X: Union[np.ndarray, Dict[int, HeteroData]],
+    ) -> Any:
+        """
+        Applies log-transform to all features.
+        
+        Note:
+        - Since log1p transformation does not cause any leakage,
+        so it does not needs to be done per split. This was just the easiest way to implement.
+        It does indeed cause more compuation, but probably negligable. 
+        I want to change it in the future.
+                
+        Returns:
+            Log-transformed features.
+        """
+        log_transformer_cls = self._get_log_transformer_class()
+        log_transformer = log_transformer_cls()
+
+        log_features = log_transformer.log_transform_features(
+            x               = all_X,
+            feature_names   = self.input_dict["feature_names"],
+            log_features    = args.features_to_log_transform
+        )
+
+        logger.info("Completed log-transform on all features.")
+        return log_features
     
     def _normalize_split(
             self, 
             args: Namespace,
             train_block_ids: List[int],
+            all_X: Union[np.ndarray, Dict[int, HeteroData]],
     ) -> Tuple[np.ndarray, np.ndarray, STGCNNormalizer]:
         """
         Normalizes the feature and target arrays for a given split.
@@ -88,7 +132,7 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         """
         # 1. Get train indices and slice arrays to fit the normalizer
         train_indices = self.splitter._get_indices_from_blocks(train_block_ids)
-        train_feature_slice = self._slice_train_features(train_indices)
+        train_feature_slice = self._slice_train_features(all_X=all_X, train_indices=train_indices)
         
         # 3. Fit normalizer and transform
         normalizer_cls = self._get_normalizer_class()
@@ -103,7 +147,7 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
             default_method          = args.default_norm_method,
             scaler_map              = scaler_map,
         )
-        norm_features = normalizer.transform_features(x=self.all_X)
+        norm_features = normalizer.transform_features(x=all_X)
         
         # Subclass-specific logging
         self._log_normalization_stats(x=norm_features)
@@ -155,8 +199,19 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         But, imputation should be in-place to save memory, 
         since we would have already copied while normalizing.
         """
-        # Normalization & Imputation
-        norm_features, norm_target_array, normalizer = self._normalize_split(args, train_block_ids)
+        # Access the data
+        all_X = self.all_X
+        
+        # Log transform (does not alter self.all_X)
+        all_X = self._log_transform_all_X(args=args, all_X=all_X) 
+        
+        # Normalization
+        norm_features, norm_target_array, normalizer = self._normalize_split(
+            args=args, 
+            train_block_ids=train_block_ids,
+            all_X=all_X)
+        
+        # Imputation
         features, target_array = self._impute_split(norm_features, norm_target_array)
         
         # Load the processed arrays into tensors
@@ -341,6 +396,9 @@ class Homogeneous(STGCNExperimentRunner):
     def _get_data_preparer_class(self):
         return HomogeneousSTGCNDataPreparer
 
+    def _get_log_transformer_class(self):
+        return HomogeneousSTGCNLogTransformer
+
     def _get_normalizer_class(self):
         return HomogeneousSTGCNNormalizer
 
@@ -353,9 +411,9 @@ class Homogeneous(STGCNExperimentRunner):
         """Returns the homogeneous feature array."""
         return self.input_dict["feature_array"]
     
-    def _slice_train_features(self, train_indices: List[int]) -> np.ndarray:
+    def _slice_train_features(self, all_X: np.ndarray, train_indices: List[int]) -> np.ndarray:
         """Slices the homogeneous feature array using the 'all_X' property."""
-        return self.all_X[train_indices]
+        return all_X[train_indices]
     
     def _log_normalization_stats(self, x: np.ndarray):
         """Logs per-feature statistics for the normalized homogeneous feature array."""
@@ -539,6 +597,9 @@ class Heterogeneous(STGCNExperimentRunner):
     def _get_data_preparer_class(self):
         return HeterogeneousSTGCNDataPreparer
     
+    def _get_log_transformer_class(self):
+        return HeterogeneousSTGCNLogTransformer
+
     def _get_normalizer_class(self):
         return HeterogeneousSTGCNNormalizer
     
@@ -554,12 +615,12 @@ class Heterogeneous(STGCNExperimentRunner):
         """
         return self.input_dict["temporal_graphs"]
 
-    def _slice_train_features(self, train_indices: List[int]) -> Dict[int, HeteroData]:
+    def _slice_train_features(self, all_X: Dict[int, HeteroData], train_indices: List[int]) -> Dict[int, HeteroData]:
         """
         Slices the dictionary of graphs by creating a new dictionary containing
         only the keys (time indices) present in the training split.
         """
-        return {idx: self.all_X[idx] for idx in train_indices}
+        return {idx: all_X[idx] for idx in train_indices}
     
     def _log_normalization_stats(self, x: Dict[int, HeteroData]):
         """Logs per-feature statistics for the normalized heterogeneous graph snapshots."""
