@@ -156,21 +156,30 @@ class BaseExperimentRunner(ABC):
             setattr(final_params, key, value)
         
         # Train and evaluate the final model using the best hyperparameters
-        all_train_block_ids = self.splitter.train_block_ids
-        test_block_ids = self.splitter.test_block_ids
 
+        ## Get train (and optionally validation)
+        if getattr(self.args, "use_validation_in_final", False):
+            train_block_ids, val_block_ids = self.splitter.get_final_train_valid_split()
+            epochs_for_final=None
+        else:
+            train_block_ids = self.splitter.train_block_ids
+            val_block_ids = []
+            epochs_for_final=the_best_epoch
+        ## Get test
+        test_block_ids = self.splitter.test_block_ids
+        
         # Setup final model
         logger.info("Setting up the final model with the best hyperparameters...")
         model = self._setup_model(args=final_params)
-
+        
         # Train and evaluate the final model
         trained_model, history, metrics, model_outputs = self._train_and_evaluate_final_model(
             model               = model,
             final_params        = final_params, 
-            epochs              = the_best_epoch,
+            epochs              = epochs_for_final,
             threshold           = optimal_thr,
-            train_block_ids     = all_train_block_ids, 
-            val_block_ids       = [],
+            train_block_ids     = train_block_ids, 
+            val_block_ids       = val_block_ids,
             test_block_ids      = test_block_ids
         )
 

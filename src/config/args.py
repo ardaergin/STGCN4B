@@ -3,19 +3,7 @@ import argparse
 
 
 def add_OfficeGraph_args(parser):
-    """
-    Parse OfficeGraph arguments.
-    
-    Related with the code of the following classes:
-        - OfficeGraph, with following mixins:
-            - OfficeGraphExtractor
-        - OfficeGraphBuilder, with following mixins:
-            - TemporalBuilderMixin
-            - SpatialBuilderMixin
-            - HomoGraphBuilderMixin
-            - HeteroGraphBuilderMixin
-            - TabularBuilderMixin
-    """    
+    """Parse OfficeGraph arguments."""
     ##############################
     #  Seed
     ##############################
@@ -261,14 +249,20 @@ def add_base_modelling_args(parser):
                         default=50, 
                         help='Number of epochs')
     parser.add_argument('--final_epoch_multiplier', type=float, 
-                        default=1.2, 
+                        default=1.1,
                         help='Multiply the optimal epochs with this factor for the final training.')
+    
+    parser.add_argument(
+        "--use_validation_in_final",
+        action="store_true",
+        help="If set, use a held-out validation split for the final training run (instead of training on all train blocks)."
+    )
     
     # Stratified data splitting
     parser.add_argument('--stratum_size', type=int, 
                         default=5, 
                         help='Number of blocks per stratum for the data splitter.')
-
+    
     # Features to drop
     parser.add_argument('--features_to_drop', type=str, nargs='*',
                         default=[],

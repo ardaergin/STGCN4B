@@ -85,10 +85,11 @@ class StratifiedBlockSplitter:
         # Seed
         self.seed = seed
         seed_seq = np.random.SeedSequence(self.seed)
-        child_seeds = seed_seq.spawn(2)
+        child_seeds = seed_seq.spawn(3)
         self.train_test_rng = np.random.default_rng(child_seeds[0])
-        self.validation_rng = np.random.default_rng(child_seeds[1])
-
+        self.cv_rng = np.random.default_rng(child_seeds[1])
+        self.final_validation_rng = np.random.default_rng(child_seeds[2])
+        
         # Strata
         self.stratum_size = stratum_size 
         self.n_train_in_strata = stratum_size - 2 # i.e., - 1 test block - 1 val block
@@ -216,7 +217,7 @@ class StratifiedBlockSplitter:
         # --- Process full strata ---
         # For each full stratum, shuffle the available blocks and assign one to each fold
         for stratum_label, cv_blocks in full_cv_strata.items():
-            self.validation_rng.shuffle(cv_blocks) # Randomize the block order
+            self.cv_rng.shuffle(cv_blocks) # Randomize the block order
             
             for k in range(self.n_splits):
                 val_block = cv_blocks[k]
@@ -235,7 +236,7 @@ class StratifiedBlockSplitter:
             )
             for block in incomplete_cv_blocks:
                 # Randomly pick a fold for this block to be in validation
-                val_fold_idx = self.validation_rng.choice(self.n_splits)
+                val_fold_idx = self.cv_rng.choice(self.n_splits)
                 
                 # Assign this block to the validation set of the chosen fold
                 all_folds[val_fold_idx]["val_block_ids"].append(block)
@@ -259,6 +260,58 @@ class StratifiedBlockSplitter:
         logger.info(f"Successfully created, stored, and saved {len(self.CV_splits)} randomized CV folds.")
 
         return None
+
+    def get_final_train_valid_split(self) -> Tuple[List[int], List[int]]:
+        """
+        Creates a final train/validation split by resampling from the CV validation sets.
+
+        This method implements a structured sampling strategy to preserve stratification.
+        It assumes all CV validation sets are of the same length and sorted. 
+        
+        For each index `i`, it creates a pool of candidate blocks (the i-th block from each CV
+        validation set) and randomly selects one to be in the final validation set.
+        This ensures the final validation set has one block from each stratum, just
+        like the CV folds.
+
+        You must call `.get_cv_splits()` before this method.
+
+        Returns:
+            A tuple containing (final_train_block_ids, final_val_block_ids).
+        """
+        if self.train_block_ids is None or self.CV_splits is None:
+            raise RuntimeError("You must call .get_train_test_split() and .get_cv_splits() first.")
+        
+        # Validation checks
+        val_lengths = [len(fold["val_block_ids"]) for fold in self.CV_splits]
+        if not all(length == val_lengths[0] for length in val_lengths):
+            raise ValueError("All CV validation sets must have the same length.")
+        
+        num_val_blocks_per_fold = val_lengths[0]
+        if num_val_blocks_per_fold == 0:
+            raise ValueError("CV validation sets are empty")
+        
+        final_val_block_ids = []
+        logger.info("Constructing final validation set by resampling across CV folds...")
+        
+        # Structured Resampling Logic ---
+        for i in range(num_val_blocks_per_fold):
+            candidate_blocks = [fold["val_block_ids"][i] for fold in self.CV_splits]
+            chosen_block = self.final_validation_rng.choice(candidate_blocks, size=1)[0]
+            final_val_block_ids.append(chosen_block)
+        
+        # The final training set is everything in the initial training pool minus our new validation set.
+        final_train_ids = sorted(list(np.setdiff1d(self.train_block_ids, final_val_block_ids)))
+        final_val_ids = sorted(final_val_block_ids) # Sort for consistency
+        
+        logger.info(
+            f"Created final split via resampling: {len(final_train_ids)} train blocks, "
+            f"{len(final_val_ids)} validation blocks."
+        )
+        
+        # Save
+        self._save_block_split("final", final_train_ids, final_val_ids, [])
+        
+        return final_train_ids, final_val_ids
     
     def get_single_split(self) -> Tuple[List[int], List[int]]:
         """
@@ -288,10 +341,10 @@ class StratifiedBlockSplitter:
             else:
                 if available_blocks.size == 1:
                     probability_of_inclusion = 1 / (self.stratum_size - 1)
-                    if self.validation_rng.random() < probability_of_inclusion:
+                    if self.final_validation_rng.random() < probability_of_inclusion:
                         val_block_ids.append(available_blocks[0])
                 else:
-                    val_sample = self.validation_rng.choice(available_blocks, size=1, replace=False)[0]
+                    val_sample = self.final_validation_rng.choice(available_blocks, size=1, replace=False)[0]
                     val_block_ids.append(val_sample)
 
         # The final training set is the main training set minus the new validation set.
