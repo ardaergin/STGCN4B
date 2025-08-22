@@ -44,11 +44,11 @@ def train_model(
     criterion = get_criterion(args, train_loader, device)
     
     # Instantiate training history
-    train_metric        = "logloss" if args.task_type == "workhour_classification" else "mse"
+    train_metric        = "logloss" if args.task_type == "workhour_classification" else args.forecast_loss_func
     train_objective     = "minimize"
     optuna_metric, optuna_objective = None, None
     if trial:
-        optuna_metric       = "auc" if args.task_type == "workhour_classification" else "mse"
+        optuna_metric       = "auc" if args.task_type == "workhour_classification" else args.forecast_loss_func
         optuna_objective    = "maximize" if args.task_type == "workhour_classification" else "minimize"
     history = TrainingHistory(
         train_metric    = train_metric, 
@@ -557,8 +557,15 @@ def get_criterion(args: Any, train_loader: torch.utils.data.DataLoader, device: 
         pos_weight = torch.tensor(n_neg / n_pos if n_pos > 0 else 1.0, device=device)
         logger.info(f"Using BCEWithLogitsLoss with pos_weight: {pos_weight.item():.2f}")
         return nn.BCEWithLogitsLoss(pos_weight=pos_weight)
-    else:
-        return MaskedMSELoss()
+    else:  # Forecasting tasks
+        if args.forecast_loss_func == "mae":
+            logger.info("Using MaskedMAELoss")
+            return MaskedMAELoss()
+        elif args.forecast_loss_func == "mse":
+            logger.info("Using MaskedMSELoss")
+            return MaskedMSELoss()
+        else:
+            raise ValueError(f"Unknown loss type: {args.forecast_loss_func}")
 
 class MaskedMSELoss(nn.Module):
     def forward(self, preds, targets, mask):
@@ -569,6 +576,14 @@ class MaskedMSELoss(nn.Module):
             return torch.sum(masked_squared_error) / num_valid_points
         return torch.sum(preds * 0.0)
 
+class MaskedMAELoss(nn.Module):
+    def forward(self, preds, targets, mask):
+        error = torch.abs(preds - targets)
+        masked_abs_error = error * mask
+        num_valid_points = torch.sum(mask)
+        if num_valid_points > 0:
+            return torch.sum(masked_abs_error) / num_valid_points
+        return torch.sum(preds * 0.0)
 
 def compute_delta_bin_metrics(
         delta_t: np.ndarray,

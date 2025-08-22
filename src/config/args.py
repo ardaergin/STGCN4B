@@ -302,6 +302,14 @@ def add_base_modelling_args(parser):
                         default=90,
                         help="Maximum duration for a single epoch in seconds, for pruning slow trials. "
                             "Pruning starts after the first epoch, to accomodate for compiling the model.")
+    
+    parser.add_argument(
+        "--forecast_loss_func",
+        type=str,
+        default="mse",
+        choices=["mse", "mae"],
+        help="Loss function to use for forecasting tasks (default: mse)."
+    )
 
 
 def add_STGCN_args(parser):
