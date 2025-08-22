@@ -1,5 +1,5 @@
 import time
-from typing import Tuple, Dict, Any, Union
+from typing import Tuple, Dict, Any, Union, List, Optional
 import torch
 import torch.nn as nn
 import numpy as np
@@ -379,6 +379,7 @@ def evaluate_model(
     
     # Calculate per-horizon metrics on original scale
     per_horizon_metrics = {}
+    per_horizon_bin_metrics = {}
     for h, horizon in enumerate(args.forecast_horizons):
         if not preds_norm_per_h[h]:          # no valid data → skip
             logger.warning(f"No valid targets for horizon {horizon}.")
@@ -400,8 +401,9 @@ def evaluate_model(
             p   = src + p
             t   = src + t
         
+        # Standard metrics
         h_reg_results = regression_results(t, p)
-
+        
         per_horizon_metrics[f"h_{horizon}"] = {
             "mse": h_reg_results["mse"], 
             "rmse": h_reg_results["rmse"], 
@@ -417,6 +419,11 @@ def evaluate_model(
             f"R²={h_reg_results['r2']:.4f} | "
             f"MAPE={h_reg_results['mape']:.2f}%"
         )
+        
+        # Bin-conditioned metrics
+        std_h = np.std(t)
+        h_bin_metrics = compute_bin_metrics(t, p, std=std_h, horizon=horizon)
+        per_horizon_bin_metrics[f"h_{horizon}"] = h_bin_metrics
     
     if not per_horizon_metrics: # Nothing to evaluate
         logger.warning("No valid targets in the entire test set.")
@@ -467,32 +474,17 @@ def evaluate_model(
                 f"R²={reg_results['r2']:.4f} | "
                 f"MAPE={reg_results['mape']:.2f}%")
 
-    # ----- Bin-conditioned errors (e.g. <2σ vs ≥2σ) -----
-    sigma = np.std(all_t)
-    mask_extreme = np.abs(all_t) >= 2 * sigma
-    mask_normal  = ~mask_extreme
+    # ----- Bin-conditioned results -----
+    std = np.std(all_t)
+    bin_metrics = compute_bin_metrics(all_t, all_p, std=std, horizon=None)
 
-    bin_metrics = {}
-    if mask_normal.any():
-        bin_metrics["normal"] = regression_results(all_t[mask_normal], all_p[mask_normal])
-    if mask_extreme.any():
-        bin_metrics["extreme"] = regression_results(all_t[mask_extreme], all_p[mask_extreme])
-
-    if "normal" in bin_metrics:
-        n = bin_metrics["normal"]
-        logger.info(f"Normal (< 2 sigma): "
-                    f"MSE={n['mse']:.4f} | RMSE={n['rmse']:.4f} | MAE={n['mae']:.4f} | R²={n['r2']:.4f}")
-    if "extreme" in bin_metrics:
-        e = bin_metrics["extreme"]
-        logger.info(f"Extreme (> 2 sigma): "
-                    f"MSE={e['mse']:.4f} | RMSE={e['rmse']:.4f} | MAE={e['mae']:.4f} | R²={e['r2']:.4f}")
-    
     metrics = {
         **reg_results,
+        "bin_metrics": bin_metrics,
         "per_horizon_metrics": per_horizon_metrics,
-        "bin_metrics": bin_metrics
+        "per_horizon_bin_metrics": per_horizon_bin_metrics,
     }
-        
+    
     model_output = {
         "predictions": all_p,
         "targets": all_t,
@@ -573,3 +565,60 @@ class MaskedMSELoss(nn.Module):
         if num_valid_points > 0:
             return torch.sum(masked_squared_error) / num_valid_points
         return torch.sum(preds * 0.0)
+
+def compute_bin_metrics(
+        t:          np.ndarray, 
+        p:          np.ndarray, 
+        std:        float, 
+        bins:       List[Tuple[Optional[float], Optional[float]]] = None,
+        horizon:    Optional[int] = None
+) -> Dict[str, Dict[str, float]]:
+    """
+    Compute regression metrics conditioned on bins of |t| / std.
+
+        Args:
+        t (np.ndarray): targets
+        p (np.ndarray): predictions
+        std (float): standard deviation of targets
+        bins (list): list of (low, high) bin edges in units of std.
+                     Use None for open-ended (e.g. (3, None) means ≥ 3 std).
+        horizon (int): optional horizon for logging
+
+    Returns:
+        dict: {bin_label -> regression_results}
+    """
+    if bins is None:
+        bins = [(0,1), (1,2), (2,3), (3,None)]
+    
+    abs_t = np.abs(t)
+    bin_metrics = {}
+    
+    for low, high in bins:
+        if high is None:
+            mask = abs_t >= low * std
+            label = f"≥{low} std"
+        else:
+            mask = (abs_t >= low * std) & (abs_t < high * std)
+            label = f"{low}-{high} std"
+
+        if mask.any():
+            m = regression_results(t[mask], p[mask])
+            bin_metrics[label] = {
+                **m,
+                "n": int(mask.sum()),
+                "low": low,
+                "high": high,
+            }
+            if horizon is not None:
+                logger.info(
+                    f"   Horizon {horizon} | {label} (n={mask.sum()}): "
+                    f"MSE={m['mse']:.4f} | RMSE={m['rmse']:.4f} | "
+                    f"MAE={m['mae']:.4f} | R²={m['r2']:.4f}"
+                )
+            else:
+                logger.info(
+                    f"   Overall | {label} (n={mask.sum()}): "
+                    f"MSE={m['mse']:.4f} | RMSE={m['rmse']:.4f} | "
+                    f"MAE={m['mae']:.4f} | R²={m['r2']:.4f}"
+                )
+    return bin_metrics

@@ -202,24 +202,49 @@ class ResultHandler:
         plt.savefig(out, dpi=300, bbox_inches="tight")
         plt.close()
         logger.info("Saved forecasting time‑series → %s", out)
-
+    
     def _save_forecasting_metrics(self) -> None:
         out = self.output_dir / "forecasting_metrics.txt"
-        lines = [
-            f"MSE:  {self.metrics['mse']:.6f}",
-            f"RMSE: {self.metrics['rmse']:.6f}",
-            f"MAE:  {self.metrics['mae']:.6f}",
-            f"R²:   {self.metrics['r2']:.6f}",
-            f"MAPE: {self.metrics['mape']:.2f}%",
-        ]
+        lines: list[str] = []
+        
+        # --- Overall metrics ---
+        lines.append("Overall metrics:")
+        lines.append(f"  MSE:   {self.metrics['mse']:.6f}")
+        lines.append(f"  RMSE:  {self.metrics['rmse']:.6f}")
+        lines.append(f"  MAE:   {self.metrics['mae']:.6f}")
+        lines.append(f"  R²:    {self.metrics['r2']:.6f}")
+        lines.append(f"  MAPE:  {self.metrics['mape']:.2f}%")
+        lines.append("")
+        
+        # --- Overall bin-conditioned metrics ---
+        if "bin_metrics" in self.metrics:
+            lines.append("Overall bin-conditioned metrics:")
+            for label, vals in self.metrics["bin_metrics"].items():
+                vals_fmt = ", ".join(f"{k}={v:.4f}" for k, v in vals.items() if k not in {"n","low","high"})
+                lines.append(f"  {label} (n={vals['n']}): {vals_fmt}")
+            lines.append("")
+        
+        # --- Per-horizon metrics ---
         if "per_horizon_metrics" in self.metrics:
-            lines.append("\nPer‑horizon metrics:")
+            lines.append("Per-horizon metrics:")
             for h, vals in self.metrics["per_horizon_metrics"].items():
                 vals_fmt = ", ".join(f"{k}={v:.4f}" for k, v in vals.items())
                 lines.append(f"  {h}: {vals_fmt}")
+            lines.append("")
+        
+        # --- Per-horizon bin-conditioned metrics ---
+        if "per_horizon_bin_metrics" in self.metrics:
+            lines.append("Per-horizon bin-conditioned metrics:")
+            for h, bins in self.metrics["per_horizon_bin_metrics"].items():
+                lines.append(f"  {h}:")
+                for label, vals in bins.items():
+                    vals_fmt = ", ".join(f"{k}={v:.4f}" for k, v in vals.items() if k not in {"n","low","high"})
+                    lines.append(f"    {label} (n={vals['n']}): {vals_fmt}")
+            lines.append("")
+        
         out.write_text("\n".join(lines))
         logger.info("Wrote forecasting metrics → %s", out)
-
+    
     # ------------------------------------------------------------------
     # Classification helpers
     # ------------------------------------------------------------------
