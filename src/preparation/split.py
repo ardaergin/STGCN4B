@@ -264,7 +264,7 @@ class StratifiedBlockSplitter:
     def get_final_train_valid_split(self) -> Tuple[List[int], List[int]]:
         """
         Creates a final train/validation split by resampling from the CV validation sets.
-
+        
         This method implements a structured sampling strategy to preserve stratification.
         It assumes all CV validation sets are of the same length and sorted. 
         
@@ -272,36 +272,37 @@ class StratifiedBlockSplitter:
         validation set) and randomly selects one to be in the final validation set.
         This ensures the final validation set has one block from each stratum, just
         like the CV folds.
-
+        
         You must call `.get_cv_splits()` before this method.
-
+        
         Returns:
             A tuple containing (final_train_block_ids, final_val_block_ids).
         """
         if self.train_block_ids is None or self.CV_splits is None:
             raise RuntimeError("You must call .get_train_test_split() and .get_cv_splits() first.")
-        
-        # Validation checks
         val_lengths = [len(fold["val_block_ids"]) for fold in self.CV_splits]
-        if not all(length == val_lengths[0] for length in val_lengths):
-            raise ValueError("All CV validation sets must have the same length.")
+        if any(length == 0 for length in val_lengths):
+            raise ValueError("At least one CV validation set is empty")
         
-        num_val_blocks_per_fold = val_lengths[0]
-        if num_val_blocks_per_fold == 0:
-            raise ValueError("CV validation sets are empty")
-        
-        final_val_block_ids = []
-        logger.info("Constructing final validation set by resampling across CV folds...")
+        # Instead of requiring equal lengths, use the minimum
+        min_val_blocks_per_fold = min(val_lengths)
+        max_val_blocks_per_fold = max(val_lengths)
+        logger.info(
+            f"Constructing final validation set by resampling across CV folds.\n"
+            f"- Min length across CV folds: {min_val_blocks_per_fold}.\n"
+            f"- Max length across CV folds: {max_val_blocks_per_fold}."
+        )
         
         # Structured Resampling Logic ---
-        for i in range(num_val_blocks_per_fold):
+        final_val_block_ids = []        
+        for i in range(min_val_blocks_per_fold):
             candidate_blocks = [fold["val_block_ids"][i] for fold in self.CV_splits]
             chosen_block = self.final_validation_rng.choice(candidate_blocks, size=1)[0]
             final_val_block_ids.append(chosen_block)
         
         # The final training set is everything in the initial training pool minus our new validation set.
         final_train_ids = sorted(list(np.setdiff1d(self.train_block_ids, final_val_block_ids)))
-        final_val_ids = sorted(final_val_block_ids) # Sort for consistency
+        final_val_ids = sorted(final_val_block_ids)
         
         logger.info(
             f"Created final split via resampling: {len(final_train_ids)} train blocks, "
