@@ -34,10 +34,18 @@ class LGBMTrainer:
                 is_unbalance = True,
             )
         else: # Forecasting tasks
-            self.model_params.update(
-                objective = "regression_l1", # mae
-                metric    = "l1",
-            )
+            if args.forecast_loss_func == "mae":
+                self.model_params.update(
+                    objective = "regression_l1", # mae
+                    metric    = "l1",
+                )
+            elif args.forecast_loss_func == "mse":
+                self.model_params.update(
+                    objective = "regression_l2", # mse
+                    metric    = "l2",
+                )
+            # For use in train_model
+            self.forecast_loss_func = args.forecast_loss_func
 
     def train_model(
         self,
@@ -98,9 +106,9 @@ class LGBMTrainer:
         # Instantiate training history
         history = TrainingHistory.from_lgbm(
             model.evals_result_,
-            train_metric    = "logloss" if self.args.task_type == "workhour_classification" else "mae",
+            train_metric    = "logloss" if self.args.task_type == "workhour_classification" else self.forecast_loss_func,
             train_objective = "minimize",
-            optuna_metric   = ("auc" if self.args.task_type == "workhour_classification" else "mae") if training_mode=="hpo" else None,
+            optuna_metric   = ("auc" if self.args.task_type == "workhour_classification" else self.forecast_loss_func) if training_mode=="hpo" else None,
             optuna_objective= ("maximize" if self.args.task_type == "workhour_classification" else "minimize") if training_mode=="hpo" else None,
         )
 
