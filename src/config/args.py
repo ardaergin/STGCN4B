@@ -651,6 +651,11 @@ def add_normalization_args(parser):
         "--power_boxcox_features", nargs="*", default=[],
         help="Override/add features for PowerTransformer (Box-Cox)"
     )
+    parser.add_argument(
+        "--plot-norm-dists",
+        action="store_true",
+        help="Whether to plot distributions of normalized features/targets."
+    )
 
 
 def build_scaler_map(args) -> dict:

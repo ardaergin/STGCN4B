@@ -1,9 +1,9 @@
 #!/usr/bin/env python
 
+import os
 from copy import deepcopy
 from typing import Any, Dict, List, Tuple, Optional, Union
 from argparse import Namespace
-from collections import defaultdict
 from abc import ABC, abstractmethod
 import numpy as np
 import torch
@@ -136,7 +136,13 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         
         # 3. Fit normalizer and transform
         normalizer_cls = self._get_normalizer_class()
-        normalizer = normalizer_cls()
+        if args.plot_norm_dists and args.run_mode!="single_run":
+            logger.info(
+                "Disabling distribution plotting (only allowed in single_run mode to avoid spamming)."
+            )
+            args.plot_norm_dists = False
+        norm_dists_plot_dir = os.path.join(args.output_dir, "norm_dists")
+        normalizer = normalizer_cls(plot_dist=args.plot_norm_dists, plot_dir=norm_dists_plot_dir)
         scaler_map = build_scaler_map(args)
         
         # Features
@@ -171,7 +177,7 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         normalizer._get_target_stats(y=norm_target)
         
         return norm_features, norm_target, normalizer
-            
+    
     @abstractmethod
     def _load_data_to_tensors(self, features: Any, targets: np.ndarray) -> Dict[str, Any]:
         """

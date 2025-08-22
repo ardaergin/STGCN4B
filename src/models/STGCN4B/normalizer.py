@@ -1,3 +1,4 @@
+import os
 from abc import ABC, abstractmethod
 from typing import Union, List, Dict
 from collections import defaultdict
@@ -9,6 +10,8 @@ from sklearn.preprocessing import (
     StandardScaler, RobustScaler, MinMaxScaler,
     MaxAbsScaler, QuantileTransformer, PowerTransformer
 )
+import matplotlib.pyplot as plt
+import seaborn as sns
 
 import logging; logger = logging.getLogger(__name__)
 
@@ -21,9 +24,15 @@ class STGCNNormalizer(ABC):
     implementation for target normalization, which is shared across different
     graph types.
     """
-    def __init__(self):
+    def __init__(self, plot_dist: bool = False, plot_dir: str = None):
         self.target_scaler = None
-        
+
+        # Plotting
+        self.plot_dist = plot_dist
+        self.plot_dir = plot_dir
+        if self.plot_dir:
+            os.makedirs(self.plot_dir, exist_ok=True)
+    
     @staticmethod
     def _get_scaler(method: str):
         """
@@ -75,9 +84,9 @@ class STGCNNormalizer(ABC):
     ) -> "STGCNNormalizer":
         """
         Args:
-            y_train (np.ndarray): Training target array.
-            train_mask (np.ndarray, optional): Mask to select valid targets.
-            method (str): The scaling method to use.
+            y_train: Training target array.
+            y_train_mask: Mask to select valid targets.
+            method: The scaling method to use.
         """
         if method == "none":
             self.target_scaler = None
@@ -107,7 +116,7 @@ class STGCNNormalizer(ABC):
             self, 
             predictions: Union[np.ndarray, torch.Tensor]
     ) -> Union[np.ndarray, torch.Tensor]:
-        """Inverse-transforms predictions back to the original scale. This is crucial for evaluation."""
+        """Inverse-transforms predictions back to the original scale."""
         if self.target_scaler is None:
             return predictions
         orig_shape = predictions.shape
@@ -123,34 +132,67 @@ class STGCNNormalizer(ABC):
         logger.info(f"Normalized target shape: {y.shape}")
         logger.info("Normalized target stats:")
         
-        # Assuming shape (T, H) or (T, N, H) depending on horizon setup
+        # (T, H) or (T, N, H) depending on task
         if y.ndim == 2:  # (time, horizon)
-            min_val = np.nanmin(y)
-            max_val = np.nanmax(y)
-            mean_val = np.nanmean(y)
-            std_val = np.nanstd(y)
-            
-            logger.info(
-                f"  Target: min={min_val:<10.4f}, "
-                f"max={max_val:<10.4f}, "
-                f"mean={mean_val:<10.4f}, "
-                f"std={std_val:<10.4f}"
-            )
+            for i in range(y.shape[1]): # per horizon
+                vals = y[:, i].ravel()
+                min_val, max_val, mean_val, std_val = np.nanmin(vals), np.nanmax(vals), np.nanmean(vals), np.nanstd(vals)
+                self._log_stats(f"Target (Horizon {i:<2}): ", mean_val, std_val, min_val, max_val)
+                if self.plot_dist:
+                    self._plot_distribution(vals, f"Target Distribution Horizon {i}", self.plot_dir, f"target_h{i}")
         
         elif y.ndim == 3:  # (time, nodes, horizon)
-            for i in range(y.shape[2]):
-                target_data = y[:, :, i]
-                min_val = np.nanmin(target_data)
-                max_val = np.nanmax(target_data)
-                mean_val = np.nanmean(target_data)
-                std_val = np.nanstd(target_data)
-                logger.info(
-                    f"  Horizon {i:<2}: "
-                    f"min={min_val:<10.4f}, max={max_val:<10.4f}, "
-                    f"mean={mean_val:<10.4f}, std={std_val:<10.4f}"
-                )
+            for i in range(y.shape[2]): # per horizon
+                vals = y[:, :, i].ravel()
+                min_val, max_val, mean_val, std_val = np.nanmin(vals), np.nanmax(vals), np.nanmean(vals), np.nanstd(vals)
+                self._log_stats(f"Target (Horizon {i:<2}): ", mean_val, std_val, min_val, max_val)
+                if self.plot_dist:
+                    self._plot_distribution(vals, f"Target Distribution Horizon {i}", self.plot_dir, f"target_h{i}")
         else:
             logger.warning(f"Unexpected target shape {y.shape}, skipping detailed stats.")
+    
+    @staticmethod
+    def _log_stats(name: str, mean_val: float, std_val: float, min_val: float, max_val: float):
+        """Pretty logs per-feature statistics with grouped pairs (min/max, mean/std)."""
+        logger.info(
+            f"    {name:<25} | "
+            f"min/max: {min_val:>8.4f} / {max_val:<8.4f} | "
+            f"mean/std: {mean_val:>8.4f} / {std_val:<8.4f}"
+        )
+    
+    @staticmethod
+    def _plot_distribution(
+        data: np.ndarray,
+        title: str,
+        dir: str,
+        plot_name: str
+    ) -> None:
+        """
+        Helper method to create and save a distribution plot.
+        
+        Args:
+            data (np.ndarray): The 1D array of data to plot.
+            title (str): The title for the plot.
+            dir (str): The directory to save the plot image.
+            plot_name (str): The name of the plot image file (without extension).
+        """
+        
+        if data.size == 0:
+            logger.warning(f"No valid data provided for plotting '{title}'. Skipping.")
+            return
+        
+        try:
+            plt.figure(figsize=(10, 6))
+            sns.histplot(data, kde=True, bins=50)
+            plt.title(title)
+            plt.xlabel("Value")
+            plt.ylabel("Frequency")
+            plt.tight_layout()
+            plot_path = os.path.join(dir, plot_name + ".png")
+            plt.savefig(plot_path)
+            plt.close()
+        except Exception as e:
+            logger.error(f"Failed to create plot '{title}': {e}")
 
 
 
@@ -164,8 +206,8 @@ class Homogeneous(STGCNNormalizer):
     - Data is on CPU, batches are loaded to GPU later in training.
     """
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, plot_dist: bool = False, plot_dir: str = "plots"):
+        super().__init__(plot_dist=plot_dist, plot_dir=plot_dir)
         self.feature_names:     List[str] = []
         self.feature_scalers:   List[Union[BaseEstimator, None]] = []
 
@@ -240,21 +282,13 @@ class Homogeneous(STGCNNormalizer):
         logger.info("Normalized homogeneous features stats (per-feature):")
         
         num_features = x.shape[2]
-        
         for i in range(num_features):
             name = feature_names[i] if i < len(feature_names) else f"Feature_{i}"
-            feature_data = x[:, :, i]
-            
-            min_val = np.nanmin(feature_data)
-            max_val = np.nanmax(feature_data)
-            mean_val = np.nanmean(feature_data)
-            std_val = np.nanstd(feature_data)
-            
-            logger.info(
-                f"  Feature '{name:<25}': "
-                f"min={min_val:<10.4f}, max={max_val:<10.4f}, "
-                f"mean={mean_val:<10.4f}, std={std_val:<10.4f}"
-            )
+            vals = np.asarray(x[:, :, i])
+            min_val, max_val, mean_val, std_val = np.nanmin(vals), np.nanmax(vals), np.nanmean(vals), np.nanstd(vals)
+            self._log_stats(name, mean_val, std_val, min_val, max_val)
+            if self.plot_dist:
+                self._plot_distribution(vals, f"Feature Distribution {name}", self.plot_dir, f"feature_{i}_{name}")
 
 
 
@@ -268,8 +302,8 @@ class Heterogeneous(STGCNNormalizer):
     - Data is on CPU, batches are loaded to GPU later in training.
     """
     
-    def __init__(self):
-        super().__init__()
+    def __init__(self, plot_dist: bool = False, plot_dir: str = "plots"):
+        super().__init__(plot_dist=plot_dist, plot_dir=plot_dir)
         self.feature_names:     Dict[str, List[str]] = {}
         self.feature_scalers:   Dict[str, List[Union[BaseEstimator, None]]] = {}
     
@@ -404,20 +438,13 @@ class Heterogeneous(STGCNNormalizer):
             for i in range(num_features):
                 name = feature_names_list[i] if i < len(feature_names_list) else f"Feature_{i}"
                 feature_col = combined_tensor[:, i]
-                
                 valid_values = feature_col[~torch.isnan(feature_col)]
                 
                 if valid_values.numel() > 0:
-                    min_val, max_val, mean_val, std_val = (
-                        torch.min(valid_values).item(),
-                        torch.max(valid_values).item(),
-                        torch.mean(valid_values).item(),
-                        torch.std(valid_values).item()
-                    )
-                    logger.info(
-                        f"    Feature '{name:<20}': "
-                        f"min={min_val:<10.4f}, max={max_val:<10.4f}, "
-                        f"mean={mean_val:<10.4f}, std={std_val:<10.4f}"
-                    )
+                    vals = valid_values.cpu().numpy()
+                    min_val, max_val, mean_val, std_val = np.min(vals), np.max(vals), np.mean(vals), np.std(vals)
+                    self._log_stats(name, mean_val, std_val, min_val, max_val)
+                    if self.plot_dist:
+                        self._plot_distribution(vals, f"{node_type} Feature Distribution {name}", self.plot_dir, f"{node_type}_feature_{i}_{name}")
                 else:
                     logger.info(f"    Feature '{name:<20}': All NaN values.")
