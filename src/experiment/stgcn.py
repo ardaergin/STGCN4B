@@ -173,9 +173,10 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
             name            = "Target"
         )
         normalizer.fit_target(
-            y_train         = train_target_slice, 
-            y_train_mask    = train_mask_slice,
-            method          = args.y_norm_method
+            y_train             = train_target_slice, 
+            y_train_mask        = train_mask_slice,
+            method              = args.y_norm_method,
+            target_norm_mode    = args.target_norm_mode
         )
         norm_target = normalizer.transform_target(
             y=self.input_dict["target_array"]
