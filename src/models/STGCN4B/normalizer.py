@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
-from typing import Union, List, Dict, Optional
+from typing import Union, List, Dict
+from collections import defaultdict
 import numpy as np
 import torch
 from torch_geometric.data import HeteroData
@@ -62,6 +63,10 @@ class STGCNNormalizer(ABC):
         """Abstract method to apply feature transformation."""
         pass
     
+    def _get_feature_stats(self):
+        """Logging of statistics for each feature."""
+        pass
+    
     def fit_target(
             self, 
             y_train:        np.ndarray, 
@@ -112,6 +117,41 @@ class STGCNNormalizer(ABC):
         if isinstance(predictions, torch.Tensor):
             out = torch.as_tensor(out, device=predictions.device, dtype=predictions.dtype)
         return out
+    
+    def _get_target_stats(self, y: np.ndarray):
+        """Logs statistics for the normalized target array."""
+        logger.info(f"Normalized target shape: {y.shape}")
+        logger.info("Normalized target stats:")
+        
+        # Assuming shape (T, H) or (T, N, H) depending on horizon setup
+        if y.ndim == 2:  # (time, horizon)
+            min_val = np.nanmin(y)
+            max_val = np.nanmax(y)
+            mean_val = np.nanmean(y)
+            std_val = np.nanstd(y)
+            
+            logger.info(
+                f"  Target: min={min_val:<10.4f}, "
+                f"max={max_val:<10.4f}, "
+                f"mean={mean_val:<10.4f}, "
+                f"std={std_val:<10.4f}"
+            )
+        
+        elif y.ndim == 3:  # (time, nodes, horizon)
+            for i in range(y.shape[2]):
+                target_data = y[:, :, i]
+                min_val = np.nanmin(target_data)
+                max_val = np.nanmax(target_data)
+                mean_val = np.nanmean(target_data)
+                std_val = np.nanstd(target_data)
+                logger.info(
+                    f"  Horizon {i:<2}: "
+                    f"min={min_val:<10.4f}, max={max_val:<10.4f}, "
+                    f"mean={mean_val:<10.4f}, std={std_val:<10.4f}"
+                )
+        else:
+            logger.warning(f"Unexpected target shape {y.shape}, skipping detailed stats.")
+
 
 
 class Homogeneous(STGCNNormalizer):
@@ -189,6 +229,33 @@ class Homogeneous(STGCNNormalizer):
                 col_data = out[..., i].reshape(-1, 1)
                 out[..., i] = scaler.transform(col_data).reshape(out[..., i].shape)
         return out
+    
+    def _get_feature_stats(
+            self, 
+            x:              np.ndarray,
+            feature_names:  List[str], 
+    ) -> None:
+        """Logs per-feature statistics for the normalized homogeneous feature array."""
+        logger.info(f"Normalized features shape: {x.shape}")  
+        logger.info("Normalized homogeneous features stats (per-feature):")
+        
+        num_features = x.shape[2]
+        
+        for i in range(num_features):
+            name = feature_names[i] if i < len(feature_names) else f"Feature_{i}"
+            feature_data = x[:, :, i]
+            
+            min_val = np.nanmin(feature_data)
+            max_val = np.nanmax(feature_data)
+            mean_val = np.nanmean(feature_data)
+            std_val = np.nanstd(feature_data)
+            
+            logger.info(
+                f"  Feature '{name:<25}': "
+                f"min={min_val:<10.4f}, max={max_val:<10.4f}, "
+                f"mean={mean_val:<10.4f}, std={std_val:<10.4f}"
+            )
+
 
 
 class Heterogeneous(STGCNNormalizer):
@@ -303,3 +370,54 @@ class Heterogeneous(STGCNNormalizer):
             
             norm_data[t] = norm_snapshot
         return norm_data
+    
+    def _get_feature_stats(
+            self, 
+            x:              Dict[int, HeteroData], 
+            feature_names:  Dict[str, List[str]],
+    ) -> None:
+        """Logs per-feature statistics for the normalized heterogeneous graph snapshots."""
+        logger.info("Normalized feature shapes (sample from first 2 snapshots):")
+        for t, snap in list(x.items())[:2]:
+            for nt in snap.node_types:
+                if "x" in snap[nt] and snap[nt].x is not None:
+                    logger.info(f"  [t={t}] Node type '{nt}': {snap[nt].x.shape}")
+        
+        logger.info("Normalized heterogeneous features stats (per-feature):")
+        tensors_by_nodetype = defaultdict(list)
+        for snapshot in x.values():
+            for node_type in snapshot.node_types:
+                if 'x' in snapshot[node_type] and snapshot[node_type].x is not None:
+                    tensors_by_nodetype[node_type].append(snapshot[node_type].x)
+        
+        for node_type, tensor_list in tensors_by_nodetype.items():
+            if not tensor_list:
+                logger.info(f"  - Node Type '{node_type}': No feature tensors found.")
+                continue
+            
+            combined_tensor = torch.cat(tensor_list, dim=0)
+            feature_names_list = feature_names.get(node_type, [])
+            num_features = combined_tensor.shape[1]
+            
+            logger.info(f"  --- Stats for Node Type: '{node_type}' ({num_features} features) ---")
+            
+            for i in range(num_features):
+                name = feature_names_list[i] if i < len(feature_names_list) else f"Feature_{i}"
+                feature_col = combined_tensor[:, i]
+                
+                valid_values = feature_col[~torch.isnan(feature_col)]
+                
+                if valid_values.numel() > 0:
+                    min_val, max_val, mean_val, std_val = (
+                        torch.min(valid_values).item(),
+                        torch.max(valid_values).item(),
+                        torch.mean(valid_values).item(),
+                        torch.std(valid_values).item()
+                    )
+                    logger.info(
+                        f"    Feature '{name:<20}': "
+                        f"min={min_val:<10.4f}, max={max_val:<10.4f}, "
+                        f"mean={mean_val:<10.4f}, std={std_val:<10.4f}"
+                    )
+                else:
+                    logger.info(f"    Feature '{name:<20}': All NaN values.")
