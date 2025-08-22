@@ -161,20 +161,29 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         
         # Subclass-specific logging
         normalizer._get_feature_stats(
-            x                   = norm_features,
-            feature_names       = self.input_dict["feature_names"]
+            x               = norm_features,
+            feature_names   = self.input_dict["feature_names"]
         )
         
         # Targets
-        train_target_slice = self.input_dict["target_array"][train_indices]
-        train_mask_slice = self.input_dict["target_mask"][train_indices]
-        normalizer.fit_target(
-            y_train           = train_target_slice, 
-            y_train_mask      = train_mask_slice,
-            method            = args.y_norm_method
+        train_target_slice  = self.input_dict["target_array"][train_indices]
+        train_mask_slice    = self.input_dict["target_mask"][train_indices]
+        normalizer._get_target_stats(
+            y               = self.input_dict["target_array"],
+            name            = "Target"
         )
-        norm_target = normalizer.transform_target(y=self.input_dict["target_array"])
-        normalizer._get_target_stats(y=norm_target)
+        normalizer.fit_target(
+            y_train         = train_target_slice, 
+            y_train_mask    = train_mask_slice,
+            method          = args.y_norm_method
+        )
+        norm_target = normalizer.transform_target(
+            y=self.input_dict["target_array"]
+        )
+        normalizer._get_target_stats(
+            y               = norm_target, 
+            name            = "Norm Target"
+        )
         
         return norm_features, norm_target, normalizer
     

@@ -127,27 +127,33 @@ class STGCNNormalizer(ABC):
             out = torch.as_tensor(out, device=predictions.device, dtype=predictions.dtype)
         return out
     
-    def _get_target_stats(self, y: np.ndarray):
-        """Logs statistics for the normalized target array."""
-        logger.info(f"Normalized target shape: {y.shape}")
-        logger.info("Normalized target stats:")
+    def _get_target_stats(self, y: np.ndarray, name: str = "Target"):
+        """Logs statistics for a target array (before/after normalization)."""
+        logger.info(f"{name} shape: {y.shape}")
+        logger.info(f"{name} stats:")
         
         # (T, H) or (T, N, H) depending on task
         if y.ndim == 2:  # (time, horizon)
-            for i in range(y.shape[1]): # per horizon
+            for i in range(y.shape[1]):  # per horizon
                 vals = y[:, i].ravel()
-                min_val, max_val, mean_val, std_val = np.nanmin(vals), np.nanmax(vals), np.nanmean(vals), np.nanstd(vals)
-                self._log_stats(f"Target (Horizon {i:<2}): ", mean_val, std_val, min_val, max_val)
+                min_val, max_val, mean_val, std_val = (
+                    np.nanmin(vals), np.nanmax(vals),
+                    np.nanmean(vals), np.nanstd(vals)
+                )
+                self._log_stats(f"{name} ( Horizon {i:<2})", mean_val, std_val, min_val, max_val)
                 if self.plot_dist:
-                    self._plot_distribution(vals, f"Target Distribution Horizon {i}", self.plot_dir, f"target_h{i}")
-        
+                    self._plot_distribution(vals, f"{name} Distribution Horizon {i}", self.plot_dir, f"{name.lower().replace(' ', '_')}_h{i}")
+
         elif y.ndim == 3:  # (time, nodes, horizon)
-            for i in range(y.shape[2]): # per horizon
+            for i in range(y.shape[2]):  # per horizon
                 vals = y[:, :, i].ravel()
-                min_val, max_val, mean_val, std_val = np.nanmin(vals), np.nanmax(vals), np.nanmean(vals), np.nanstd(vals)
-                self._log_stats(f"Target (Horizon {i:<2}): ", mean_val, std_val, min_val, max_val)
+                min_val, max_val, mean_val, std_val = (
+                    np.nanmin(vals), np.nanmax(vals),
+                    np.nanmean(vals), np.nanstd(vals)
+                )
+                self._log_stats(f"{name} ( Horizon {i:<2})", mean_val, std_val, min_val, max_val)
                 if self.plot_dist:
-                    self._plot_distribution(vals, f"Target Distribution Horizon {i}", self.plot_dir, f"target_h{i}")
+                    self._plot_distribution(vals, f"{name} Distribution Horizon {i}", self.plot_dir, f"{name.lower().replace(' ', '_')}_h{i}")
         else:
             logger.warning(f"Unexpected target shape {y.shape}, skipping detailed stats.")
     
@@ -156,8 +162,8 @@ class STGCNNormalizer(ABC):
         """Pretty logs per-feature statistics with grouped pairs (min/max, mean/std)."""
         logger.info(
             f"    {name:<25} | "
-            f"min/max: {min_val:>8.4f} / {max_val:<8.4f} | "
-            f"mean/std: {mean_val:>8.4f} / {std_val:<8.4f}"
+            f"min/max: {min_val:>8.4f} ~ {max_val:<8.4f} | "
+            f"mean/std: {mean_val:>8.4f} ({std_val:<8.4f})"
         )
     
     @staticmethod
