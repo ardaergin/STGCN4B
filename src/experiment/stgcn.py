@@ -165,9 +165,43 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
             method            = args.y_norm_method
         )
         norm_target = normalizer.transform_target(y=self.input_dict["target_array"])
-        logger.info(f"Normalized target shape: {norm_target.shape}")
+        self._log_target_normalization_stats(norm_target)
         
         return norm_features, norm_target, normalizer
+    
+    def _log_target_normalization_stats(self, y: np.ndarray):
+        """Logs statistics for the normalized target array."""
+        logger.info(f"Normalized target shape: {y.shape}")
+        logger.info("Normalized target stats:")
+        
+        # Assuming shape (T, H) or (T, N, H) depending on horizon setup
+        if y.ndim == 2:  # (time, horizon)
+            min_val = np.nanmin(y)
+            max_val = np.nanmax(y)
+            mean_val = np.nanmean(y)
+            std_val = np.nanstd(y)
+            
+            logger.info(
+                f"  Target: min={min_val:<10.4f}, "
+                f"max={max_val:<10.4f}, "
+                f"mean={mean_val:<10.4f}, "
+                f"std={std_val:<10.4f}"
+            )
+        
+        elif y.ndim == 3:  # (time, nodes, horizon)
+            for i in range(y.shape[2]):
+                target_data = y[:, :, i]
+                min_val = np.nanmin(target_data)
+                max_val = np.nanmax(target_data)
+                mean_val = np.nanmean(target_data)
+                std_val = np.nanstd(target_data)
+                logger.info(
+                    f"  Horizon {i:<2}: "
+                    f"min={min_val:<10.4f}, max={max_val:<10.4f}, "
+                    f"mean={mean_val:<10.4f}, std={std_val:<10.4f}"
+                )
+        else:
+            logger.warning(f"Unexpected target shape {y.shape}, skipping detailed stats.")
     
     @abstractmethod
     def _log_normalization_stats(self, x):
