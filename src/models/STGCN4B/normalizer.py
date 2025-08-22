@@ -25,8 +25,9 @@ class STGCNNormalizer(ABC):
     graph types.
     """
     def __init__(self, plot_dist: bool = False, plot_dir: str = None):
-        self.target_scaler = None
-
+        self.target_scalers = []
+        self.target_norm_mode = None
+        
         # Plotting
         self.plot_dist = plot_dist
         self.plot_dir = plot_dir
@@ -78,9 +79,10 @@ class STGCNNormalizer(ABC):
     
     def fit_target(
             self, 
-            y_train:        np.ndarray, 
-            y_train_mask:   np.ndarray      = None,
-            method:         str             = 'robust'
+            y_train:            np.ndarray, 
+            y_train_mask:       np.ndarray      = None,
+            method:             str             = 'robust',
+            target_norm_mode:   str             = "global"
     ) -> "STGCNNormalizer":
         """
         Args:
@@ -88,8 +90,12 @@ class STGCNNormalizer(ABC):
             y_train_mask: Mask to select valid targets.
             method: The scaling method to use.
         """
+        if target_norm_mode not in {"global", "per_horizon"}:
+            raise ValueError(f"Unknown target_norm_mode: {target_norm_mode}")
+        self.target_norm_mode = target_norm_mode
+        
         if method == "none":
-            self.target_scaler = None
+            self.target_scalers = []
             logger.info("Target normalization disabled (method=none).")
             return self
         if y_train_mask is not None:
@@ -99,32 +105,76 @@ class STGCNNormalizer(ABC):
         if valid_targets.size == 0:
             raise ValueError("No valid targets found for fitting the scaler.")
         
-        self.target_scaler = self._get_scaler(method=method)
-        self.target_scaler.fit(valid_targets.reshape(-1, 1))
+        if target_norm_mode == "global":
+            scaler = self._get_scaler(method=method)
+            scaler.fit(valid_targets.reshape(-1, 1))
+            self.target_scalers = [scaler]
+            logger.info(f"Fitted GLOBAL target scaler using method={method}.")
         
-        logger.info(f"Fitted target scaler using method={method}.")
+        else:  # per_horizon
+            n_horizons = y_train.shape[-1]
+            scalers = []
+            for h in range(n_horizons):
+                vals = y_train[..., h]
+                if y_train_mask is not None:
+                    vals = vals[y_train_mask[..., h].astype(bool)]
+                vals = vals.reshape(-1, 1)
+                scaler = self._get_scaler(method=method)
+                scaler.fit(vals)
+                scalers.append(scaler)
+            self.target_scalers = scalers
+            logger.info(f"Fitted PER-HORIZON target scalers using method={method}.")
+        
         return self
     
     def transform_target(self, y: np.ndarray) -> np.ndarray:
         """Normalizes the target array using the fitted target scaler."""
-        if self.target_scaler is None:
+        if not self.target_scalers:
             return y
-        orig_shape = y.shape
-        return self.target_scaler.transform(y.reshape(-1, 1)).reshape(orig_shape)
+        
+        if self.target_norm_mode == "global":
+            scaler = self.target_scalers[0]
+            out = scaler.transform(y.reshape(-1, 1)).reshape(y.shape)
+        else:  # per_horizon
+            out = np.empty_like(y, dtype=np.float32)
+            for h, scaler in enumerate(self.target_scalers):
+                out[..., h] = scaler.transform(y[..., h].reshape(-1, 1)).reshape(y[..., h].shape)
+        return out
     
     def inverse_transform_target(
             self, 
-            predictions: Union[np.ndarray, torch.Tensor]
-    ) -> Union[np.ndarray, torch.Tensor]:
-        """Inverse-transforms predictions back to the original scale."""
-        if self.target_scaler is None:
-            return predictions
-        orig_shape = predictions.shape
-        out = self.target_scaler.inverse_transform(
-            predictions.reshape(-1, 1)
-        ).reshape(orig_shape)
-        if isinstance(predictions, torch.Tensor):
-            out = torch.as_tensor(out, device=predictions.device, dtype=predictions.dtype)
+            preds: np.ndarray,
+            horizon_idx: int = None
+    ) -> np.ndarray:
+        """
+        Inverse-transforms predictions back to the original scale.
+
+        Args:
+            preds: The data to transform.
+            horizon_idx (int, optional): If provided in 'per_horizon' mode,
+                uses only the scaler for this specific horizon. Defaults to None.
+        """
+        if not self.target_scalers:
+            return preds
+        
+        if self.target_norm_mode == "global":
+            scaler = self.target_scalers[0]
+            out = scaler.inverse_transform(preds.reshape(-1, 1)).reshape(preds.shape)
+        else:  # per_horizon
+            if preds.ndim == 1:
+                if horizon_idx is None:
+                    raise ValueError(f"horizon_idx cannot be empty with `target_norm_mode=per_horizon`.")
+                scaler = self.target_scalers[horizon_idx]
+                out = scaler.inverse_transform(preds.reshape(-1, 1)).reshape(preds.shape)
+            
+            elif preds.ndim >= 2:
+                if horizon_idx is not None:
+                    raise ValueError("Do not pass `horizon_idx` for multi-horizon arrays; it's only for 1D inputs.")
+                out = np.empty_like(preds, dtype=np.float32)
+                for h, scaler in enumerate(self.target_scalers):
+                    out[..., h] = scaler.inverse_transform(
+                        preds[..., h].reshape(-1, 1)
+                    ).reshape(preds[..., h].shape)
         return out
     
     def _get_target_stats(self, y: np.ndarray, name: str = "Target"):

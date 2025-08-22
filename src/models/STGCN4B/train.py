@@ -391,8 +391,8 @@ def evaluate_model(
         # Inverse-transform the normalized predictions and targets.
         # NOTE: - For 'delta', these are now deltas in their original scale.
         #       - For 'absolute', these are the final predictions.
-        p = normalizer.inverse_transform_target(p_norm)
-        t = normalizer.inverse_transform_target(t_norm)
+        p = normalizer.inverse_transform_target(preds=p_norm, horizon_idx=h)
+        t = normalizer.inverse_transform_target(preds=t_norm, horizon_idx=h)
         
         # Delta -> Absolute reconstruction
         if args.prediction_type == "delta":
@@ -426,22 +426,34 @@ def evaluate_model(
     # Aggregate overall metrics (flattening all horizons)
     if args.prediction_type == "absolute":
         all_p = np.concatenate([
-            normalizer.inverse_transform_target(np.array(preds_norm_per_h[h]))
+            normalizer.inverse_transform_target(
+                preds=np.array(preds_norm_per_h[h]),
+                horizon_idx=h
+            )
             for h in range(H) if preds_norm_per_h[h]
         ])
         all_t = np.concatenate([
-            normalizer.inverse_transform_target(np.array(targets_norm_per_h[h]))
+            normalizer.inverse_transform_target(
+                np.array(targets_norm_per_h[h]), 
+                horizon_idx=h
+            )
             for h in range(H) if targets_norm_per_h[h]
         ])
     else:  # delta → reconstruct absolute values
         all_p = np.concatenate([
             np.array(y_source_per_h[h]) +
-            normalizer.inverse_transform_target(np.array(preds_norm_per_h[h]))
+            normalizer.inverse_transform_target(
+                preds=np.array(preds_norm_per_h[h]),
+                horizon_idx=h
+            )
             for h in range(H) if preds_norm_per_h[h]
         ])
         all_t = np.concatenate([
             np.array(y_source_per_h[h]) +
-            normalizer.inverse_transform_target(np.array(targets_norm_per_h[h]))
+            normalizer.inverse_transform_target(
+                preds=np.array(targets_norm_per_h[h]),
+                horizon_idx=h
+            )
             for h in range(H) if targets_norm_per_h[h]
         ])
 

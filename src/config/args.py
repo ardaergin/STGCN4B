@@ -564,35 +564,7 @@ def build_channel_dicts(args, property_types: list[str]) -> tuple[dict, dict]:
 
 def add_normalization_args(parser):
     """Add arguments related to normalizing features."""
-    # Log-transform
-    parser.add_argument(
-        "--features_to_log_transform",
-        nargs="*",
-        default=["_std"],
-        help="List of substrings for feature names to log-transform before normalization."
-    )
-    
-    # Normalization
-    parser.add_argument(
-        '--features_to_skip_norm', 
-        nargs='*', 
-        default=[
-            '_sin', '_cos', # general
-            'is_workhour', # binary
-            'wc_', # weather code
-            'has_measurement', # binary (temporal)
-            'hasWindows', 'has_multiple_windows', 'isProperRoom', # binary (spatial)
-            'norm_areas_minmax', 'norm_areas_prop', # already normalized
-            'embedding_index', # device
-        ],
-        help='List of (sub-)strings for feature names that should NOT be normalized.'
-    )
-    parser.add_argument(
-        '--no_norm_features',
-        action='store_true',
-        help='If set, disables all feature normalization (overrides --features_to_skip_norm).'
-    )
-
+    # ===== Target ===== #
     parser.add_argument(
         "--y_norm_method",
         type=str,
@@ -607,17 +579,59 @@ def add_normalization_args(parser):
         help="Normalization method for the target variable."
     )
     parser.add_argument(
+        "--target_norm_mode",
+        type=str,
+        default="global",
+        choices=["global", "per_horizon"],
+        help="Normalization mode for targets. "
+            "'global' = fit one scaler across all horizons, "
+            "'per_horizon' = fit a separate scaler per horizon."
+    )
+    
+    # ===== Feature ===== #
+    # Log-transform
+    parser.add_argument(
+        "--features_to_log_transform",
+        nargs="*",
+        default=["_std"],
+        help="List of substrings for feature names to log-transform before normalization."
+    )
+    
+    # Normalization
+    parser.add_argument(
+        '--no_norm_features',
+        action='store_true',
+        help='If set, disables all feature normalization (overrides --features_to_skip_norm).'
+    )
+    
+    parser.add_argument(
+        '--features_to_skip_norm', 
+        nargs='*', 
+        default=[
+            '_sin', '_cos', # general
+            'is_workhour', # binary
+            'wc_', # weather code
+            'has_measurement', # binary (temporal)
+            'hasWindows', 'has_multiple_windows', 'isProperRoom', # binary (spatial)
+            'norm_areas_minmax', 'norm_areas_prop', # already normalized
+            'embedding_index', # device
+        ],
+        help='List of (sub-)strings for feature names that should NOT be normalized.'
+    )
+    
+    parser.add_argument(
         '--default_norm_method', 
         type=str,
         default='robust',
         choices=[
-            "standard", "robust", "minmax", "maxabs", 
+            "standard", "robust", 
+            "minmax", "maxabs", 
             "quantile_uniform", "quantile_normal", 
             "power_yeojohnson", "power_boxcox"
         ],
         help='Default normalization method to be used if a scale_map is not specified.'
     )
-
+    
     # Normalization groups: each method gets its own list of features
     parser.add_argument(
         "--standard_features", nargs="*", default=[],
