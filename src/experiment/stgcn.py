@@ -488,10 +488,10 @@ class Homogeneous(STGCNExperimentRunner):
         trial_args.act_func             = "glu"
         
         # Normalization
-        norm                            = trial.suggest_categorical("norm", ["robust", "power_yeojohnson"])
-        trial_args.y_norm_method        = norm
+        ## The main feature related to the target
+        main_features_norm              = trial.suggest_categorical("norm", ["robust", "power_yeojohnson"])
         substr = trial_args.measurement_variable + "_m" # to cover "_mean", "_max", "_min".
-        if norm == "power_yeojohnson":
+        if main_features_norm == "power_yeojohnson":
             trial_args.power_yeojohnson_features = [substr]
         else:
             trial_args.robust_features = [substr]
@@ -686,10 +686,10 @@ class Heterogeneous(STGCNExperimentRunner):
         trial_args.act_func             = "glu"
         
         # Normalization
-        norm                            = trial.suggest_categorical("norm", ["robust", "power_yeojohnson"])
-        trial_args.y_norm_method        = norm
+        ## The main feature related to the target
+        main_features_norm              = trial.suggest_categorical("norm", ["robust", "power_yeojohnson"])
         substr = trial_args.measurement_variable + "_m" # to cover "_mean", "_max", "_min".
-        if norm == "power_yeojohnson":
+        if main_features_norm == "power_yeojohnson":
             trial_args.power_yeojohnson_features = [substr]
         else:
             trial_args.robust_features = [substr]
