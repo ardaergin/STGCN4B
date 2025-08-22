@@ -457,17 +457,42 @@ def evaluate_model(
             for h in range(H) if targets_norm_per_h[h]
         ])
 
+    # ----- Standard regression results -----
     reg_results = regression_results(all_t, all_p)
-    
+        
     logger.info(f"Overall: "
                 f"MSE={reg_results['mse']:.4f} | "
                 f"RMSE={reg_results['rmse']:.4f} | "
                 f"MAE={reg_results['mae']:.4f} | "
                 f"R²={reg_results['r2']:.4f} | "
                 f"MAPE={reg_results['mape']:.2f}%")
+
+    # ----- Bin-conditioned errors (e.g. <2σ vs ≥2σ) -----
+    sigma = np.std(all_t)
+    mask_extreme = np.abs(all_t) >= 2 * sigma
+    mask_normal  = ~mask_extreme
+
+    bin_metrics = {}
+    if mask_normal.any():
+        bin_metrics["normal"] = regression_results(all_t[mask_normal], all_p[mask_normal])
+    if mask_extreme.any():
+        bin_metrics["extreme"] = regression_results(all_t[mask_extreme], all_p[mask_extreme])
+
+    if "normal" in bin_metrics:
+        n = bin_metrics["normal"]
+        logger.info(f"Normal (< 2 sigma): "
+                    f"MSE={n['mse']:.4f} | RMSE={n['rmse']:.4f} | MAE={n['mae']:.4f} | R²={n['r2']:.4f}")
+    if "extreme" in bin_metrics:
+        e = bin_metrics["extreme"]
+        logger.info(f"Extreme (> 2 sigma): "
+                    f"MSE={e['mse']:.4f} | RMSE={e['rmse']:.4f} | MAE={e['mae']:.4f} | R²={e['r2']:.4f}")
     
-    metrics = {**reg_results, "per_horizon_metrics": per_horizon_metrics}
-    
+    metrics = {
+        **reg_results,
+        "per_horizon_metrics": per_horizon_metrics,
+        "bin_metrics": bin_metrics
+    }
+        
     model_output = {
         "predictions": all_p,
         "targets": all_t,
