@@ -216,14 +216,6 @@ class ResultHandler:
         lines.append(f"  MAPE:  {self.metrics['mape']:.2f}%")
         lines.append("")
         
-        # --- Overall bin-conditioned metrics ---
-        if "bin_metrics" in self.metrics:
-            lines.append("Overall bin-conditioned metrics:")
-            for label, vals in self.metrics["bin_metrics"].items():
-                vals_fmt = ", ".join(f"{k}={v:.4f}" for k, v in vals.items() if k not in {"n","low","high"})
-                lines.append(f"  {label} (n={vals['n']}): {vals_fmt}")
-            lines.append("")
-        
         # --- Per-horizon metrics ---
         if "per_horizon_metrics" in self.metrics:
             lines.append("Per-horizon metrics:")
@@ -232,14 +224,28 @@ class ResultHandler:
                 lines.append(f"  {h}: {vals_fmt}")
             lines.append("")
         
+        # --- Overall bin-conditioned metrics ---
+        if "overall_bin_metrics" in self.metrics:
+            lines.append("Overall bin-conditioned metrics:")
+            # ADDED: Loop through the categories (Overall, Positive, Negative)
+            for category_name, bins in self.metrics["overall_bin_metrics"].items():
+                lines.append(f"  --- {category_name} Change Bins ---")
+                for label, vals in bins.items():
+                    vals_fmt = ", ".join(f"{k}={v:.4f}" for k, v in vals.items() if k != "n")
+                    lines.append(f"    {label} (n={vals['n']}): {vals_fmt}")
+            lines.append("")
+        
         # --- Per-horizon bin-conditioned metrics ---
         if "per_horizon_bin_metrics" in self.metrics:
             lines.append("Per-horizon bin-conditioned metrics:")
-            for h, bins in self.metrics["per_horizon_bin_metrics"].items():
+            for h, h_bins in self.metrics["per_horizon_bin_metrics"].items():
                 lines.append(f"  {h}:")
-                for label, vals in bins.items():
-                    vals_fmt = ", ".join(f"{k}={v:.4f}" for k, v in vals.items() if k not in {"n","low","high"})
-                    lines.append(f"    {label} (n={vals['n']}): {vals_fmt}")
+                # ADDED: Loop through the categories for each horizon
+                for category_name, bins in h_bins.items():
+                    lines.append(f"    --- {category_name} Change Bins ---")
+                    for label, vals in bins.items():
+                        vals_fmt = ", ".join(f"{k}={v:.4f}" for k, v in vals.items() if k != "n")
+                        lines.append(f"      {label} (n={vals['n']}): {vals_fmt}")
             lines.append("")
         
         out.write_text("\n".join(lines))

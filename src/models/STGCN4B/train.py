@@ -380,6 +380,14 @@ def evaluate_model(
     # Calculate per-horizon metrics on original scale
     per_horizon_metrics = {}
     per_horizon_bin_metrics = {}
+    
+    # Initialize lists to collect deltas and sources for aggregation
+    all_deltas_p_agg = []
+    all_deltas_t_agg = []
+    all_src_agg = []
+    all_p_agg = []
+    all_t_agg = []
+    
     for h, horizon in enumerate(args.forecast_horizons):
         if not preds_norm_per_h[h]:          # no valid data → skip
             logger.warning(f"No valid targets for horizon {horizon}.")
@@ -390,20 +398,24 @@ def evaluate_model(
         t_norm = np.array(targets_norm_per_h[h])
         
         # Inverse-transform the normalized predictions and targets.
-        # NOTE: - For 'delta', these are now deltas in their original scale.
-        #       - For 'absolute', these are the final predictions.
-        p = normalizer.inverse_transform_target(preds=p_norm, horizon_idx=h)
-        t = normalizer.inverse_transform_target(preds=t_norm, horizon_idx=h)
-        
-        # Delta -> Absolute reconstruction
-        if args.prediction_type == "delta":
+        if args.prediction_type == "absolute":
+            p = normalizer.inverse_transform_target(preds=p_norm, horizon_idx=h)
+            t = normalizer.inverse_transform_target(preds=t_norm, horizon_idx=h)
+            all_p_agg.append(p)
+            all_t_agg.append(t)
+        else: # args.prediction_type == "delta"
+            delta_p = normalizer.inverse_transform_target(preds=p_norm, horizon_idx=h)
+            all_deltas_p_agg.append(delta_p)
+            delta_t = normalizer.inverse_transform_target(preds=t_norm, horizon_idx=h)
+            all_deltas_t_agg.append(delta_t)
+            # Delta -> Absolute reconstruction
             src = np.array(y_source_per_h[h])
-            p   = src + p
-            t   = src + t
-        
+            all_src_agg.append(src)
+            p   = src + delta_p
+            t   = src + delta_t
+
         # Standard metrics
         h_reg_results = regression_results(t, p)
-        
         per_horizon_metrics[f"h_{horizon}"] = {
             "mse": h_reg_results["mse"], 
             "rmse": h_reg_results["rmse"], 
@@ -421,9 +433,15 @@ def evaluate_model(
         )
         
         # Bin-conditioned metrics
-        std_h = np.std(t)
-        h_bin_metrics = compute_bin_metrics(t, p, std=std_h, horizon=horizon)
-        per_horizon_bin_metrics[f"h_{horizon}"] = h_bin_metrics
+        if args.prediction_type == "delta":
+            h_bin_metrics = compute_delta_bin_metrics(
+                delta_t             = delta_t,
+                t                   = t, 
+                p                   = p, 
+                target_variable     = args.measurement_variable,
+                horizon             = horizon, 
+            )
+            per_horizon_bin_metrics[f"h_{horizon}"] = h_bin_metrics
     
     if not per_horizon_metrics: # Nothing to evaluate
         logger.warning("No valid targets in the entire test set.")
@@ -432,38 +450,15 @@ def evaluate_model(
     
     # Aggregate overall metrics (flattening all horizons)
     if args.prediction_type == "absolute":
-        all_p = np.concatenate([
-            normalizer.inverse_transform_target(
-                preds=np.array(preds_norm_per_h[h]),
-                horizon_idx=h
-            )
-            for h in range(H) if preds_norm_per_h[h]
-        ])
-        all_t = np.concatenate([
-            normalizer.inverse_transform_target(
-                np.array(targets_norm_per_h[h]), 
-                horizon_idx=h
-            )
-            for h in range(H) if targets_norm_per_h[h]
-        ])
-    else:  # delta → reconstruct absolute values
-        all_p = np.concatenate([
-            np.array(y_source_per_h[h]) +
-            normalizer.inverse_transform_target(
-                preds=np.array(preds_norm_per_h[h]),
-                horizon_idx=h
-            )
-            for h in range(H) if preds_norm_per_h[h]
-        ])
-        all_t = np.concatenate([
-            np.array(y_source_per_h[h]) +
-            normalizer.inverse_transform_target(
-                preds=np.array(targets_norm_per_h[h]),
-                horizon_idx=h
-            )
-            for h in range(H) if targets_norm_per_h[h]
-        ])
-
+        all_p = np.concatenate(all_p_agg)
+        all_t = np.concatenate(all_t_agg)
+    else:
+        all_delta_p = np.concatenate(all_deltas_p_agg)
+        all_delta_t = np.concatenate(all_deltas_t_agg)
+        all_src = np.concatenate(all_src_agg)
+        all_p = all_src + all_delta_p
+        all_t = all_src + all_delta_t
+    
     # ----- Standard regression results -----
     reg_results = regression_results(all_t, all_p)
         
@@ -474,14 +469,22 @@ def evaluate_model(
                 f"R²={reg_results['r2']:.4f} | "
                 f"MAPE={reg_results['mape']:.2f}%")
 
-    # ----- Bin-conditioned results -----
-    std = np.std(all_t)
-    bin_metrics = compute_bin_metrics(all_t, all_p, std=std, horizon=None)
+    # ----- Binned regression results -----
+    overall_bin_metrics = {}
+    if args.prediction_type == "delta":
+        overall_bin_metrics = compute_delta_bin_metrics(
+            delta_t             = all_delta_t,
+            t                   = all_t,
+            p                   = all_p,
+            target_variable     = args.measurement_variable,
+            horizon             = None
+        )
+
 
     metrics = {
         **reg_results,
-        "bin_metrics": bin_metrics,
         "per_horizon_metrics": per_horizon_metrics,
+        "overall_bin_metrics": overall_bin_metrics,
         "per_horizon_bin_metrics": per_horizon_bin_metrics,
     }
     
@@ -566,59 +569,100 @@ class MaskedMSELoss(nn.Module):
             return torch.sum(masked_squared_error) / num_valid_points
         return torch.sum(preds * 0.0)
 
-def compute_bin_metrics(
-        t:          np.ndarray, 
-        p:          np.ndarray, 
-        std:        float, 
-        bins:       List[Tuple[Optional[float], Optional[float]]] = None,
-        horizon:    Optional[int] = None
-) -> Dict[str, Dict[str, float]]:
-    """
-    Compute regression metrics conditioned on bins of |t| / std.
 
-        Args:
-        t (np.ndarray): targets
-        p (np.ndarray): predictions
-        std (float): standard deviation of targets
-        bins (list): list of (low, high) bin edges in units of std.
-                     Use None for open-ended (e.g. (3, None) means ≥ 3 std).
-        horizon (int): optional horizon for logging
+def compute_delta_bin_metrics(
+        delta_t: np.ndarray,
+        t: np.ndarray,
+        p: np.ndarray,
+        target_variable: str,
+        horizon: int = None
+) -> Dict[str, Any]:
+    """
+    Computes regression metrics based on hardcoded delta bins for three categories.
+
+    The binning strategy is selected internally based on the 'target_variable' string.
+    
+    Args:
+        delta_t: Array of target deltas (used for binning).
+        t: Array of absolute target values (used for metric calculation).
+        p: Array of absolute prediction values (used for metric calculation).
+        target_variable: The name of the target ("CO2Level", "Temperature", "Humidity") 
+                         to select the appropriate hardcoded bins.
+        horizon: Optional horizon number for logging purposes.
 
     Returns:
-        dict: {bin_label -> regression_results}
+        A dictionary containing metrics for each bin.
     """
-    if bins is None:
-        bins = [(0,1), (1,2), (2,3), (3,None)]
+    # --- Hardcoded Binning Strategies ---
+    BINS = {
+        "CO2Level": [
+            (0, 10),
+            (10, 100),
+            (100, 250),
+            (250, None)
+        ],
+        "Temperature": [
+            (0, 0.5),
+            (0.5, 2),
+            (2, 5),
+            (5, None)
+        ],
+    }
+    bins_to_use = BINS.get(target_variable)
+    if bins_to_use is None:
+        raise ValueError(
+            f"Unknown target_variable '{target_variable}'. "
+            f"Available binning strategies are for: {list(BINS.keys())}"
+        )
     
-    abs_t = np.abs(t)
-    bin_metrics = {}
+    final_metrics = {}
     
-    for low, high in bins:
-        if high is None:
-            mask = abs_t >= low * std
-            label = f"≥{low} std"
-        else:
-            mask = (abs_t >= low * std) & (abs_t < high * std)
-            label = f"{low}-{high} std"
+    # --- Data subsets for each category ---
+    pos_mask = delta_t > 1e-6
+    neg_mask = delta_t < -1e-6
+    
+    categories = {
+        "Overall": (delta_t, t, p, ""),
+        "Positive": (delta_t[pos_mask], t[pos_mask], p[pos_mask], "+"),
+        "Negative": (delta_t[neg_mask], t[neg_mask], p[neg_mask], "-"),
+    }
+    
+    for category_name, (cat_delta_t, cat_t, cat_p, prefix) in categories.items():
+        if len(cat_delta_t) == 0:
+            continue
 
-        if mask.any():
-            m = regression_results(t[mask], p[mask])
-            bin_metrics[label] = {
-                **m,
-                "n": int(mask.sum()),
-                "low": low,
-                "high": high,
-            }
-            if horizon is not None:
-                logger.info(
-                    f"   Horizon {horizon} | {label} (n={mask.sum()}): "
-                    f"MSE={m['mse']:.4f} | RMSE={m['rmse']:.4f} | "
-                    f"MAE={m['mae']:.4f} | R²={m['r2']:.4f}"
-                )
-            else:
-                logger.info(
-                    f"   Overall | {label} (n={mask.sum()}): "
-                    f"MSE={m['mse']:.4f} | RMSE={m['rmse']:.4f} | "
-                    f"MAE={m['mae']:.4f} | R²={m['r2']:.4f}"
-                )
-    return bin_metrics
+        category_metrics = {}
+        abs_cat_delta_t = np.abs(cat_delta_t)
+
+        for low, high in bins_to_use:
+            if high is None: # Open-ended bin
+                mask = abs_cat_delta_t >= low
+                label = f"{prefix}(> {low})"
+            else: # Standard bin
+                mask = (abs_cat_delta_t >= low) & (abs_cat_delta_t < high)
+                label = f"{prefix}({low} - {high})"
+
+            if mask.any():
+                m = regression_results(cat_t[mask], cat_p[mask])
+                category_metrics[label] = {"n": int(mask.sum()), **m}
+        
+        final_metrics[category_name] = category_metrics
+
+    # --- Logging ---
+    for category_name, category_metrics in final_metrics.items():
+        if horizon is not None:
+            logger.info(f"Horizon {horizon} | --- {category_name} Change Bins ---")
+        else:
+            logger.info(f"Overall       | --- {category_name} Change Bins ---")
+        
+        for label, m in category_metrics.items():
+            log_msg = (
+                f"      {label:<15} (n={m['n']:<5}) "
+                f"MSE={m['mse']:.4f} | "
+                f"RMSE={m['rmse']:.4f} | "
+                f"MAE={m['mae']:.4f} | "
+                f"R²={m['r2']:.4f}"
+            )
+            logger.info(log_msg)
+
+    return final_metrics
