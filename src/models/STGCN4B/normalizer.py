@@ -190,7 +190,7 @@ class STGCNNormalizer(ABC):
                     np.nanmin(vals), np.nanmax(vals),
                     np.nanmean(vals), np.nanstd(vals)
                 )
-                self._log_stats(f"{name} ( Horizon {i:<2})", mean_val, std_val, min_val, max_val)
+                self._log_stats(f"{name} (Horizon {i})", mean_val, std_val, min_val, max_val)
                 if self.plot_dist:
                     self._plot_distribution(vals, f"{name} Distribution Horizon {i}", self.plot_dir, f"{name.lower().replace(' ', '_')}_h{i}")
 
@@ -201,7 +201,7 @@ class STGCNNormalizer(ABC):
                     np.nanmin(vals), np.nanmax(vals),
                     np.nanmean(vals), np.nanstd(vals)
                 )
-                self._log_stats(f"{name} ( Horizon {i:<2})", mean_val, std_val, min_val, max_val)
+                self._log_stats(f"{name} (Horizon {i})", mean_val, std_val, min_val, max_val)
                 if self.plot_dist:
                     self._plot_distribution(vals, f"{name} Distribution Horizon {i}", self.plot_dir, f"{name.lower().replace(' ', '_')}_h{i}")
         else:
@@ -213,7 +213,7 @@ class STGCNNormalizer(ABC):
         logger.info(
             f"    {name:<25} | "
             f"min/max: {min_val:>8.4f} ~ {max_val:<8.4f} | "
-            f"mean/std: {mean_val:>8.4f} ({std_val:<8.4f})"
+            f"mean/std: {mean_val:>8.4f} ({std_val:<.4f})"
         )
     
     @staticmethod
