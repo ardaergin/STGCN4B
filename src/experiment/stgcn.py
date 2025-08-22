@@ -515,12 +515,11 @@ class Homogeneous(STGCNExperimentRunner):
         # Normalization
         norm                            = trial.suggest_categorical("norm", ["robust", "power_yeojohnson"])
         trial_args.y_norm_method        = norm
-
+        substr = trial_args.measurement_variable + "_m" # to cover "_mean", "_max", "_min".
         if norm == "power_yeojohnson":
-            substring = trial_args.measurement_variable + "_m" # to cover "_mean", "_max", "_min".
-            trial_args.power_yeojohnson_features = [substring]
+            trial_args.power_yeojohnson_features = [substr]
         else:
-            trial_args.robust_features = [substring]
+            trial_args.robust_features = [substr]
         
         # Model architecture
         trial_args.gso_type             = trial.suggest_categorical("gso_type", ["rw_renorm_adj", "col_renorm_adj"])
@@ -761,12 +760,11 @@ class Heterogeneous(STGCNExperimentRunner):
         # Normalization
         norm                            = trial.suggest_categorical("norm", ["robust", "power_yeojohnson"])
         trial_args.y_norm_method        = norm
-        
+        substr = trial_args.measurement_variable + "_m" # to cover "_mean", "_max", "_min".
         if norm == "power_yeojohnson":
-            substring = trial_args.measurement_variable + "_m" # to cover "_mean", "_max", "_min".
-            trial_args.power_yeojohnson_features = [substring]
+            trial_args.power_yeojohnson_features = [substr]
         else:
-            trial_args.robust_features = [substring]
+            trial_args.robust_features = [substr]
         
         # Model Architecture
         trial_args.stblock_num          = trial.suggest_int("stblock_num", 2, 3)
