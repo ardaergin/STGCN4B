@@ -707,12 +707,15 @@ class Heterogeneous(STGCNExperimentRunner):
         
         # Normalization
         ## The main feature related to the target
-        main_features_norm              = trial.suggest_categorical("norm", ["robust", "power_yeojohnson"])
-        substr = trial_args.measurement_variable + "_m" # to cover "_mean", "_max", "_min".
-        if main_features_norm == "power_yeojohnson":
-            trial_args.power_yeojohnson_features = [substr]
-        else:
-            trial_args.robust_features = [substr]
+        # main_features_norm              = trial.suggest_categorical("norm", ["robust", "power_yeojohnson"])
+        # substr = trial_args.measurement_variable + "_m" # to cover "_mean", "_max", "_min".
+        # if main_features_norm == "power_yeojohnson":
+        #     trial_args.power_yeojohnson_features = [substr]
+        # else:
+        #     trial_args.robust_features = [substr]
+
+        ## The main feature related to the target
+        trial_args.y_norm_method        = "power_yeojohnson" # trial.suggest_categorical("y_norm_method", ["robust", "power_yeojohnson"])
         
         # Model Architecture
         trial_args.stblock_num          = trial.suggest_int("stblock_num", 2, 3)
@@ -726,7 +729,7 @@ class Heterogeneous(STGCNExperimentRunner):
         trial_args.bidir_p2d            = False
         trial_args.aggr_type            = "mean"
         
-        trial_args.gso_type             = trial.suggest_categorical("gso_type", ["col_renorm_adj", "rw_renorm_adj"])
+        trial_args.gso_type             = "col_renorm_adj" # trial.suggest_categorical("gso_type", ["col_renorm_adj", "rw_renorm_adj"])
         
         ## Per-type channels:
         # - Room:               high
@@ -739,7 +742,7 @@ class Heterogeneous(STGCNExperimentRunner):
         def shrink(x): 
             return _clamp(x * out_shrink)
 
-        mid_base                        = trial.suggest_int("mid_base",             16, 64,     step=16)
+        mid_base                        = trial.suggest_int("mid_base",             32, 64,     step=16)
         trial_args.device_embed_dim     = mid_base
         room_factor                     = trial.suggest_float("room_factor",        1.5, 2.0,   step=0.5) # expand
         globals_factor                  = trial.suggest_float("globals_factor",     0.25, 1.0,  step=0.25) # shrink
