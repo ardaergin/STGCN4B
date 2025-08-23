@@ -585,6 +585,27 @@ class MaskedMAELoss(nn.Module):
             return torch.sum(masked_abs_error) / num_valid_points
         return torch.sum(preds * 0.0)
 
+
+
+def _calculate_raw_metrics(data_t, data_p, abs_delta_t, bins):
+    results_list = []
+    for low, high in bins:
+        # Create a boolean mask for the current bin
+        if high is None:
+            mask = abs_delta_t >= low
+        else:
+            mask = (abs_delta_t >= low) & (abs_delta_t < high)
+        
+        # If any data falls in the bin, calculate metrics
+        if mask.any():
+            metrics = regression_results(data_t[mask], data_p[mask])
+            results_list.append({
+                'bin': (low, high),
+                'n': int(mask.sum()),
+                'metrics': metrics
+            })
+    return results_list
+
 def compute_delta_bin_metrics(
         delta_t: np.ndarray,
         t: np.ndarray,
@@ -608,76 +629,99 @@ def compute_delta_bin_metrics(
     Returns:
         A dictionary containing metrics for each bin.
     """
-    # --- Hardcoded Binning Strategies ---
-    BINS = {
+    # ===== Hardcoded Binning Strategy ===== #
+    BINS_HARDCODED = {
         "CO2Level": [
-            (0, 10),
-            (10, 100),
-            (100, 250),
-            (250, None)
+            (0, 10),    # Bin 1: Extremely insignificant changes
+            (10, 100),  # Bin 2: Small changes
+            (100, 250), # Bin 3: Medium changes
+            (250, None) # Bin 4: Large changes
         ],
         "Temperature": [
-            (0, 0.5),
-            (0.5, 2),
-            (2, 5),
-            (5, None)
+            (0, 0.5),   # Bin 1: Extremely insignificant changes
+            (0.5, 2),   # Bin 2: Small changes
+            (2, 5),     # Bin 3: Medium changes
+            (5, None)   # Bin 4: Large changes
         ],
     }
-    bins_to_use = BINS.get(target_variable)
+    bins_to_use = BINS_HARDCODED.get(target_variable)
     if bins_to_use is None:
-        raise ValueError(
-            f"Unknown target_variable '{target_variable}'. "
-            f"Available binning strategies are for: {list(BINS.keys())}"
-        )
+        raise ValueError(f"Unknown target_variable '{target_variable}'.")
+    # ===== . ===== #
     
-    final_metrics = {}
+    # ===== Std-based Binning Strategy ===== #
+    STD_BIN_MULTIPLIERS = [
+        (0, 0.1),       # Bin 1: Extremely insignificant changes
+        (0.1, 1),       # Bin 2: Small changes
+        (1, 3),         # Bin 3: Medium changes
+        (3, None)       # Bin 4: Large changes
+    ]
+    # ===== . ===== #
     
-    # --- Data subsets for each category ---
+    # ===== Delta subsets for each category ===== #
     pos_mask = delta_t > 1e-6
     neg_mask = delta_t < -1e-6
-    
     categories = {
         "Overall": (delta_t, t, p, ""),
         "Positive": (delta_t[pos_mask], t[pos_mask], p[pos_mask], "+"),
         "Negative": (delta_t[neg_mask], t[neg_mask], p[neg_mask], "-"),
     }
+    # ===== . ===== #
+        
+    # ===== Main loop ===== #
+    all_results = {'hardcoded': {}, 'std': {}}
+    log_header = f"Horizon {horizon}" if horizon is not None else "Overall      "
     
-    for category_name, (cat_delta_t, cat_t, cat_p, prefix) in categories.items():
+    std_bins = None
+    if len(delta_t) > 1:
+        std_dev = np.std(delta_t)
+        logger.info(f"{log_header} | Calculated std for binning: {std_dev:.4f}")
+        std_bins = [(low * std_dev, high * std_dev if high is not None else None) for low, high in STD_BIN_MULTIPLIERS]
+    else:
+        logger.warning(f"{log_header} | Skipping std-dev binning: not enough data points (n={len(delta_t)}).")
+    
+    for cat_name, (cat_delta_t, cat_t, cat_p, prefix) in categories.items():
         if len(cat_delta_t) == 0:
             continue
-
-        category_metrics = {}
         abs_cat_delta_t = np.abs(cat_delta_t)
-
-        for low, high in bins_to_use:
-            if high is None: # Open-ended bin
-                mask = abs_cat_delta_t >= low
-                label = f"{prefix}(> {low})"
-            else: # Standard bin
-                mask = (abs_cat_delta_t >= low) & (abs_cat_delta_t < high)
-                label = f"{prefix}({low} - {high})"
-
-            if mask.any():
-                m = regression_results(cat_t[mask], cat_p[mask])
-                category_metrics[label] = {"n": int(mask.sum()), **m}
         
-        final_metrics[category_name] = category_metrics
+        # 1. Hardcoded Bins
+        raw_hardcoded_results = _calculate_raw_metrics(cat_t, cat_p, abs_cat_delta_t, bins_to_use)
+        formatted_hardcoded = {}
+        for item in raw_hardcoded_results:
+            low, high = item['bin']
+            label = f"{prefix}(> {low})" if high is None else f"{prefix}({low} - {high})"
+            formatted_hardcoded[label] = {'n': item['n'], **item['metrics']}
+        all_results['hardcoded'][cat_name] = formatted_hardcoded
 
-    # --- Logging ---
-    for category_name, category_metrics in final_metrics.items():
-        if horizon is not None:
-            logger.info(f"Horizon {horizon} | --- {category_name} Change Bins ---")
-        else:
-            logger.info(f"Overall       | --- {category_name} Change Bins ---")
-        
-        for label, m in category_metrics.items():
-            log_msg = (
-                f"      {label:<15} (n={m['n']:<5}) "
-                f"MSE={m['mse']:.4f} | "
-                f"RMSE={m['rmse']:.4f} | "
-                f"MAE={m['mae']:.4f} | "
-                f"R²={m['r2']:.4f}"
-            )
-            logger.info(log_msg)
-
-    return final_metrics
+        # 2. Process Std-Dev Bins
+        if std_bins is not None:
+            raw_std_results = _calculate_raw_metrics(cat_t, cat_p, abs_cat_delta_t, std_bins)
+            formatted_std = {}
+            # We use the index to get the original multipliers for labeling
+            for i, item in enumerate(raw_std_results):
+                low_mult, high_mult = STD_BIN_MULTIPLIERS[i]
+                label = f"{prefix}(> {low_mult:.1f}std)" if high_mult is None else f"{prefix}({low_mult:.1f}std - {high_mult:.1f}std)"
+                formatted_std[label] = {'n': item['n'], **item['metrics']}
+            all_results['std'][cat_name] = formatted_std
+    # ===== . ===== #
+    
+    # ===== Unified Logging ===== #
+    for strategy_name, strategy_results in all_results.items():
+        if not strategy_results:
+            continue
+        strategy_label = strategy_name.capitalize()
+        for category_name, category_metrics in strategy_results.items():
+            logger.info(f"{log_header} | --- {category_name} Change Bins ({strategy_label}) ---")
+            for label, m in category_metrics.items():
+                log_msg = (
+                    f"      {label:<15} (n={m['n']:<5}) "
+                    f"MSE={m['mse']:.4f} | "
+                    f"RMSE={m['rmse']:.4f} | "
+                    f"MAE={m['mae']:.4f} | "
+                    f"R²={m['r2']:.4f}"
+                )
+                logger.info(log_msg)
+    # ===== . ===== #
+    
+    return all_results
