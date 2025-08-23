@@ -213,11 +213,7 @@ class ResultHandler:
         lines.append("Overall metrics:")
         if all(k in self.metrics for k in ["mse", "rmse", "mae", "r2", "mape"]):
             rows.append({
-                "scope": "overall",
-                "horizon": "all",
-                "strategy": "all",
-                "category": "all",
-                "bin_label": "all",
+                "scope": "overall", "horizon": "all", "strategy": "all", "category": "all", "bin_label": "all",
                 **{k: self.metrics[k] for k in ["mse", "rmse", "mae", "r2", "mape"]},
             })
             lines.append(f"  MSE:   {self.metrics['mse']:.6f}")
@@ -236,11 +232,7 @@ class ResultHandler:
                     vals_fmt = ", ".join(f"{k}={v:.4f}" for k, v in non_binned_vals.items())
                     lines.append(f"  {h}: {vals_fmt}")
                     rows.append({
-                        "scope": "per_horizon",
-                        "horizon": h,
-                        "strategy": "all",
-                        "category": "all",
-                        "bin_label": "all",
+                        "scope": "per_horizon", "horizon": h, "strategy": "all", "category": "all", "bin_label": "all",
                         **non_binned_vals,
                     })
             lines.append("")
@@ -258,50 +250,42 @@ class ResultHandler:
                         vals_fmt = ", ".join(f"{k}={v:.4f}" for k, v in metrics.items() if k != "n")
                         lines.append(f"    {bin_label:<18} (n={metrics['n']:<5}): {vals_fmt}")
                         rows.append({
-                            "scope": "binned",
-                            "horizon": "overall",
-                            "strategy": strategy_name,
-                            "category": cat_name,
-                            "bin_label": bin_label,
-                            "n": metrics.get('n'),
-                            **{k: v for k, v in metrics.items() if k != 'n'}
+                            "scope": "binned", "horizon": "overall", "strategy": strategy_name, "category": cat_name,
+                            "bin_label": bin_label, "n": metrics.get('n'), **{k: v for k, v in metrics.items() if k != 'n'}
                         })
                 lines.append("")
             
             # 2. Process Per-Horizon Binned Metrics
             if "per_horizon_metrics" in self.metrics:
-                lines.append(f"--- Per-Horizon Binned Metrics ({strategy_label}) ---")
-                for h, h_metrics in self.metrics["per_horizon_metrics"].items():
-                    if strategy_name in h_metrics:
-                        lines.append(f"  Horizon: {h}")
-                        for cat_name, bins in h_metrics[strategy_name].items():
-                            for bin_label, metrics in bins.items():
-                                vals_fmt = ", ".join(f"{k}={v:.4f}" for k, v in metrics.items() if k != "n")
-                                lines.append(f"    {cat_name} / {bin_label:<18} (n={metrics['n']:<5}): {vals_fmt}")
-                                rows.append({
-                                    "scope": "binned",
-                                    "horizon": h,
-                                    "strategy": strategy_name,
-                                    "category": cat_name,
-                                    "bin_label": bin_label,
-                                    "n": metrics.get('n'),
-                                    **{k: v for k, v in metrics.items() if k != 'n'}
-                                })
-                lines.append("")
-
+                has_per_horizon_bins = any(strategy_name in h_metrics for h_metrics in self.metrics["per_horizon_metrics"].values())
+                if has_per_horizon_bins:
+                    lines.append(f"--- Per-Horizon Binned Metrics ({strategy_label}) ---")
+                    for h, h_metrics in self.metrics["per_horizon_metrics"].items():
+                        if strategy_name in h_metrics:
+                            lines.append(f"  Horizon: {h}")
+                            for cat_name, bins in h_metrics[strategy_name].items():
+                                for bin_label, metrics in bins.items():
+                                    vals_fmt = ", ".join(f"{k}={v:.4f}" for k, v in metrics.items() if k != "n")
+                                    lines.append(f"    {cat_name} / {bin_label:<18} (n={metrics['n']:<5}): {vals_fmt}")
+                                    rows.append({
+                                        "scope": "binned", "horizon": h, "strategy": strategy_name, "category": cat_name,
+                                        "bin_label": bin_label, "n": metrics.get('n'), **{k: v for k, v in metrics.items() if k != 'n'}
+                                    })
+                    lines.append("")
+        
         # --- Write outputs ---
         out_txt.write_text("\n".join(lines))
         logger.info("Wrote forecasting metrics summary → %s", out_txt)
 
         if rows:
             df = pd.DataFrame(rows)
-            # Define a logical column order
             metric_cols = sorted([c for c in df.columns if c not in ['scope', 'horizon', 'strategy', 'category', 'bin_label', 'n']])
             column_order = ['scope', 'horizon', 'strategy', 'category', 'bin_label', 'n'] + metric_cols
             df = df[column_order]
+            out_csv = self.output_dir / "forecasting_metrics.csv"
             df.to_csv(out_csv, index=False)
             logger.info("Wrote forecasting metrics CSV → %s", out_csv)
-        
+    
     # ------------------------------------------------------------------
     # Classification helpers
     # ------------------------------------------------------------------

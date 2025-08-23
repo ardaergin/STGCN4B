@@ -479,13 +479,12 @@ def evaluate_model(
             target_variable     = args.measurement_variable,
             horizon             = None
         )
-
-
+    
+    
     metrics = {
         **reg_results,
+        **overall_bin_metrics, # Unpacking 'hardcoded' and 'std' keys
         "per_horizon_metrics": per_horizon_metrics,
-        "overall_bin_metrics": overall_bin_metrics,
-        "per_horizon_bin_metrics": per_horizon_bin_metrics,
     }
     
     model_output = {
