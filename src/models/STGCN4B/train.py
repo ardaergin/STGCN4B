@@ -480,13 +480,13 @@ def evaluate_model(
             horizon             = None
         )
     
-    
     metrics = {
         **reg_results,
-        **overall_bin_metrics, # Unpacking 'hardcoded' and 'std' keys
+        "overall_bin_metrics": overall_bin_metrics,
         "per_horizon_metrics": per_horizon_metrics,
+        "per_horizon_bin_metrics": per_horizon_bin_metrics, # THIS LINE WAS MISSING
     }
-    
+        
     model_output = {
         "predictions": all_p,
         "targets": all_t,

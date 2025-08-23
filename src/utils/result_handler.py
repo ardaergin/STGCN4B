@@ -227,24 +227,18 @@ class ResultHandler:
         if "per_horizon_metrics" in self.metrics:
             lines.append("Per-horizon metrics:")
             for h, vals in self.metrics["per_horizon_metrics"].items():
-                non_binned_vals = {k: v for k, v in vals.items() if not isinstance(v, dict)}
-                if non_binned_vals:
-                    vals_fmt = ", ".join(f"{k}={v:.4f}" for k, v in non_binned_vals.items())
-                    lines.append(f"  {h}: {vals_fmt}")
-                    rows.append({
-                        "scope": "per_horizon", "horizon": h, "strategy": "all", "category": "all", "bin_label": "all",
-                        **non_binned_vals,
-                    })
+                vals_fmt = ", ".join(f"{k}={v:.4f}" for k, v in vals.items())
+                lines.append(f"  {h}: {vals_fmt}")
+                rows.append({ "scope": "per_horizon", "horizon": h, "strategy": "all", "category": "all", "bin_label": "all", **vals})
             lines.append("")
 
-        # --- Binned metrics (Both Overall and Per-Horizon) ---
-        for strategy_name in ['hardcoded', 'std']:
-            strategy_label = strategy_name.capitalize()
-            
-            # 1. Process Overall Binned Metrics
-            if strategy_name in self.metrics:
+        # --- Binned metrics ---
+        # 1. Process Overall Binned Metrics
+        if 'overall_bin_metrics' in self.metrics:
+            for strategy_name in self.metrics['overall_bin_metrics']: # More robust loop
+                strategy_label = strategy_name.capitalize()
                 lines.append(f"--- Overall Binned Metrics ({strategy_label}) ---")
-                for cat_name, bins in self.metrics[strategy_name].items():
+                for cat_name, bins in self.metrics['overall_bin_metrics'][strategy_name].items():
                     lines.append(f"  Category: {cat_name}")
                     for bin_label, metrics in bins.items():
                         vals_fmt = ", ".join(f"{k}={v:.4f}" for k, v in metrics.items() if k != "n")
@@ -254,16 +248,22 @@ class ResultHandler:
                             "bin_label": bin_label, "n": metrics.get('n'), **{k: v for k, v in metrics.items() if k != 'n'}
                         })
                 lines.append("")
-            
-            # 2. Process Per-Horizon Binned Metrics
-            if "per_horizon_metrics" in self.metrics:
-                has_per_horizon_bins = any(strategy_name in h_metrics for h_metrics in self.metrics["per_horizon_metrics"].values())
-                if has_per_horizon_bins:
+
+        # 2. Process Per-Horizon Binned Metrics
+        if "per_horizon_bin_metrics" in self.metrics:
+            # Check if the dictionary is not empty
+            if self.metrics["per_horizon_bin_metrics"]:
+                # Infer strategies from the first available horizon
+                first_horizon_key = next(iter(self.metrics["per_horizon_bin_metrics"]))
+                strategies = list(self.metrics["per_horizon_bin_metrics"][first_horizon_key].keys())
+
+                for strategy_name in strategies:
+                    strategy_label = strategy_name.capitalize()
                     lines.append(f"--- Per-Horizon Binned Metrics ({strategy_label}) ---")
-                    for h, h_metrics in self.metrics["per_horizon_metrics"].items():
-                        if strategy_name in h_metrics:
+                    for h, h_binned_data in self.metrics["per_horizon_bin_metrics"].items():
+                        if strategy_name in h_binned_data:
                             lines.append(f"  Horizon: {h}")
-                            for cat_name, bins in h_metrics[strategy_name].items():
+                            for cat_name, bins in h_binned_data[strategy_name].items():
                                 for bin_label, metrics in bins.items():
                                     vals_fmt = ", ".join(f"{k}={v:.4f}" for k, v in metrics.items() if k != "n")
                                     lines.append(f"    {cat_name} / {bin_label:<18} (n={metrics['n']:<5}): {vals_fmt}")
@@ -272,7 +272,7 @@ class ResultHandler:
                                         "bin_label": bin_label, "n": metrics.get('n'), **{k: v for k, v in metrics.items() if k != 'n'}
                                     })
                     lines.append("")
-        
+
         # --- Write outputs ---
         out_txt.write_text("\n".join(lines))
         logger.info("Wrote forecasting metrics summary → %s", out_txt)
@@ -281,11 +281,10 @@ class ResultHandler:
             df = pd.DataFrame(rows)
             metric_cols = sorted([c for c in df.columns if c not in ['scope', 'horizon', 'strategy', 'category', 'bin_label', 'n']])
             column_order = ['scope', 'horizon', 'strategy', 'category', 'bin_label', 'n'] + metric_cols
-            df = df[column_order]
-            out_csv = self.output_dir / "forecasting_metrics.csv"
+            df = df.reindex(columns=column_order) # Use reindex for safety
             df.to_csv(out_csv, index=False)
             logger.info("Wrote forecasting metrics CSV → %s", out_csv)
-    
+                
     # ------------------------------------------------------------------
     # Classification helpers
     # ------------------------------------------------------------------
