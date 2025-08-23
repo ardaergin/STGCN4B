@@ -348,7 +348,8 @@ def get_data_loaders(
         seed:                   int,
         blocks:                 Dict[int, Dict[str, List[int]]],
         target_tensor:          torch.Tensor,
-        target_mask_tensor:     torch.Tensor,
+        train_mask_tensor:      torch.Tensor,
+        eval_mask_tensor:       torch.Tensor,
         target_source_tensor:   torch.Tensor,
         max_horizon:            int,
         *,
@@ -391,20 +392,34 @@ def get_data_loaders(
     common_params = {
         "args":                     args,
         "target_tensor":            target_tensor,
-        "target_mask_tensor":       target_mask_tensor,
         "target_source_tensor":     target_source_tensor,
         "max_horizon":              max_horizon,
         "n_his":                    args.n_his,
         "padding_strategy":         args.padding_strategy,
     }
     
-    train_ds = DatasetClass(blocks=train_blocks, data=feature_data, **common_params)
+    train_ds = DatasetClass(
+        blocks=train_blocks, 
+        data=feature_data, 
+        target_mask_tensor=train_mask_tensor, 
+        **common_params
+    )
     
     val_ds = None
     if val_blocks:
-        val_ds = DatasetClass(blocks=val_blocks, data=feature_data, **common_params)
+        val_ds = DatasetClass(
+            blocks=val_blocks, 
+            data=feature_data, 
+            target_mask_tensor=eval_mask_tensor,
+            **common_params
+        )
         
-    test_ds = DatasetClass(blocks=test_blocks, data=feature_data, **common_params)
+    test_ds = DatasetClass(
+        blocks=test_blocks, 
+        data=feature_data, 
+        target_mask_tensor=eval_mask_tensor,
+        **common_params
+    )
 
     # 4. Create DataLoaders
     generator = torch.Generator().manual_seed(seed)

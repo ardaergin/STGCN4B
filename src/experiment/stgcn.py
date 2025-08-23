@@ -167,7 +167,7 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         
         # Targets
         train_target_slice  = self.input_dict["target_array"][train_indices]
-        train_mask_slice    = self.input_dict["target_mask"][train_indices]
+        train_mask_slice    = self.input_dict["train_mask"][train_indices]
         normalizer._get_target_stats(
             y               = self.input_dict["target_array"],
             name            = "Target"
@@ -196,7 +196,8 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         Subclasses must return a dictionary with keys: 
         - "features":         Tensor of features
         - "targets":          Tensor of targets
-        - "target_mask":      Tensor of target masks
+        - "train_mask":       Tensor of train (target) masks
+        - "eval_mask"         Tensor of eval (target) masks
         - "target_source":    Tensor of target sources
         """
         pass
@@ -241,7 +242,8 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
             seed                        = seed,
             blocks                      = self.input_dict["blocks"],
             target_tensor               = tensors["targets"],
-            target_mask_tensor          = tensors["target_mask"],
+            train_mask_tensor           = tensors["train_mask"],
+            eval_mask_tensor            = tensors["eval_mask"],
             target_source_tensor        = tensors["target_source"],
             max_horizon                 = max(args.forecast_horizons),
             train_block_ids             = train_block_ids,
@@ -453,7 +455,8 @@ class Homogeneous(STGCNExperimentRunner):
         numpy_payload = {
             "features":          features,
             "targets":           targets,
-            "target_mask":      self.input_dict["target_mask"],
+            "train_mask":       self.input_dict["train_mask"],
+            "eval_mask":        self.input_dict["eval_mask"],
             "target_source":    self.input_dict["target_source_array"]
         }
         return {
@@ -647,7 +650,8 @@ class Heterogeneous(STGCNExperimentRunner):
         """Converts a dictionary of numpy arrays to a dictionary of tensors."""
         numpy_payload = {
             "targets":           targets,
-            "target_mask":      self.input_dict["target_mask"],
+            "train_mask":       self.input_dict["train_mask"],
+            "eval_mask":        self.input_dict["eval_mask"],
             "target_source":    self.input_dict["target_source_array"]
         }
         tensors_dict = {

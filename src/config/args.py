@@ -164,9 +164,17 @@ def add_OfficeGraph_args(parser):
                         help="The minimum ratio of non-null data points required in a window to compute a value. Default is 0.5.")
     
     # Workhour masking
-    parser.add_argument("--do_not_mask_workhours", action="store_false",
-                        dest="mask_workhours",
-                        help="Disable work-hour masking. By default, masking is enabled."
+    parser.add_argument(
+        "--no-mask-workhours-for-eval",
+        dest="mask_workhours_for_eval",
+        action="store_false",
+        help="Do NOT apply workhour masking during evaluation (default: mask workhours).",
+    )
+    parser.add_argument(
+        "--no-drop-workhours-from-training",
+        dest="drop_workhours_from_training",
+        action="store_false",
+        help="Do NOT drop non-workhour rows from training (default: drop them).",
     )
     
     # Cleaning arguments

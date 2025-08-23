@@ -47,9 +47,11 @@ class BaseDataPreparer(ABC):
         self._prepare_target()
         self._post_prepare_target()
         self._handle_nan_targets()
-        if self.args.mask_workhours:
-            self._mask_workhours()
-        
+        if self.args.mask_workhours_for_eval:
+            self._get_workhour_mask_for_eval()
+            if self.args.drop_workhours_from_training:
+                self._filter_workhours_from_training()
+                
         # Step 4: Drop features if requested, before _prepare_features()
         self._drop_requested_features()
         
@@ -89,7 +91,7 @@ class BaseDataPreparer(ABC):
         logger.info(f"Metadata keys: {list(self.metadata.keys())}")
         
         # Workhour labels for masking
-        if self.args.mask_workhours:
+        if self.args.mask_workhours_for_eval:
             workhour_labels_fname = f'workhours_{self.args.interval}.parquet'
             workhour_labels_path = os.path.join(self.args.processed_data_dir, workhour_labels_fname)
             logger.info(f"Loading workhour labels from: {workhour_labels_path}")
@@ -191,9 +193,9 @@ class BaseDataPreparer(ABC):
                 source_colname    = self.source_colname,
                 horizons          = self.args.forecast_horizons,
                 prediction_type   = self.args.prediction_type,
-                get_workhour_mask = self.args.mask_workhours,
-                workhour_df       = self.workhour_labels_df if self.args.mask_workhours else None,
-                workhour_colname  = "is_workhour"           if self.args.mask_workhours else None,
+                get_workhour_mask = self.args.mask_workhours_for_eval,
+                workhour_df       = self.workhour_labels_df if self.args.mask_workhours_for_eval else None,
+                workhour_colname  = "is_workhour"           if self.args.mask_workhours_for_eval else None,
             )
         logger.info(f"Prepared {len(self.target_dict['target_colnames'])} target columns from {self.source_colname}. "
                     f"New columns: {self.target_dict['target_colnames']}")
@@ -216,12 +218,17 @@ class BaseDataPreparer(ABC):
             - Missing measurements in certain time buckets, resulting in NaNs in target columns
         """
         pass
+        
+    @abstractmethod
+    def _get_workhour_mask_for_eval(self) -> None:
+        """Prepare a work-hour mask for evaluation (to be used in validation and test)."""
+        pass
     
     @abstractmethod
-    def _mask_workhours(self) -> None:
-        """Mask data based on whether it is a workhour or not."""
+    def _filter_workhours_from_training(self) -> None:
+        """Drop data based on whether it is a workhour or not."""
         pass
-
+    
     @abstractmethod
     def _drop_requested_features(self) -> None:
         """Abstract class to drop any requested feature whose name contains a substring from args.features_to_drop."""
@@ -287,19 +294,28 @@ class TabularDataPreparer(BaseDataPreparer):
         self._log_drop(before_nan, after_nan, "NaN targets")
         if after_nan == 0:
             raise ValueError("DataFrame empty after dropping NaN targets.")
-        
-    def _mask_workhours(self) -> None:
-        """Merge the workhour mask DataFrame into the main DataFrame, mask, then drop the mask columns."""
-        self.df = pd.merge(self.df, self.target_dict["workhour_mask_df"], on=self.id_cols, how='left')
-
+    
+    def _get_workhour_mask_for_eval(self) -> None:
+        """Merges the workhour mask into the main DataFrame for later use in evaluation."""
+        workhour_mask_df = self.target_dict.get("workhour_mask_df")
+        if workhour_mask_df is None:
+            raise ValueError("Masking work hours is requested, but the workhour_mask_df is None.")
+        logger.info("Merging work-hour mask into the main DataFrame for evaluation purposes.")
+        self.df = pd.merge(self.df, workhour_mask_df, on=self.id_cols, how='left')
+        # Fill any potential NaNs in mask columns with 0 (False)
+        mask_colnames = self.target_dict["workhour_mask_colnames"]
+        self.df[mask_colnames] = self.df[mask_colnames].fillna(0)
+    
+    def _filter_workhours_from_training(self) -> None:
+        """Filter the DataFrame down to only workhours."""
+        mask_colnames = self.target_dict["workhour_mask_colnames"]
         before_mask = len(self.df)
-        self.df = self.df[self.df[self.target_dict["workhour_mask_colnames"]].all(axis=1)]
+        self.df = self.df[self.df[mask_colnames].all(axis=1)]
         after_mask = len(self.df)
         self._log_drop(before_mask, after_mask, "work-hour mask")
         if after_mask == 0:
             raise ValueError("DataFrame empty after applying work-hour mask.")
-        
-        # We don't need the mask columns anymore
+        # After filtering, these columns are just now constants, so dropping them:
         self.df.drop(columns=self.target_dict["workhour_mask_colnames"], inplace=True)
     
     def _drop_requested_features(self) -> None:
@@ -462,12 +478,13 @@ class STGCNDataPreparer(BaseDataPreparer):
         
         **Note**: 
         We impute NaNs to the source array (in delta forecast)!
-        Since the target_mask is created based on the NaNs in the target array, 
+        Since the train_mask/eval_mask is created based on the NaNs in the target array, 
         and that same mask will be used during evaluation to filter which points are compared, 
         the corresponding zero-imputed values in the target_source_array will be ignored anyways. 
         """
         target_nan_mask = ~np.isnan(self.target_data["raw_target_array"])
-        self.target_data['target_mask'] = target_nan_mask.astype(np.float32, copy=False)
+        self.target_data['train_mask'] = target_nan_mask.astype(np.float32, copy=False)
+        self.target_data['eval_mask'] = target_nan_mask.astype(np.float32, copy=False)
         
         # Leave the NaNs in the target array, we will impute later
         self.target_data["target_array"] = self.target_data["raw_target_array"].astype(np.float32, copy=False)
@@ -483,17 +500,24 @@ class STGCNDataPreparer(BaseDataPreparer):
                 self.target_data["target_array"]
             ).astype(np.float32, copy=False)
         
-    def _mask_workhours(self) -> None:
-        """Multiplying the existing mask array with the workhour mask array."""
+    def _get_workhour_mask_for_eval(self) -> None:
+        """
+        Create an evaluation mask by combining the NaN-based eval_mask
+        with the work-hour mask.
+        """
         # Get the workhour mask by pivoting the workhour mask DataFrame
-        workhour_mask = self._pivot_df_to_numpy(
+        self.target_data["workhour_mask"] = self._pivot_df_to_numpy(
             df                  = self.target_dict["workhour_mask_df"],
             columns_to_pivot    = self.target_dict["workhour_mask_colnames"],
             has_room_dimension  = self.target_has_room_dimension,
         )
         
-        # Apply the mask to the target array
-        self.target_data["target_mask"] *= workhour_mask
+        # Apply the mask to the evaluation mask
+        self.target_data["eval_mask"] *= self.target_data["workhour_mask"]
+    
+    def _filter_workhours_from_training(self) -> None:
+        """Multiplying the existing train mask with the workhour mask."""
+        self.target_data["train_mask"] *= self.target_data["workhour_mask"]
     
     def _pivot_df_to_numpy(
             self,
@@ -574,7 +598,8 @@ class STGCNDataPreparer(BaseDataPreparer):
             "o_adj_vec_tensor":             self.graph_dict["o_adj_vec_tensor"],
             # Target
             "target_array":                 self.target_data["target_array"],
-            "target_mask":                  self.target_data["target_mask"],
+            "train_mask":                   self.target_data["train_mask"],
+            "eval_mask":                    self.target_data["eval_mask"],
             "target_source_array":          self.target_data["target_source_array"],
         }
 
