@@ -118,14 +118,31 @@ class BaseExperimentRunner(ABC):
         train_block_ids, val_block_ids = self.splitter.get_single_split()
         test_block_ids = self.splitter.test_block_ids
         
+        # Argument setup
+        args = deepcopy(self.args)
+        if self.args.load_hyperparams:
+            json_path = pathlib.Path(self.hyperparameter_path) # defined in subclasses
+            if not json_path.exists():
+                raise ValueError(f"Hyperparameter JSON not found: {json_path}")
+            with open(json_path, "r") as f:
+                cfg = json.load(f)
+            hyperparams = dict(cfg.get("common"))
+            hyperparams.update(cfg.get(self.args.measurement_variable))
+            for key, value in hyperparams.items():
+                if hasattr(args, key):
+                    setattr(args, key, value)
+                    logger.info(f"Overriding arg '{key}' with value from JSON: {value}")
+                else:
+                    logger.warning(f"Ignoring hyperparam '{key}' from JSON (not in args).")
+        
         # Setup final model
         logger.info("Setting up the single-run model...")
-        model = self._setup_model(args=self.args)
+        model = self._setup_model(args=args)
         
         # Train and evaluate the final model
         trained_model, history, metrics, model_outputs = self._train_and_evaluate_final_model(
             model               = model,
-            final_params        = self.args, 
+            final_params        = args, 
             epochs              = None,
             threshold           = None,
             train_block_ids     = train_block_ids, 

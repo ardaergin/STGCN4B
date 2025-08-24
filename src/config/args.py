@@ -318,6 +318,12 @@ def add_base_modelling_args(parser):
         choices=["mse", "mae"],
         help="Loss function to use for forecasting tasks (default: mse)."
     )
+    parser.add_argument(
+        "--load_hyperparams",
+        action="store_true",
+        help="Load hyperparameters from the pre-defined JSON file "
+            "and override the corresponding arguments for single-run mode. "
+    )
 
 
 def add_STGCN_args(parser):

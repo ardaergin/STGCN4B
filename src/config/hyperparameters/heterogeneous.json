@@ -1,0 +1,73 @@
+{
+  "common": {
+    "lr": 0.001,
+    "weight_decay_rate": 0.00075,
+    "droprate": 0.15,
+    
+    "optimizer": "adamw",
+    "step_size": 50,
+    "gamma": 0.99,
+    
+    "enable_bias": true,
+    "act_func": "glu",
+    
+    "n_his": 48,
+    "Kt": 3,
+    
+    "y_norm_method": "power_yeojohnson",
+        
+    "gconv_type_p2d": "sage",
+    "gconv_type_d2r": "sage",
+    "bidir_d2r": false,
+    "bidir_p2d": false,
+    "aggr_type": "mean"
+  },
+
+  "Temperature": {
+    "gso_type": "col_renorm_adj",
+    
+    "y_norm_method": "power_yeojohnson",
+    
+    "stblock_num": 2,
+    
+    "device_embed_dim": 32,
+    
+    "ch_room_mid": 128,
+    "ch_device_mid": 64,
+    "ch_property_mid": 64,
+    "ch_time_mid": 16,
+    "ch_outside_mid": 16,
+    
+    "ch_room_out": 64,
+    "ch_device_out": 32,
+    "ch_property_out": 32,
+    "ch_time_out": 8,
+    "ch_outside_out": 8,
+    
+    "output_channels": 128
+  },
+
+  "CO2Level": {
+    "gso_type": "rw_renorm_adj",
+    
+    "y_norm_method": "power_yeojohnson",
+    
+    "stblock_num": 2,
+    
+    "device_embed_dim": 32,
+    
+    "ch_room_mid": 128,
+    "ch_device_mid": 64,
+    "ch_property_mid": 64,
+    "ch_time_mid": 16,
+    "ch_outside_mid": 16,
+    
+    "ch_room_out": 64,
+    "ch_device_out": 32,
+    "ch_property_out": 32,
+    "ch_time_out": 8,
+    "ch_outside_out": 8,
+    
+    "output_channels": 128
+  }
+}

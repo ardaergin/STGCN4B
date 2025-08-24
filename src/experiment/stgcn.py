@@ -412,6 +412,7 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
 class Homogeneous(STGCNExperimentRunner):
     def __init__(self, args: Any):        
         super().__init__(args)
+        self.hyperparameter_path = "src/config/hyperparameters/homogeneous.json"
         
     def _get_data_preparer_class(self):
         return HomogeneousSTGCNDataPreparer
@@ -598,6 +599,7 @@ class Homogeneous(STGCNExperimentRunner):
 class Heterogeneous(STGCNExperimentRunner):
     def __init__(self, args: Any):        
         super().__init__(args)
+        self.hyperparameter_path = "src/config/hyperparameters/heterogeneous.json"
     
     def _get_data_preparer_class(self):
         return HeterogeneousSTGCNDataPreparer

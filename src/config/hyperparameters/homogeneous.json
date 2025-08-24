@@ -1,0 +1,48 @@
+{
+  "common": {
+    "lr": 0.002,
+    "weight_decay_rate": 0.0005,
+    "droprate": 0.15,
+    
+    "optimizer": "adamw",
+    "step_size": 50,
+    "gamma": 0.99,
+    
+    "enable_bias": true,
+    "act_func": "glu",
+    
+    "n_his": 48,
+    "Kt": 3,
+    
+    "y_norm_method": "power_yeojohnson",
+    
+    "transpose_gso": true,
+    
+    "graph_conv_type": "gcn",
+    "Ks": 2
+  },
+
+  "Temperature": {
+    "gso_type": "col_renorm_adj",
+    
+    "y_norm_method": "power_yeojohnson",
+    
+    "stblock_num": 2,
+    
+    "st_main_channels": 128,
+    "st_bottleneck_channels": 64,
+    "output_channels": 256
+  },
+
+  "CO2Level": {
+    "gso_type": "rw_renorm_adj",
+    
+    "y_norm_method": "power_yeojohnson",
+    
+    "stblock_num": 2,
+    
+    "st_main_channels": 128,
+    "st_bottleneck_channels": 64,
+    "output_channels": 256
+  }
+}
