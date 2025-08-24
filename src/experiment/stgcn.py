@@ -362,7 +362,8 @@ class STGCNExperimentRunner(BaseExperimentRunner, ABC):
         if epochs is not None:
             final_params.epochs = int(np.ceil(epochs * self.args.final_epoch_multiplier))
             logger.info(f"Inferred optimal epochs from CV: {epochs:.0f}. "
-                        f"Training final model for {final_params.epochs} rounds (1.1x).")
+                        f"Training final model for {final_params.epochs} rounds "
+                        f"(multiplier: {self.args.final_epoch_multiplier}).")
         
         # Final seed
         # NOTE: For final training, using a different seed,
