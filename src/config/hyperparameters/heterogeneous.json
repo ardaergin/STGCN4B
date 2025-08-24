@@ -21,47 +21,97 @@
     "aggr_type": "mean"
   },
 
-  "Temperature": {
-    "gso_type": "col_renorm_adj",
-        
-    "stblock_num": 3,
-    
-    "device_embed_dim": 32,
-    
-    "ch_room_mid": 64,
-    "ch_device_mid": 128,
-    "ch_property_mid": 128,
-    "ch_time_mid": 16,
-    "ch_outside_mid": 16,
-    
-    "ch_room_out": 64,
-    "ch_device_out": 128,
-    "ch_property_out": 128,
-    "ch_time_out": 16,
-    "ch_outside_out": 16,
-    
-    "output_channels": 128
-  },
 
-  "CO2Level": {
-    "gso_type": "col_renorm_adj",
-        
-    "stblock_num": 3,
-    
-    "device_embed_dim": 32,
-    
-    "ch_room_mid": 64,
-    "ch_device_mid": 128,
-    "ch_property_mid": 128,
-    "ch_time_mid": 16,
-    "ch_outside_mid": 16,
-    
-    "ch_room_out": 64,
-    "ch_device_out": 128,
-    "ch_property_out": 128,
-    "ch_time_out": 16,
-    "ch_outside_out": 16,
-    
-    "output_channels": 128
+  "binary": {
+    "Temperature": {
+      "gso_type": "col_renorm_adj",
+          
+      "stblock_num": 3,
+      
+      "device_embed_dim": 32,
+      
+      "ch_room_mid": 64,
+      "ch_device_mid": 128,
+      "ch_property_mid": 128,
+      "ch_time_mid": 16,
+      "ch_outside_mid": 16,
+      
+      "ch_room_out": 64,
+      "ch_device_out": 128,
+      "ch_property_out": 128,
+      "ch_time_out": 16,
+      "ch_outside_out": 16,
+      
+      "output_channels": 128
+    },
+
+    "CO2Level": {
+      "gso_type": "col_renorm_adj",
+          
+      "stblock_num": 3,
+      
+      "device_embed_dim": 32,
+      
+      "ch_room_mid": 64,
+      "ch_device_mid": 128,
+      "ch_property_mid": 128,
+      "ch_time_mid": 16,
+      "ch_outside_mid": 16,
+      
+      "ch_room_out": 64,
+      "ch_device_out": 128,
+      "ch_property_out": 128,
+      "ch_time_out": 16,
+      "ch_outside_out": 16,
+      
+      "output_channels": 128
+    }
+  },
+  
+
+  "weighted": {
+    "Temperature": {
+      "gso_type": "col_renorm_adj",
+          
+      "stblock_num": 3,
+      
+      "device_embed_dim": 32,
+      
+      "ch_room_mid": 64,
+      "ch_device_mid": 128,
+      "ch_property_mid": 128,
+      "ch_time_mid": 16,
+      "ch_outside_mid": 16,
+      
+      "ch_room_out": 64,
+      "ch_device_out": 128,
+      "ch_property_out": 128,
+      "ch_time_out": 16,
+      "ch_outside_out": 16,
+      
+      "output_channels": 128
+    },
+
+    "CO2Level": {
+      "gso_type": "col_renorm_adj",
+          
+      "stblock_num": 3,
+      
+      "device_embed_dim": 32,
+      
+      "ch_room_mid": 64,
+      "ch_device_mid": 128,
+      "ch_property_mid": 128,
+      "ch_time_mid": 16,
+      "ch_outside_mid": 16,
+      
+      "ch_room_out": 64,
+      "ch_device_out": 128,
+      "ch_property_out": 128,
+      "ch_time_out": 16,
+      "ch_outside_out": 16,
+      
+      "output_channels": 128
+    }
   }
 }
