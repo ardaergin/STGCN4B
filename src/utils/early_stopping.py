@@ -9,13 +9,16 @@ class EarlyStopping:
     Args:
     - direction : {"minimize", "maximize"}. Whether lower or higher metric is better.
     - patience : int. Number of epochs to wait without improvement.
-    - delta : float. Minimal *meaningful* improvement.
+    - delta : float. Minimal relative improvement (e.g. 0.01 = 1%).
     - verbose : bool. If True, print checkpoint messages.
     """
-    def __init__(self, direction: str = "minimize", 
-                 patience: int = 10, 
-                 delta: float = 0.01,
-                 verbose: bool = False):
+    def __init__(
+            self, 
+            direction: str = "minimize", 
+            patience: int = 10, 
+            delta: float = 0.01,
+            verbose: bool = False
+    ):
         assert direction in {"minimize", "maximize"}
         self.direction  = direction
         self.patience   = patience
@@ -23,7 +26,6 @@ class EarlyStopping:
         self.verbose    = verbose
 
         self.counter          = 0
-        self.best_score       = None
         self.best_metric      = None
         self.best_epoch       = 0
         self.best_model_state = None
@@ -31,11 +33,17 @@ class EarlyStopping:
     
     def __call__(self, metric: float, model: torch.nn.Module, epoch: int):
         """Update with a new validation metric."""
-        # Decide whether the new metric is better
+        
+        if self.best_metric is None:
+            self._save_checkpoint(metric, model, epoch)
+            return
+        
+        # Relative threshold (with epsilon fallback if best_metric=0)
+        effective_delta = self.delta * max(abs(self.best_metric), 1e-8)
+        
         improved = (
-            self.best_metric is None
-            or (self.direction == "minimize" and metric < self.best_metric - self.delta)
-            or (self.direction == "maximize" and metric > self.best_metric + self.delta)
+            (self.direction == "minimize" and metric < self.best_metric - effective_delta)
+            or (self.direction == "maximize" and metric > self.best_metric + effective_delta)
         )
         
         if improved:
