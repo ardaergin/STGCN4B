@@ -31,7 +31,7 @@
   },
 
   "CO2Level": {
-    "gso_type": "col_renorm_adj",
+    "gso_type": "rw_renorm_adj",
         
     "stblock_num": 2,
     
