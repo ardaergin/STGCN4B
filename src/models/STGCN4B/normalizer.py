@@ -57,8 +57,12 @@ class STGCNNormalizer(ABC):
         elif method == "quantile_normal":
             return QuantileTransformer(n_quantiles=5000, output_distribution="normal", subsample=500000, random_state=0)
         elif method == "power_yeojohnson":
+            return PowerTransformer(method="yeo-johnson", standardize=False)
+        elif method == "power_yeojohnson_s":
             return PowerTransformer(method="yeo-johnson", standardize=True)
         elif method == "power_boxcox":
+            return PowerTransformer(method="box-cox", standardize=False)
+        elif method == "power_boxcox_s":
             return PowerTransformer(method="box-cox", standardize=True)
         else:
             raise ValueError(f"Unknown scaling method: {method}.")

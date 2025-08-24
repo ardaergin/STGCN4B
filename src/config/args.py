@@ -590,7 +590,8 @@ def add_normalization_args(parser):
             "standard", "robust", 
             "minmax", "maxabs", 
             "quantile_uniform", "quantile_normal", 
-            "power_yeojohnson", "power_boxcox",
+            "power_yeojohnson", "power_yeojohnson_s", 
+            "power_boxcox", "power_boxcox_s",
         ],
         help="Normalization method for the target variable."
     )
@@ -643,7 +644,8 @@ def add_normalization_args(parser):
             "standard", "robust", 
             "minmax", "maxabs", 
             "quantile_uniform", "quantile_normal", 
-            "power_yeojohnson", "power_boxcox"
+            "power_yeojohnson", "power_yeojohnson_s",
+            "power_boxcox", "power_boxcox_s",
         ],
         help='Default normalization method to be used if a scale_map is not specified.'
     )
@@ -675,11 +677,19 @@ def add_normalization_args(parser):
     )
     parser.add_argument(
         "--power_yeojohnson_features", nargs="*", default=[],
-        help="Override/add features for PowerTransformer (Yeo-Johnson)"
+        help="Override/add features for PowerTransformer (Yeo-Johnson, no standardization)"
+    )
+    parser.add_argument(
+        "--power_yeojohnson_s_features", nargs="*", default=[],
+        help="Override/add features for PowerTransformer (Yeo-Johnson, with standardization)"
     )
     parser.add_argument(
         "--power_boxcox_features", nargs="*", default=[],
-        help="Override/add features for PowerTransformer (Box-Cox)"
+        help="Override/add features for PowerTransformer (Box-Cox, no standardization)"
+    )
+    parser.add_argument(
+        "--power_boxcox_s_features", nargs="*", default=[],
+        help="Override/add features for PowerTransformer (Box-Cox, with standardization)"
     )
     parser.add_argument(
         "--plot-norm-dists",
@@ -712,7 +722,9 @@ def build_scaler_map(args) -> dict:
         "quantile_uniform": [],
         "quantile_normal": [],
         "power_yeojohnson": [],
+        "power_yeojohnson_s": [],
         "power_boxcox": [],
+        "power_boxcox_s": [],
     }
     
     scaler_map = {method: feats.copy() for method, feats in DEFAULT_SCALER_MAP.items()}
@@ -725,7 +737,9 @@ def build_scaler_map(args) -> dict:
         "quantile_uniform":     args.quantile_uniform_features,
         "quantile_normal":      args.quantile_normal_features,
         "power_yeojohnson":     args.power_yeojohnson_features,
+        "power_yeojohnson_s":   args.power_yeojohnson_s_features,
         "power_boxcox":         args.power_boxcox_features,
+        "power_boxcox_s":       args.power_boxcox_s_features,
     }
     
     all_features = [feat for feats in scaler_map.values() for feat in feats]
