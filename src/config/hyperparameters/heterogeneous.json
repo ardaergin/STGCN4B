@@ -68,7 +68,7 @@
     }
   },
   
-
+  
   "weighted": {
     "Temperature": {
       "gso_type": "col_renorm_adj",
@@ -99,15 +99,15 @@
       
       "device_embed_dim": 32,
       
-      "ch_room_mid": 64,
-      "ch_device_mid": 128,
-      "ch_property_mid": 128,
+      "ch_room_mid": 32,
+      "ch_device_mid": 64,
+      "ch_property_mid": 64,
       "ch_time_mid": 16,
       "ch_outside_mid": 16,
       
-      "ch_room_out": 64,
-      "ch_device_out": 128,
-      "ch_property_out": 128,
+      "ch_room_out": 32,
+      "ch_device_out": 64,
+      "ch_property_out": 64,
       "ch_time_out": 16,
       "ch_outside_out": 16,
       
