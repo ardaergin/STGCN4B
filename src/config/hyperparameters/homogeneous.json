@@ -20,10 +20,10 @@
     "CO2Level": {
       "gso_type": "rw_renorm_adj",
       
-      "stblock_num": 3,
+      "stblock_num": 2,
       
-      "st_main_channels": 128,
-      "st_bottleneck_channels": 64,
+      "st_main_channels": 32,
+      "st_bottleneck_channels": 24,
       "output_channels": 128
     }
   },
