@@ -404,7 +404,7 @@ def add_STGCN_args(parser):
     
     ########## STGCN parameters ##########
     parser.add_argument('--n_his', type=int, 
-                        default=24,
+                        default=48,
                         help='Number of historical time steps to use')
     
     parser.add_argument('--Kt', type=int, 
@@ -415,7 +415,7 @@ def add_STGCN_args(parser):
                         help='Kernel size in graph convolution')
     
     parser.add_argument('--stblock_num', type=int, 
-                        default=3, 
+                        default=2, 
                         help='Number of ST-Conv blocks')
     
     parser.add_argument('--graph_conv_type', type=str, 
@@ -449,24 +449,24 @@ def add_STGCN_args(parser):
     
     # Common training parameters
     parser.add_argument('--lr', type=float, 
-                        default=0.0005, 
+                        default=0.0006, 
                         help='Learning rate')
     parser.add_argument('--optimizer', type=str, 
                         default='adamw', 
                         choices=['adam', 'adamw', 'sgd'], 
                         help='Optimizer type')
     parser.add_argument('--step_size', type=int, 
-                        default=10, 
+                        default=20, 
                         help='Step size for learning rate scheduler')
     parser.add_argument('--gamma', type=float,
-                        default=0.9, 
+                        default=0.99, 
                         help='Gamma for learning rate scheduler')
 
     parser.add_argument('--droprate', type=float, 
-                        default=0.2, 
+                        default=0.15, 
                         help='Dropout rate')
     parser.add_argument('--weight_decay_rate', type=float, 
-                        default=0.001, 
+                        default=0.0005, 
                         help='weight decay (L2 penalty)')
     
     parser.add_argument('--enable_bias', dest='enable_bias', 
