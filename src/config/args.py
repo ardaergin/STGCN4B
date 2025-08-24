@@ -254,7 +254,7 @@ def add_base_modelling_args(parser):
                             'By default, the last batch is dropped.')
     
     parser.add_argument('--epochs', type=int, 
-                        default=50, 
+                        default=20, 
                         help='Number of epochs')
     parser.add_argument('--final_epoch_multiplier', type=float, 
                         default=1.1,
@@ -301,7 +301,7 @@ def add_base_modelling_args(parser):
     parser.add_argument('--n_warmup_steps', type=int, default=10,
                         help="Number of steps (epochs in this case) to complete within a trial "
                              "before it can be pruned. This prevents pruning on initial noisy performance.")
-    parser.add_argument('--interval_steps', type=int, default=2,
+    parser.add_argument('--interval_steps', type=int, default=1,
                         help='Interval (in steps/epochs) at which to check for pruning possibilities '
                              'after the warmup period is over.')
     
@@ -441,10 +441,10 @@ def add_STGCN_args(parser):
 
     # Early stopping
     parser.add_argument('--es_patience', type=int, 
-                        default=10, 
+                        default=5, 
                         help='early stopping patience')
     parser.add_argument('--es_delta', type=float, 
-                        default=0.001, 
+                        default=0.01, 
                         help='early stopping delta (default: 0.001)')
     
     # Common training parameters

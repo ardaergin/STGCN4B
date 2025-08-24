@@ -488,15 +488,7 @@ class Homogeneous(STGCNExperimentRunner):
         ```
         """
         trial_args = deepcopy(self.args)
-        
-        # Max epochs, early stopping, and pruning setup
-        trial_args.epochs               = 20
-        trial_args.es_patience          = 5
-        trial_args.es_delta             = 0.001
-        trial_args.n_startup_trials     = 5
-        trial_args.n_warmup_steps       = 10
-        trial_args.interval_steps       = 1
-        
+                
         # General Training Hyperparameters
         trial_args.lr                   = trial.suggest_float("lr", 0.0005, 0.0050, log=True)
         trial_args.weight_decay_rate    = 0.00075 # trial.suggest_float("weight_decay_rate", 0.0001, 0.01, log=True)
@@ -681,15 +673,7 @@ class Heterogeneous(STGCNExperimentRunner):
         ```
         """
         trial_args = deepcopy(self.args)
-        
-        # Max epochs, early stopping, and pruning setup
-        trial_args.epochs               = 20
-        trial_args.es_patience          = 5
-        trial_args.es_delta             = 0.001
-        trial_args.n_startup_trials     = 5
-        trial_args.n_warmup_steps       = 10
-        trial_args.interval_steps       = 1
-        
+                
         # General Training Hyperparameters
         trial_args.lr                   = trial.suggest_float("lr", 0.0001, 0.005, log=True)
         trial_args.weight_decay_rate    = trial.suggest_float("weight_decay_rate", 0.0001, 0.01, log=True)
