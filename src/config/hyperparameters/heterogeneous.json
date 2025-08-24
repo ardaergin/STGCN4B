@@ -13,9 +13,7 @@
     
     "n_his": 48,
     "Kt": 3,
-    
-    "y_norm_method": "power_yeojohnson",
-        
+            
     "gconv_type_p2d": "sage",
     "gconv_type_d2r": "sage",
     "bidir_d2r": false,
@@ -25,9 +23,7 @@
 
   "Temperature": {
     "gso_type": "col_renorm_adj",
-    
-    "y_norm_method": "power_yeojohnson",
-    
+        
     "stblock_num": 2,
     
     "device_embed_dim": 32,
@@ -49,9 +45,7 @@
 
   "CO2Level": {
     "gso_type": "rw_renorm_adj",
-    
-    "y_norm_method": "power_yeojohnson",
-    
+        
     "stblock_num": 2,
     
     "device_embed_dim": 32,

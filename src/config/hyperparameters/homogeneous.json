@@ -13,9 +13,7 @@
     
     "n_his": 48,
     "Kt": 3,
-    
-    "y_norm_method": "power_yeojohnson",
-    
+        
     "transpose_gso": true,
     
     "graph_conv_type": "gcn",
@@ -24,9 +22,7 @@
 
   "Temperature": {
     "gso_type": "col_renorm_adj",
-    
-    "y_norm_method": "power_yeojohnson",
-    
+        
     "stblock_num": 2,
     
     "st_main_channels": 128,
@@ -36,9 +32,7 @@
 
   "CO2Level": {
     "gso_type": "rw_renorm_adj",
-    
-    "y_norm_method": "power_yeojohnson",
-    
+        
     "stblock_num": 2,
     
     "st_main_channels": 128,
