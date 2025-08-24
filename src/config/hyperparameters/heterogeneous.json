@@ -1,6 +1,7 @@
 {
   "common": {
-    "lr": 0.00015
+    "lr": 0.00015,
+    "droprate": 0.19
   },
 
 
@@ -81,17 +82,17 @@
       
       "device_embed_dim": 128,
       
-      "ch_room_mid": 32,
-      "ch_device_mid": 64,
-      "ch_property_mid": 64,
+      "ch_room_mid": 64,
+      "ch_device_mid": 128,
+      "ch_property_mid": 128,
       "ch_time_mid": 16,
       "ch_outside_mid": 16,
       
       "ch_room_out": 32,
       "ch_device_out": 64,
       "ch_property_out": 64,
-      "ch_time_out": 16,
-      "ch_outside_out": 16,
+      "ch_time_out": 8,
+      "ch_outside_out": 8,
       
       "output_channels": 128
     }
