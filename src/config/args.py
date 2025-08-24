@@ -622,7 +622,7 @@ def add_normalization_args(parser):
     parser.add_argument(
         "--target_norm_mode",
         type=str,
-        default="per_horizon",
+        default="global",
         choices=["global", "per_horizon"],
         help="Normalization mode for targets. "
             "'global' = fit one scaler across all horizons, "
