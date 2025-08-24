@@ -62,4 +62,4 @@ class EarlyStopping:
         self.best_epoch = epoch
         self.counter = 0
         if self.verbose:
-            logger.info("New best %.6f at epoch %d", metric, epoch)
+            logger.info("New best %.6f at epoch %d", metric, epoch + 1)
