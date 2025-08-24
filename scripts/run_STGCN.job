@@ -102,6 +102,11 @@ echo "Output will be written to: $SCRATCH_RUN_OUTPUT_DIR"
 cd $PERSISTENT_PROJECT_DIR
 
 srun python -m src.experiment.stgcn \
+    --amp \
+    --amp_dtype fp16 \
+    --tf32 \
+    --compile_model \
+    --compile_mode reduce-overhead \
     --data_dir $SCRATCH_DATA_DIR \
     --output_dir $SCRATCH_RUN_OUTPUT_DIR \
     --processed_data_dir $SCRATCH_PROCESSED_DATA_DIR \
