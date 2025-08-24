@@ -498,9 +498,9 @@ class Homogeneous(STGCNExperimentRunner):
         trial_args.interval_steps       = 1
         
         # General Training Hyperparameters
-        trial_args.lr                   = trial.suggest_float("lr", 0.0001, 0.01, log=True)
-        trial_args.weight_decay_rate    = trial.suggest_float("weight_decay_rate", 0.0001, 0.01, log=True)
-        trial_args.droprate             = trial.suggest_float("droprate", 0.05, 0.3)
+        trial_args.lr                   = trial.suggest_float("lr", 0.0005, 0.0050, log=True)
+        trial_args.weight_decay_rate    = 0.00075 # trial.suggest_float("weight_decay_rate", 0.0001, 0.01, log=True)
+        trial_args.droprate             = 0.15 # trial.suggest_float("droprate", 0.05, 0.3)
         trial_args.optimizer            = "adamw"
         trial_args.step_size            = 50
         trial_args.gamma                = 0.99
@@ -508,28 +508,21 @@ class Homogeneous(STGCNExperimentRunner):
         trial_args.act_func             = "glu"
         
         # Normalization
-        ## The main feature related to the target
-        main_features_norm              = trial.suggest_categorical("norm", ["robust", "power_yeojohnson"])
-        substr = trial_args.measurement_variable + "_m" # to cover "_mean", "_max", "_min".
-        if main_features_norm == "power_yeojohnson":
-            trial_args.power_yeojohnson_features = [substr]
-        else:
-            trial_args.robust_features = [substr]
-        
+                
         # Model architecture
         trial_args.gso_type             = trial.suggest_categorical("gso_type", ["rw_renorm_adj", "col_renorm_adj"])
         trial_args.transpose_gso        = True
-        trial_args.stblock_num          = trial.suggest_int("stblock_num", 2, 3)
+        trial_args.stblock_num          = trial.suggest_int("stblock_num", 2, 3, step=1)
         trial_args.Kt                   = 3
         trial_args.n_his                = 48
         
-        base_channels                   = trial.suggest_int("base_channels", 32, 128, step=32)
+        base_channels                   = trial.suggest_categorical("base_channels", [32, 64, 128])
         trial_args.st_main_channels     = base_channels
         
         bottleneck_factor                 = trial.suggest_float("bottleneck_factor", 0.25, 0.75, step=0.25)
-        trial_args.st_bottleneck_channels = max(8, int(base_channels * bottleneck_factor))
+        trial_args.st_bottleneck_channels = int(base_channels * bottleneck_factor)
         
-        trial_args.output_channels      = 256
+        trial_args.output_channels      = trial.suggest_int("output_channels", 128, 256, step=128)
         
         # For turning homogeneous STGCN into TCN for ablation:
         if self.args.drop_spatial_layer:
