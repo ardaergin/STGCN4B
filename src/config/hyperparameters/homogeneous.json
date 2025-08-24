@@ -1,7 +1,10 @@
 {
   "common": {
+    "lr": 0.0006,
+    
     "transpose_gso": true
   },
+  
   
   "binary": {
     "Temperature": {
@@ -17,13 +20,14 @@
     "CO2Level": {
       "gso_type": "rw_renorm_adj",
       
-      "stblock_num": 2,
+      "stblock_num": 3,
       
-      "st_main_channels": 32,
-      "st_bottleneck_channels": 24,
+      "st_main_channels": 128,
+      "st_bottleneck_channels": 64,
       "output_channels": 128
     }
   },
+  
   
   "weighted": {
     "Temperature": {
