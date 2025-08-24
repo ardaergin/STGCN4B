@@ -675,29 +675,17 @@ class Heterogeneous(STGCNExperimentRunner):
         trial_args = deepcopy(self.args)
                 
         # General Training Hyperparameters
-        trial_args.lr                   = trial.suggest_float("lr", 0.0001, 0.005, log=True)
-        trial_args.weight_decay_rate    = trial.suggest_float("weight_decay_rate", 0.0001, 0.01, log=True)
-        trial_args.droprate             = trial.suggest_float("droprate", 0.05, 0.4)
+        trial_args.lr                   = trial.suggest_float("lr", 0.0001, 0.0050, log=True)
+        trial_args.weight_decay_rate    = 0.00075 # trial.suggest_float("weight_decay_rate", 0.0001, 0.01, log=True)
+        trial_args.droprate             = 0.15 # trial.suggest_float("droprate", 0.05, 0.3)
         trial_args.optimizer            = "adamw"
         trial_args.step_size            = 50
         trial_args.gamma                = 0.99
         trial_args.enable_bias          = True
         trial_args.act_func             = "glu"
-        
-        # Normalization
-        ## The main feature related to the target
-        # main_features_norm              = trial.suggest_categorical("norm", ["robust", "power_yeojohnson"])
-        # substr = trial_args.measurement_variable + "_m" # to cover "_mean", "_max", "_min".
-        # if main_features_norm == "power_yeojohnson":
-        #     trial_args.power_yeojohnson_features = [substr]
-        # else:
-        #     trial_args.robust_features = [substr]
-
-        ## The main feature related to the target
-        trial_args.y_norm_method        = "power_yeojohnson" # trial.suggest_categorical("y_norm_method", ["robust", "power_yeojohnson"])
-        
+                
         # Model Architecture
-        trial_args.stblock_num          = trial.suggest_int("stblock_num", 2, 3)
+        trial_args.stblock_num          = 2
         trial_args.Kt                   = 3
         trial_args.n_his                = 48
         
@@ -708,24 +696,24 @@ class Heterogeneous(STGCNExperimentRunner):
         trial_args.bidir_p2d            = False
         trial_args.aggr_type            = "mean"
         
-        trial_args.gso_type             = "col_renorm_adj" # trial.suggest_categorical("gso_type", ["col_renorm_adj", "rw_renorm_adj"])
+        trial_args.gso_type             = trial.suggest_categorical("gso_type", ["col_renorm_adj", "rw_renorm_adj"])
         
         ## Per-type channels:
         # - Room:               high
         # - Device/Property:    moderate
         # - Time/Outside:       small
         
-        def _clamp(x, low=8, high=128):
+        def _clamp(x, low=4, high=128):
             return int(max(low, min(high, round(x))))
         
         def shrink(x): 
             return _clamp(x * out_shrink)
 
-        mid_base                        = trial.suggest_int("mid_base",             32, 64,     step=16)
+        mid_base                        = trial.suggest_categorical("mid_base", [32,64,128])
         trial_args.device_embed_dim     = mid_base
-        room_factor                     = trial.suggest_float("room_factor",        1.5, 2.0,   step=0.5) # expand
-        globals_factor                  = trial.suggest_float("globals_factor",     0.25, 1.0,  step=0.25) # shrink
-        out_shrink                      = trial.suggest_float("out_shrink",         0.25, 1.0,  step=0.25) # shrink
+        room_factor                     = trial.suggest_categorical("room_factor",    [0.5,2.0]) # expand or shrink
+        globals_factor                  = 0.25 # trial.suggest_float("globals_factor",  0.25, 0.75,  step=0.25) # shrink
+        out_shrink                      = trial.suggest_categorical("out_shrink", [0.5,1.0]) # trial.suggest_float("out_shrink",      0.25, 1.0,  step=0.25) # shrink
         
         ### Mid
         trial_args.ch_room_mid          = _clamp(room_factor     * mid_base)
@@ -742,7 +730,7 @@ class Heterogeneous(STGCNExperimentRunner):
         trial_args.ch_outside_out       = shrink(trial_args.ch_outside_mid)
         
         ## Main output
-        trial_args.output_channels      = 256
+        trial_args.output_channels      = trial.suggest_int("output_channels", 128, 256, step=128)
         
         return trial_args
     
