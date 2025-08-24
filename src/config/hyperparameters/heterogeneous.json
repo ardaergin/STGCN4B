@@ -1,6 +1,6 @@
 {
   "common": {
-    "lr": 0.0001,
+    "lr": 0.00015,
     "weight_decay_rate": 0.00075,
     "droprate": 0.15,
     
@@ -95,7 +95,7 @@
     "CO2Level": {
       "gso_type": "col_renorm_adj",
           
-      "stblock_num": 3,
+      "stblock_num": 2,
       
       "device_embed_dim": 32,
       
