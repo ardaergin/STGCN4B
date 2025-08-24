@@ -253,19 +253,37 @@ def add_base_modelling_args(parser):
                         help='If specified, the last batch of the training set will NOT be dropped. '
                             'By default, the last batch is dropped.')
     
-    parser.add_argument('--epochs', type=int, 
-                        default=20, 
-                        help='Number of epochs')
-    parser.add_argument('--final_epoch_multiplier', type=float, 
-                        default=1.1,
-                        help='Multiply the optimal epochs with this factor for the final training.')
-    
+    # ===== Epochs ===== #
+    # Max number of epochs:
+    parser.add_argument(
+        '--epochs',
+        type=int,
+        default=20,
+        help='Number of epochs'
+    )
+    # The next three are related to the final training
+    # 1) For HPO, full train (deduced pre-defined epochs)
+    parser.add_argument(
+        '--final_epoch_multiplier',
+        type=float,
+        default=1.1,
+        help='Multiply the optimal epochs with this factor for the final training.'
+    )
+    # 2) For HPO, train + validation (early stopping)
     parser.add_argument(
         "--use_validation_in_final",
         action="store_true",
         help="If set, use a held-out validation split for the final training run (instead of training on all train blocks)."
     )
-    
+    # 3) For single run, full train (number of epochs passed in this argument):
+    parser.add_argument(
+        '--final_n_epochs',
+        type=float,
+        default=None,
+        help='Multiply the optimal epochs with this factor for the final training.'
+    )
+    # ===== . ===== #
+
     # Stratified data splitting
     parser.add_argument('--stratum_size', type=int, 
                         default=5, 

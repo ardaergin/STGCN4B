@@ -156,10 +156,16 @@ class BaseExperimentRunner(ABC):
         model = self._setup_model(args=args)
         
         # Train and evaluate the final model
+        if self.args.final_n_epochs is not None:
+            # Adding the validation set to the train set
+            train_block_ids = train_block_ids + val_block_ids
+            # Canceling the validation set
+            val_block_ids = None
+        
         trained_model, history, metrics, model_outputs = self._train_and_evaluate_final_model(
             model               = model,
             final_params        = args, 
-            epochs              = None,
+            epochs              = self.args.final_n_epochs, # None by default
             threshold           = None,
             train_block_ids     = train_block_ids, 
             val_block_ids       = val_block_ids,
