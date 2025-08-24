@@ -1,6 +1,6 @@
 {
   "common": {
-    "lr": 0.001,
+    "lr": 0.0001,
     "weight_decay_rate": 0.00075,
     "droprate": 0.15,
     
@@ -13,7 +13,7 @@
     
     "n_his": 48,
     "Kt": 3,
-            
+    
     "gconv_type_p2d": "sage",
     "gconv_type_d2r": "sage",
     "bidir_d2r": false,
@@ -24,43 +24,43 @@
   "Temperature": {
     "gso_type": "col_renorm_adj",
         
-    "stblock_num": 2,
+    "stblock_num": 3,
     
     "device_embed_dim": 32,
     
-    "ch_room_mid": 128,
-    "ch_device_mid": 64,
-    "ch_property_mid": 64,
+    "ch_room_mid": 64,
+    "ch_device_mid": 128,
+    "ch_property_mid": 128,
     "ch_time_mid": 16,
     "ch_outside_mid": 16,
     
     "ch_room_out": 64,
-    "ch_device_out": 32,
-    "ch_property_out": 32,
-    "ch_time_out": 8,
-    "ch_outside_out": 8,
+    "ch_device_out": 128,
+    "ch_property_out": 128,
+    "ch_time_out": 16,
+    "ch_outside_out": 16,
     
     "output_channels": 128
   },
 
   "CO2Level": {
-    "gso_type": "rw_renorm_adj",
+    "gso_type": "col_renorm_adj",
         
-    "stblock_num": 2,
+    "stblock_num": 3,
     
     "device_embed_dim": 32,
     
-    "ch_room_mid": 128,
-    "ch_device_mid": 64,
-    "ch_property_mid": 64,
+    "ch_room_mid": 64,
+    "ch_device_mid": 128,
+    "ch_property_mid": 128,
     "ch_time_mid": 16,
     "ch_outside_mid": 16,
     
     "ch_room_out": 64,
-    "ch_device_out": 32,
-    "ch_property_out": 32,
-    "ch_time_out": 8,
-    "ch_outside_out": 8,
+    "ch_device_out": 128,
+    "ch_property_out": 128,
+    "ch_time_out": 16,
+    "ch_outside_out": 16,
     
     "output_channels": 128
   }
