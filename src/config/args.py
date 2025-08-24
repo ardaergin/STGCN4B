@@ -266,7 +266,7 @@ def add_base_modelling_args(parser):
     parser.add_argument(
         '--final_epoch_multiplier',
         type=float,
-        default=1.1,
+        default=1,
         help='Multiply the optimal epochs with this factor for the final training.'
     )
     # 2) For HPO, train + validation (early stopping)
