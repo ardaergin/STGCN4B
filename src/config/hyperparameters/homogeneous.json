@@ -1,42 +1,49 @@
 {
   "common": {
-    "lr": 0.0006,
-    "weight_decay_rate": 0.0005,
-    "droprate": 0.15,
-    
-    "optimizer": "adamw",
-    "step_size": 50,
-    "gamma": 0.99,
-    
-    "enable_bias": true,
-    "act_func": "glu",
-    
-    "n_his": 48,
-    "Kt": 3,
-        
-    "transpose_gso": true,
-    
-    "graph_conv_type": "gcn",
-    "Ks": 2
+    "transpose_gso": true
   },
-
-  "Temperature": {
-    "gso_type": "col_renorm_adj",
-        
-    "stblock_num": 2,
+  
+  "binary": {
+    "Temperature": {
+      "gso_type": "rw_renorm_adj",
+      
+      "stblock_num": 2,
+      
+      "st_main_channels": 32,
+      "st_bottleneck_channels": 24,
+      "output_channels": 128
+    },
     
-    "st_main_channels": 128,
-    "st_bottleneck_channels": 64,
-    "output_channels": 256
+    "CO2Level": {
+      "gso_type": "rw_renorm_adj",
+      
+      "stblock_num": 2,
+      
+      "st_main_channels": 32,
+      "st_bottleneck_channels": 24,
+      "output_channels": 128
+    }
   },
-
-  "CO2Level": {
-    "gso_type": "rw_renorm_adj",
-        
-    "stblock_num": 2,
+  
+  "weighted": {
+    "Temperature": {
+      "gso_type": "col_renorm_adj",
+      
+      "stblock_num": 3,
+      
+      "st_main_channels": 128,
+      "st_bottleneck_channels": 64,
+      "output_channels": 128
+    },
     
-    "st_main_channels": 32,
-    "st_bottleneck_channels": 24,
-    "output_channels": 128
+    "CO2Level": {
+      "gso_type": "col_renorm_adj",
+      
+      "stblock_num": 3,
+      
+      "st_main_channels": 128,
+      "st_bottleneck_channels": 64,
+      "output_channels": 128
+    }
   }
 }

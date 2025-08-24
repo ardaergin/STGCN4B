@@ -126,8 +126,24 @@ class BaseExperimentRunner(ABC):
                 raise ValueError(f"Hyperparameter JSON not found: {json_path}")
             with open(json_path, "r") as f:
                 cfg = json.load(f)
-            hyperparams = dict(cfg.get("common"))
-            hyperparams.update(cfg.get(self.args.measurement_variable))
+            
+            # Common hyperparams
+            hyperparams = dict(cfg.get("common", {}))
+            
+            # Select adjacency type ("static" or "dynamic")
+            adj_type = self.args.adjacency_type
+            if adj_type not in cfg:
+                raise ValueError(f"Adjacency type '{adj_type}' not found in JSON config")
+            
+            # Select measurement variable (e.g. "Temperature" or "CO2Level")
+            measurement = self.args.measurement_variable
+            if measurement not in cfg[adj_type]:
+                raise ValueError(f"Measurement variable '{measurement}' not found under '{adj_type}' in JSON config")
+            
+            # Merge overrides
+            hyperparams.update(cfg[adj_type][measurement])
+            
+            # Apply overrides
             for key, value in hyperparams.items():
                 if hasattr(args, key):
                     setattr(args, key, value)
