@@ -7,7 +7,7 @@
 
   "binary": {
     "Temperature": {
-      "lr": 0.0005,
+      "lr": 0.00030,
 
       "gso_type": "rw_renorm_adj",
           
@@ -31,7 +31,7 @@
     },
 
     "CO2Level": {
-      "lr": 0.0006,
+      "lr": 0.00015,
 
       "gso_type": "rw_renorm_adj",
           
@@ -58,7 +58,7 @@
   
   "weighted": {
     "Temperature": {
-      "lr": 0.0005,
+      "lr": 0.00030,
       
       "gso_type": "col_renorm_adj",
           
@@ -82,8 +82,8 @@
     },
 
     "CO2Level": {
-      "lr": 0.0006,
-
+      "lr": 0.00015,
+      
       "gso_type": "col_renorm_adj",
           
       "stblock_num": 2,
