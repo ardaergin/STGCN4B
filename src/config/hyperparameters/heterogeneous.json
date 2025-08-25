@@ -35,7 +35,7 @@
 
       "gso_type": "rw_renorm_adj",
           
-      "stblock_num": 2,
+      "stblock_num": 3,
       
       "device_embed_dim": 128,
       
@@ -86,7 +86,7 @@
 
       "gso_type": "col_renorm_adj",
           
-      "stblock_num": 2,
+      "stblock_num": 3,
       
       "device_embed_dim": 128,
       
