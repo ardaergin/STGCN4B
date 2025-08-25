@@ -12,8 +12,8 @@
       
       "stblock_num": 2,
       
-      "st_main_channels": 64,
-      "st_bottleneck_channels": 32,
+      "st_main_channels": 128,
+      "st_bottleneck_channels": 64,
       "output_channels": 256
     },
     
@@ -35,7 +35,7 @@
     "Temperature": {
       "lr": 0.002,
       
-      "gso_type": "col_renorm_adj",
+      "gso_type": "rw_renorm_adj",
       
       "stblock_num": 2,
       
