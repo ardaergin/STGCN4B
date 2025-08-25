@@ -27,7 +27,7 @@
       "ch_time_out": 8,
       "ch_outside_out": 8,
       
-      "output_channels": 256
+      "output_channels": 128
     },
 
     "CO2Level": {
@@ -51,7 +51,7 @@
       "ch_time_out": 8,
       "ch_outside_out": 8,
       
-      "output_channels": 256
+      "output_channels": 128
     }
   },
   
@@ -78,7 +78,7 @@
       "ch_time_out": 8,
       "ch_outside_out": 8,
       
-      "output_channels": 256
+      "output_channels": 128
     },
 
     "CO2Level": {
@@ -102,7 +102,7 @@
       "ch_time_out": 8,
       "ch_outside_out": 8,
       
-      "output_channels": 256
+      "output_channels": 128
     }
   }
 }
