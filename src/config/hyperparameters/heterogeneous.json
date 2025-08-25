@@ -31,11 +31,11 @@
     },
 
     "CO2Level": {
-      "lr": 0.00015,
+      "lr": 0.0006,
 
       "gso_type": "rw_renorm_adj",
           
-      "stblock_num": 3,
+      "stblock_num": 2,
       
       "device_embed_dim": 128,
       
@@ -82,11 +82,11 @@
     },
 
     "CO2Level": {
-      "lr": 0.00015,
+      "lr": 0.0006,
 
       "gso_type": "col_renorm_adj",
           
-      "stblock_num": 3,
+      "stblock_num": 2,
       
       "device_embed_dim": 128,
       
