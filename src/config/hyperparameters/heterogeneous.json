@@ -27,7 +27,7 @@
       "ch_time_out": 8,
       "ch_outside_out": 8,
       
-      "output_channels": 128
+      "output_channels": 256
     },
 
     "CO2Level": {
@@ -35,7 +35,7 @@
 
       "gso_type": "rw_renorm_adj",
           
-      "stblock_num": 3,
+      "stblock_num": 2,
       
       "device_embed_dim": 128,
       
@@ -51,7 +51,7 @@
       "ch_time_out": 8,
       "ch_outside_out": 8,
       
-      "output_channels": 128
+      "output_channels": 256
     }
   },
   
@@ -78,7 +78,7 @@
       "ch_time_out": 8,
       "ch_outside_out": 8,
       
-      "output_channels": 128
+      "output_channels": 256
     },
 
     "CO2Level": {
@@ -86,7 +86,7 @@
 
       "gso_type": "col_renorm_adj",
           
-      "stblock_num": 3,
+      "stblock_num": 2,
       
       "device_embed_dim": 128,
       
@@ -102,7 +102,7 @@
       "ch_time_out": 8,
       "ch_outside_out": 8,
       
-      "output_channels": 128
+      "output_channels": 256
     }
   }
 }
