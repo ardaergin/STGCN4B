@@ -7,9 +7,11 @@
 
   "binary": {
     "Temperature": {
-      "gso_type": "col_renorm_adj",
+      "lr": 0.0005,
+
+      "gso_type": "rw_renorm_adj",
           
-      "stblock_num": 3,
+      "stblock_num": 2,
       
       "device_embed_dim": 128,
       
@@ -19,17 +21,19 @@
       "ch_time_mid": 16,
       "ch_outside_mid": 16,
       
-      "ch_room_out": 64,
-      "ch_device_out": 128,
-      "ch_property_out": 128,
-      "ch_time_out": 16,
-      "ch_outside_out": 16,
+      "ch_room_out": 32,
+      "ch_device_out": 64,
+      "ch_property_out": 64,
+      "ch_time_out": 8,
+      "ch_outside_out": 8,
       
       "output_channels": 128
     },
 
     "CO2Level": {
-      "gso_type": "col_renorm_adj",
+      "lr": 0.00015,
+
+      "gso_type": "rw_renorm_adj",
           
       "stblock_num": 3,
       
@@ -41,11 +45,11 @@
       "ch_time_mid": 16,
       "ch_outside_mid": 16,
       
-      "ch_room_out": 64,
-      "ch_device_out": 128,
-      "ch_property_out": 128,
-      "ch_time_out": 16,
-      "ch_outside_out": 16,
+      "ch_room_out": 32,
+      "ch_device_out": 64,
+      "ch_property_out": 64,
+      "ch_time_out": 8,
+      "ch_outside_out": 8,
       
       "output_channels": 128
     }
@@ -54,9 +58,11 @@
   
   "weighted": {
     "Temperature": {
+      "lr": 0.0005,
+      
       "gso_type": "col_renorm_adj",
           
-      "stblock_num": 3,
+      "stblock_num": 2,
       
       "device_embed_dim": 128,
       
@@ -66,19 +72,21 @@
       "ch_time_mid": 16,
       "ch_outside_mid": 16,
       
-      "ch_room_out": 64,
-      "ch_device_out": 128,
-      "ch_property_out": 128,
-      "ch_time_out": 16,
-      "ch_outside_out": 16,
+      "ch_room_out": 32,
+      "ch_device_out": 64,
+      "ch_property_out": 64,
+      "ch_time_out": 8,
+      "ch_outside_out": 8,
       
       "output_channels": 128
     },
 
     "CO2Level": {
+      "lr": 0.00015,
+
       "gso_type": "col_renorm_adj",
           
-      "stblock_num": 2,
+      "stblock_num": 3,
       
       "device_embed_dim": 128,
       
