@@ -12,9 +12,9 @@
       
       "stblock_num": 2,
       
-      "st_main_channels": 128,
-      "st_bottleneck_channels": 64,
-      "output_channels": 256
+      "st_main_channels": 64,
+      "st_bottleneck_channels": 32,
+      "output_channels": 128
     },
     
     "CO2Level": {
@@ -39,9 +39,9 @@
       
       "stblock_num": 2,
       
-      "st_main_channels": 128,
-      "st_bottleneck_channels": 64,
-      "output_channels": 256
+      "st_main_channels": 64,
+      "st_bottleneck_channels": 32,
+      "output_channels": 128
     },
     
     "CO2Level": {
